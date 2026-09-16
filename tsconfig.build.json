@@ -9,6 +9,7 @@
     { "path": "./packages/datafeed" },
     { "path": "./packages/drawings" },
     { "path": "./packages/engine" },
+    { "path": "./packages/indicators" },
     { "path": "./packages/react" },
     { "path": "./packages/devtools" }
   ]

@@ -20,6 +20,17 @@ import {
   type TimeScaleState,
 } from './time-scale.core.js';
 import { priceToCoordinate, priceTicks, type PriceScaleState } from './price-scale.core.js';
+import {
+  chooseTickUnit,
+  formatDiaMes,
+  formatHoraMinuto,
+  formatHoraMinutoSegundo,
+  formatMesAno,
+  mudouODia,
+  mudouOMes,
+  timePartsInZone,
+  type TimeParts,
+} from './time-format.core.js';
 
 /** Tema de cores do desenho. */
 export interface RenderTheme {
@@ -29,6 +40,10 @@ export interface RenderTheme {
   readonly upColor: string;
   readonly downColor: string;
   readonly crosshair: string;
+  /** Fundo das caixas de rotulo do crosshair (opaco, sobrepoe grade/rotulos). */
+  readonly crosshairLabelBg: string;
+  /** Texto das caixas de rotulo do crosshair. */
+  readonly crosshairLabelText: string;
   readonly gridVisible: boolean;
 }
 
@@ -39,6 +54,11 @@ export const DEFAULT_THEME: RenderTheme = {
   upColor: '#16c784',
   downColor: '#ea3943',
   crosshair: 'rgba(148,163,184,0.5)',
+  // Caixa escura com texto claro — contraste alto para leitura instantanea sobre
+  // qualquer fundo de vela. Cor solida, nao translucida: precisa TAPAR o rotulo
+  // fixo do eixo que fica atras.
+  crosshairLabelBg: '#334155',
+  crosshairLabelText: '#e2e8f0',
   gridVisible: true,
 };
 
@@ -46,6 +66,32 @@ export const DEFAULT_THEME: RenderTheme = {
 export interface CrosshairState {
   readonly x: number;
   readonly y: number;
+}
+
+/**
+ * Altura reservada, em pixel logico, para a faixa de rotulos de data/hora na base.
+ *
+ * ⚠️ 22 px e escolha medida, nao arbitraria: uma fonte de 11 px (a mesma do eixo
+ * de preco) precisa de ~15 px de caixa; sobram ~7 px de respiro acima e abaixo
+ * para o rotulo nao encostar na ultima vela nem na borda do canvas. Abaixo de ~18
+ * o texto cola na grade; acima de ~26 rouba altura util do preco sem ganho de
+ * leitura.
+ */
+export const TIME_AXIS_HEIGHT = 22;
+
+/**
+ * Configuracao do eixo de tempo entregue a pane que o desenha (a de baixo).
+ *
+ * So a pane inferior recebe isto; as de cima passam `null`. O eixo de tempo e um
+ * so, compartilhado — desenha-lo em cada pane repetiria os rotulos.
+ */
+export interface TimeAxisConfig {
+  /** Altura da faixa de rotulos, em pixel logico. */
+  readonly height: number;
+  /** Fuso IANA para os rotulos. Ex.: `'America/Sao_Paulo'`. */
+  readonly timeZone: string;
+  /** Mostrar segundos na caixa de crosshair (grafico de tick/segundo). */
+  readonly secondsVisible: boolean;
 }
 
 /**
@@ -64,6 +110,8 @@ export function renderPane(
   theme: RenderTheme,
   crosshair: CrosshairState | null,
   mostrarEixoPreco: boolean,
+  /** Preco sob o cursor, ja formatado, para a caixa de crosshair no eixo. */
+  priceLabel: string | null = null,
 ): void {
   const w = ts.width;
   const h = ps.height;
@@ -80,7 +128,49 @@ export function renderPane(
 
   if (mostrarEixoPreco) drawPriceAxis(ctx, hpr, vpr, ps, w, theme);
 
-  if (crosshair !== null) drawCrosshair(ctx, hpr, vpr, crosshair, w, h, theme);
+  if (crosshair !== null) {
+    drawCrosshair(ctx, hpr, vpr, crosshair, w, h, theme);
+    // Caixa de PRECO na borda direita, na altura do cursor. E por-pane porque cada
+    // pane tem sua propria escala de preco.
+    if (priceLabel !== null && crosshair.y >= 0 && crosshair.y <= h) {
+      drawPriceCrosshairLabel(ctx, hpr, vpr, crosshair.y, w, priceLabel, theme);
+    }
+  }
+}
+
+/**
+ * Desenha o eixo de TEMPO na faixa reservada abaixo das panes.
+ *
+ * ⭐ Standalone e chamado UMA vez pelo motor, na tira `[0, stripHeight]` do proprio
+ * sistema de coordenada (o chamador ja transladou para o topo da tira). O eixo de
+ * tempo e compartilhado por todas as panes — desenha-lo aqui, fora do laco de
+ * panes, evita repetir os rotulos e mantem a tira livre das velas.
+ *
+ * `crosshairX` (pixel logico) e `timeLabel` (ja formatado) desenham a caixa de
+ * data/hora sob o cursor; `null` os omite.
+ */
+export function renderTimeAxis(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  ts: TimeScaleState,
+  width: number,
+  stripHeight: number,
+  cfg: TimeAxisConfig,
+  theme: RenderTheme,
+  crosshairX: number | null,
+  timeLabel: string | null,
+): void {
+  if (width <= 0 || stripHeight <= 0) return;
+  ctx.save();
+  try {
+    drawTimeLabels(ctx, hpr, vpr, ts, width, stripHeight, cfg, theme);
+    if (crosshairX !== null && timeLabel !== null && crosshairX >= 0 && crosshairX <= width) {
+      drawTimeCrosshairLabel(ctx, hpr, vpr, crosshairX, width, stripHeight, timeLabel, theme);
+    }
+  } finally {
+    ctx.restore();
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -129,6 +219,20 @@ function drawPriceAxis(
   }
 }
 
+/**
+ * Largura de um texto, tolerante a contexto inerte.
+ *
+ * ⚠️ O contexto no-op do jsdom (`chart.ts`) devolve `undefined` de `measureText`,
+ * e `undefined.width` lancaria dentro do ciclo de render — derrubando o grafico
+ * inteiro num ambiente que e REQUISITO de teste. Estima por `~6.2 px/char` (largura
+ * media de uma monospace de 11 px em bitmap) quando a medicao real nao existe.
+ */
+function medirLargura(ctx: CanvasRenderingContext2D, texto: string, fontePx: number): number {
+  const m = ctx.measureText(texto) as TextMetrics | undefined;
+  if (m !== undefined && Number.isFinite(m.width) && m.width > 0) return m.width;
+  return texto.length * fontePx * 0.62;
+}
+
 /** Casas decimais adequadas a amplitude — evita "137" onde precisa "137.25". */
 function decimalsFor(span: number): number {
   if (span >= 100) return 0;
@@ -136,6 +240,126 @@ function decimalsFor(span: number): number {
   if (span >= 1) return 2;
   if (span >= 0.1) return 3;
   return 4;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Eixo de tempo — rotulos de data/hora na base
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Desenha os rotulos de tempo na faixa reservada abaixo da area de plotagem.
+ *
+ * ⭐ O passo do rotulo muda com o zoom (ver `chooseTickUnit`): em zoom-in mostra
+ * `HH:mm`, em zoom-out `dd/MMM` ou `MMM/yyyy`. E marca a virada de dia — a
+ * primeira barra de um dia novo ganha a DATA, as demais a HORA — porque um eixo
+ * intraday que so mostra hora nao diz de que dia ela e.
+ *
+ * Percorre so as barras VISIVEIS (indices inteiros dentro da janela), converte
+ * cada uma em pixel, e pinta um rotulo a cada `passo` barras para nao amontoar.
+ */
+function drawTimeLabels(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  ts: TimeScaleState,
+  w: number,
+  stripHeight: number,
+  cfg: TimeAxisConfig,
+  theme: RenderTheme,
+): void {
+  const lr = visibleLogicalRange(ts);
+  if (lr === null) return;
+  const n = ts.times.length;
+  if (n === 0) return;
+
+  const de = Math.max(0, Math.floor(lr.from));
+  const ate = Math.min(n - 1, Math.ceil(lr.to));
+  if (ate < de) return;
+
+  // Intervalo tipico entre barras (mediana grosseira: diferenca central da janela).
+  const stepSeconds = medianStepSeconds(ts, de, ate);
+  const unit = chooseTickUnit(ts.barSpacing, stepSeconds);
+
+  // Passo em barras: quantas barras pular entre rotulos para o espacamento visual
+  // ficar em torno de ~80 px. Piso de 1.
+  const passo = Math.max(1, Math.round(80 / Math.max(ts.barSpacing, 0.0001)));
+
+  // A tira ja foi transladada para sua origem pelo chamador: centro vertical dela.
+  const yTexto = (stripHeight / 2) * vpr;
+  ctx.save();
+  try {
+    ctx.fillStyle = theme.text;
+    ctx.font = `${Math.round(11 * vpr)}px ui-monospace, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    let anterior: TimeParts | null = null;
+    for (let i = de; i <= ate; i += passo) {
+      const t = ts.times[i];
+      if (t === undefined) continue;
+      const p = timePartsInZone(t, cfg.timeZone);
+      if (p === null) continue;
+
+      const x = logicalToCoordinate(ts, i);
+      if (x === null) continue;
+      const cx = x * hpr;
+      if (cx < 0 || cx > w * hpr) {
+        anterior = p;
+        continue;
+      }
+
+      const rotulo = rotuloParaUnidade(unit, p, anterior);
+      ctx.fillText(rotulo, cx, yTexto);
+      anterior = p;
+    }
+  } finally {
+    ctx.restore();
+  }
+}
+
+/**
+ * Texto do rotulo conforme a unidade e a virada de calendario.
+ *
+ * `anterior` e a barra rotulada imediatamente antes; a comparacao com ela decide
+ * se este rotulo marca uma virada (dia/mes) e ganha a forma "grossa" (data), ou se
+ * e continuacao e ganha a forma "fina" (hora).
+ */
+function rotuloParaUnidade(
+  unit: ReturnType<typeof chooseTickUnit>,
+  p: TimeParts,
+  anterior: TimeParts | null,
+): string {
+  switch (unit) {
+    case 'second':
+      // Em segundo/minuto marca a virada de dia com a data; senao HH:mm:ss / HH:mm.
+      return anterior !== null && mudouODia(anterior, p) ? formatDiaMes(p) : formatHoraMinutoSegundo(p);
+    case 'minute':
+    case 'hour':
+      return anterior !== null && mudouODia(anterior, p) ? formatDiaMes(p) : formatHoraMinuto(p);
+    case 'day':
+      // Em escala de dias, a virada de mes ganha `MMM/yyyy`; os demais `dd/MMM`.
+      return anterior !== null && mudouOMes(anterior, p) ? formatMesAno(p) : formatDiaMes(p);
+    case 'month':
+      return formatMesAno(p);
+  }
+}
+
+/** Mediana grosseira do intervalo entre barras visiveis, em segundos. */
+function medianStepSeconds(ts: TimeScaleState, de: number, ate: number): number {
+  if (ate <= de) {
+    // Janela de uma barra so: usa qualquer par disponivel.
+    if (ts.times.length >= 2) {
+      const a = ts.times[ts.times.length - 2] as number;
+      const b = ts.times[ts.times.length - 1] as number;
+      return Math.max(1, b - a);
+    }
+    return 60;
+  }
+  const meio = (de + ate) >> 1;
+  const a = ts.times[meio];
+  const b = ts.times[meio + 1] ?? ts.times[meio - 1];
+  if (a === undefined || b === undefined) return 60;
+  return Math.max(1, Math.abs((b as number) - (a as number)));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -343,6 +567,79 @@ function drawCrosshair(
     ctx.moveTo(0, cross.y * vpr);
     ctx.lineTo(w * hpr, cross.y * vpr);
     ctx.stroke();
+  } finally {
+    ctx.restore();
+  }
+}
+
+/**
+ * Caixa de PRECO do crosshair, ancorada na borda direita, na altura do cursor.
+ *
+ * ⭐ E o que todo grafico de mercado tem: o operador le o valor exato sob o cursor
+ * sem contar pixel. A caixa e opaca — TAPA o rotulo fixo do eixo que fica atras.
+ */
+function drawPriceCrosshairLabel(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  cursorY: number,
+  w: number,
+  texto: string,
+  theme: RenderTheme,
+): void {
+  ctx.save();
+  try {
+    const fontePx = Math.round(11 * vpr);
+    ctx.font = `${fontePx}px ui-monospace, monospace`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    const padX = 6 * hpr;
+    const padY = 3 * vpr;
+    const alturaCaixa = fontePx + padY * 2;
+    const larguraCaixa = medirLargura(ctx, texto, fontePx) + padX * 2;
+    const yc = cursorY * vpr;
+    const xDireita = w * hpr;
+    ctx.fillStyle = theme.crosshairLabelBg;
+    ctx.fillRect(xDireita - larguraCaixa, yc - alturaCaixa / 2, larguraCaixa, alturaCaixa);
+    ctx.fillStyle = theme.crosshairLabelText;
+    ctx.fillText(texto, xDireita - padX, yc);
+  } finally {
+    ctx.restore();
+  }
+}
+
+/**
+ * Caixa de DATA/HORA do crosshair, ancorada na tira do eixo de tempo, na coluna
+ * do cursor. A tira ja foi transladada para sua origem pelo chamador.
+ */
+function drawTimeCrosshairLabel(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  cursorX: number,
+  w: number,
+  stripHeight: number,
+  texto: string,
+  theme: RenderTheme,
+): void {
+  ctx.save();
+  try {
+    const fontePx = Math.round(11 * vpr);
+    ctx.font = `${fontePx}px ui-monospace, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const padX = 6 * hpr;
+    const larguraCaixa = medirLargura(ctx, texto, fontePx) + padX * 2;
+    const meia = larguraCaixa / 2;
+    let cx = cursorX * hpr;
+    // Prende a caixa dentro do canvas para nao vazar nas bordas.
+    if (cx - meia < 0) cx = meia;
+    if (cx + meia > w * hpr) cx = w * hpr - meia;
+    const yc = (stripHeight / 2) * vpr;
+    ctx.fillStyle = theme.crosshairLabelBg;
+    ctx.fillRect(cx - meia, 0, larguraCaixa, stripHeight * vpr);
+    ctx.fillStyle = theme.crosshairLabelText;
+    ctx.fillText(texto, cx, yc);
   } finally {
     ctx.restore();
   }

@@ -94,7 +94,7 @@ export {
 } from './market-day.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Adaptador de referencia
+// Adaptador de referencia — profundidade sobre HTTP
 // ═════════════════════════════════════════════════════════════════════════════
 export {
   createHttpDepthSource,
@@ -106,3 +106,55 @@ export type {
   DepthUrlBuilder,
   HttpDepthSourceOptions,
 } from './http-depth-source.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Adaptador de referencia — barras sobre HTTP
+// ═════════════════════════════════════════════════════════════════════════════
+export {
+  createHttpBarsSource,
+  parseBarsDefault,
+  BARS_TIMEOUT_MS_DEFAULT,
+} from './http-bars-source.js';
+
+export type {
+  BarsUrlBuilder,
+  BarsParser,
+  HttpBarsSourceOptions,
+} from './http-bars-source.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Adaptador de referencia — barras ao vivo sobre WebSocket
+// ═════════════════════════════════════════════════════════════════════════════
+export {
+  createWsBarsSource,
+  WS_RECONNECT_INITIAL_MS_DEFAULT,
+  WS_RECONNECT_MAX_MS_DEFAULT,
+  WS_RECONNECT_FACTOR_DEFAULT,
+  WS_HEARTBEAT_MESSAGE_DEFAULT,
+} from './ws-bars-source.js';
+
+export type {
+  WebSocketLike,
+  WebSocketFactory,
+  MessageEventLike,
+  CloseEventLike,
+  WsMessageParser,
+  WsSubscribeMessageBuilder,
+  WsBarsSourceOptions,
+  ReconnectOptions,
+  HeartbeatOptions,
+  TimerLike,
+  WsBarsEvent,
+} from './ws-bars-source.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Agregacao pura — trades -> barras, e rollup de barras
+// ═════════════════════════════════════════════════════════════════════════════
+export {
+  aggregateTrades,
+  rollupBars,
+} from './aggregator.core.js';
+
+export type {
+  Trade,
+} from './aggregator.core.js';

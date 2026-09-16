@@ -301,6 +301,14 @@ export interface ChartOptions {
     readonly minBarSpacing: number;
     readonly timeVisible: boolean;
     readonly secondsVisible: boolean;
+    /**
+     * Fuso IANA dos rotulos do eixo de tempo. Ex.: `'America/Sao_Paulo'`, `'UTC'`.
+     *
+     * Injetavel de proposito: o mesmo grafico pode ser lido por uma mesa em Sao
+     * Paulo, um backtest em UTC e um painel em Chicago. Default `'America/Sao_Paulo'`
+     * (B3). NAO ha aritmetica de fuso a mao — vai inteiro para `Intl.DateTimeFormat`.
+     */
+    readonly timeZone?: string;
   };
   readonly rightPriceScale: { readonly scaleMargins: { readonly top: number; readonly bottom: number } };
   readonly handleScroll: HandleScrollOptions | boolean;

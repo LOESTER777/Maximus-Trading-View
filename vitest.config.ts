@@ -41,6 +41,7 @@ export default defineConfig({
       '@robustus/charts-datafeed': path.resolve(__dirname, 'packages/datafeed/src'),
       '@robustus/charts-drawings': path.resolve(__dirname, 'packages/drawings/src'),
       '@robustus/charts-engine': path.resolve(__dirname, 'packages/engine/src'),
+      '@robustus/charts-indicators': path.resolve(__dirname, 'packages/indicators/src'),
       '@robustus/charts-react': path.resolve(__dirname, 'packages/react/src'),
       '@robustus/charts-devtools': path.resolve(__dirname, 'packages/devtools/src'),
     },

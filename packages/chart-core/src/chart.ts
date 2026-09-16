@@ -54,7 +54,20 @@ import {
   priceToCoordinate,
   type PriceScaleState,
 } from './price-scale.core.js';
-import { DEFAULT_THEME, renderPane, type CrosshairState, type RenderTheme } from './renderer.js';
+import {
+  DEFAULT_THEME,
+  renderPane,
+  renderTimeAxis,
+  TIME_AXIS_HEIGHT,
+  type CrosshairState,
+  type RenderTheme,
+  type TimeAxisConfig,
+} from './renderer.js';
+import {
+  DEFAULT_TIME_ZONE,
+  formatDataHoraCompleta,
+  timePartsInZone,
+} from './time-format.core.js';
 import { SeriesImpl, type SeriesModel } from './series.js';
 import {
   coordinateToLogical,
@@ -83,13 +96,39 @@ interface Pane {
   /** Fracao da altura total que esta pane ocupa. */
   heightFraction: number;
   readonly series: SeriesImpl<SeriesType>[];
+  /**
+   * Escala de preco em modo MANUAL.
+   *
+   * `false` (default): autoescala a cada quadro pela janela visivel. `true`: o
+   * usuario arrastou o eixo de preco, entao a escala fica congelada — a autoescala
+   * arrancaria a faixa que ele acabou de definir. Volta a `false` no duplo-clique
+   * sobre o eixo.
+   */
+  priceScaleManual: boolean;
 }
+
+/**
+ * Largura reservada ao eixo de preco a direita, em pixel logico.
+ *
+ * ⚠️ Precisa bater com `priceScale().width()` (56): e a mesma faixa que o
+ * mapeador de coordenada do desenho ancora e a mesma onde o arrasto vertical
+ * escala o preco. Divergir aqui faria o arrasto "pegar" numa area diferente da que
+ * o eixo ocupa visualmente.
+ */
+const PRICE_AXIS_WIDTH = 56;
 
 const DEFAULT_OPTIONS: ChartOptions = {
   layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
   grid: { vertLines: { visible: false }, horzLines: { visible: true } },
   crosshair: { mode: 1 },
-  timeScale: { rightOffset: 12, barSpacing: 8, minBarSpacing: 2, timeVisible: true, secondsVisible: false },
+  timeScale: {
+    rightOffset: 12,
+    barSpacing: 8,
+    minBarSpacing: 2,
+    timeVisible: true,
+    secondsVisible: false,
+    timeZone: DEFAULT_TIME_ZONE,
+  },
   rightPriceScale: { scaleMargins: { top: 0.08, bottom: 0.2 } },
   handleScroll: true,
   handleScale: true,
@@ -109,6 +148,16 @@ export class RobustusChartCore implements IChartApi {
   private disposed = false;
 
   private crosshair: CrosshairState | null = null;
+
+  /** Fuso IANA dos rotulos do eixo de tempo. Injetavel; default B3. */
+  private timeZone: string = DEFAULT_TIME_ZONE;
+  /** Altura da faixa do eixo de tempo, em pixel logico. */
+  private readonly timeAxisHeight = TIME_AXIS_HEIGHT;
+  /** Ultima altura total medida (para distribuir panes + reservar o eixo). */
+  private totalHeight = 0;
+  /** Estado do arrasto vertical do eixo de preco. */
+  private scalingPriceAxis = false;
+  private scalingPane: Pane | null = null;
   private readonly rangeListeners = new Set<(r: LogicalRange | null) => void>();
   private readonly clickListeners = new Set<(p: MouseEventParams) => void>();
   private readonly crosshairListeners = new Set<(p: MouseEventParams) => void>();
@@ -133,6 +182,8 @@ export class RobustusChartCore implements IChartApi {
       gridVisible: this.opts.grid.horzLines.visible,
     };
 
+    this.timeZone = this.opts.timeScale.timeZone ?? DEFAULT_TIME_ZONE;
+
     this.ts = createTimeScaleState(
       this.opts.timeScale.barSpacing,
       this.opts.timeScale.minBarSpacing,
@@ -149,6 +200,7 @@ export class RobustusChartCore implements IChartApi {
         ),
         heightFraction: 1,
         series: [],
+        priceScaleManual: false,
       },
     ];
 
@@ -192,15 +244,24 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.height = Math.max(1, Math.round(h * this.dpr));
 
     this.ts.width = w;
+    this.totalHeight = h;
     this.distributePaneHeights(h);
     this.scheduleRender();
   }
 
-  /** Reparte a altura entre as panes conforme as fracoes. */
+  /**
+   * Reparte a altura entre as panes conforme as fracoes, RESERVANDO a faixa do
+   * eixo de tempo na base.
+   *
+   * ⚠️ A altura das panes soma `totalH - timeAxisHeight`, nao `totalH`. E o que
+   * impede as series de desenharem por cima dos rotulos de data/hora: a tira
+   * `[totalH - timeAxisHeight, totalH]` fica fora de toda pane, livre para o eixo.
+   */
   private distributePaneHeights(totalH: number): void {
+    const util = Math.max(1, totalH - this.timeAxisHeight);
     const soma = this.panes.reduce((a, p) => a + p.heightFraction, 0) || 1;
     for (const p of this.panes) {
-      p.priceScale.height = (p.heightFraction / soma) * totalH;
+      p.priceScale.height = (p.heightFraction / soma) * util;
     }
   }
 
@@ -253,6 +314,7 @@ export class RobustusChartCore implements IChartApi {
       priceScale: createPriceScaleState(0.15, 0.15),
       heightFraction: 0.38 / index,
       series: [],
+      priceScaleManual: false,
     });
     // Reequilibra sub-paineis existentes.
     for (let k = 1; k < this.panes.length; k++) {
@@ -327,6 +389,7 @@ export class RobustusChartCore implements IChartApi {
 
   applyOptions(options: Partial<ChartOptions>): void {
     this.opts = mergeOptions(this.opts, options);
+    this.timeZone = this.opts.timeScale.timeZone ?? DEFAULT_TIME_ZONE;
     this.theme = {
       ...this.theme,
       background: this.opts.layout.background.color,
@@ -378,6 +441,7 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
+    this.canvas.addEventListener('dblclick', this.onDoubleClick);
   }
 
   private teardownPointer(): void {
@@ -386,6 +450,7 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
     this.canvas.removeEventListener('wheel', this.onWheel);
+    this.canvas.removeEventListener('dblclick', this.onDoubleClick);
   }
 
   private scrollEnabled(): boolean {
@@ -399,8 +464,45 @@ export class RobustusChartCore implements IChartApi {
     return typeof h === 'boolean' ? h : h.mouseWheel;
   }
 
+  /** O ponto (pixel logico) cai sobre a faixa do eixo de preco, a direita? */
+  private isOnPriceAxis(x: number): boolean {
+    return x >= this.ts.width - PRICE_AXIS_WIDTH && x <= this.ts.width;
+  }
+
+  /** Qual pane contem o Y (pixel logico)? A ultima cujo topo <= y. */
+  private paneAtY(y: number): Pane | null {
+    let acc = 0;
+    for (const p of this.panes) {
+      if (y >= acc && y <= acc + p.priceScale.height) return p;
+      acc += p.priceScale.height;
+    }
+    return null;
+  }
+
   private readonly onPointerDown = (e: PointerEvent): void => {
-    if (e.button !== 0 || !this.scrollEnabled()) return;
+    if (e.button !== 0) return;
+    const r = this.canvas.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+
+    // Arrasto sobre o eixo de preco ESCALA o preco (nao faz pan). Tem precedencia
+    // sobre o pan porque o cursor esta sobre a faixa do eixo, nao sobre as velas.
+    if (this.scaleEnabled() && this.isOnPriceAxis(x)) {
+      const pane = this.paneAtY(y);
+      if (pane !== null) {
+        this.scalingPriceAxis = true;
+        this.scalingPane = pane;
+        this.lastPointerY = e.clientY;
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          /* ambiente sem captura */
+        }
+        return;
+      }
+    }
+
+    if (!this.scrollEnabled()) return;
     this.dragging = true;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
@@ -415,7 +517,11 @@ export class RobustusChartCore implements IChartApi {
     const r = this.canvas.getBoundingClientRect();
     this.crosshair = { x: e.clientX - r.left, y: e.clientY - r.top };
 
-    if (this.dragging && this.scrollEnabled()) {
+    if (this.scalingPriceAxis && this.scalingPane !== null) {
+      const dy = e.clientY - this.lastPointerY;
+      this.lastPointerY = e.clientY;
+      this.scalePriceAxis(this.scalingPane, dy);
+    } else if (this.dragging && this.scrollEnabled()) {
       const dx = e.clientX - this.lastPointerX;
       this.lastPointerX = e.clientX;
       this.lastPointerY = e.clientY;
@@ -428,15 +534,59 @@ export class RobustusChartCore implements IChartApi {
     this.scheduleRender();
   };
 
+  /**
+   * Escala o eixo de preco de uma pane pelo arrasto vertical, em torno do CENTRO.
+   *
+   * ⭐ Arrastar para BAIXO comprime a faixa (aproxima — `dy > 0` reduz o intervalo
+   * topo-base); para cima expande. A escala e em torno do centro do intervalo para
+   * o meio da tela ficar parado enquanto o operador "estica" o preco. Liga o modo
+   * manual: enquanto durar, a autoescala nao mexe mais na faixa.
+   */
+  private scalePriceAxis(pane: Pane, dyPx: number): void {
+    const ps = pane.priceScale;
+    const span = ps.topPrice - ps.bottomPrice;
+    if (!(span > 0) || ps.height <= 0) return;
+
+    // Fator suave e proporcional a fracao da altura arrastada — o mesmo principio
+    // do zoom por roda no eixo de tempo. dy>0 (para baixo) => fator<1 => comprime.
+    const fator = Math.exp(dyPx / ps.height);
+    const centro = (ps.topPrice + ps.bottomPrice) / 2;
+    const meia = (span * fator) / 2;
+    ps.topPrice = centro + meia;
+    ps.bottomPrice = centro - meia;
+    pane.priceScaleManual = true;
+  }
+
   private readonly onPointerUp = (e: PointerEvent): void => {
+    const estavaEscalando = this.scalingPriceAxis;
     this.dragging = false;
+    this.scalingPriceAxis = false;
+    this.scalingPane = null;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       /* ja solto */
     }
-    // Clique sem arrasto conta como click do grafico.
-    this.emitClick();
+    // Arrasto de escala nao e clique do grafico — nao emite.
+    if (!estavaEscalando) this.emitClick();
+  };
+
+  /**
+   * Duplo-clique sobre o eixo de preco RELIGA a autoescala daquela pane.
+   *
+   * E o par do arrasto que a desligou: o operador estica o eixo a mao e, quando
+   * quer voltar ao enquadramento automatico, da dois cliques no eixo. Fora do
+   * eixo, o duplo-clique nao faz nada aqui.
+   */
+  private readonly onDoubleClick = (e: MouseEvent): void => {
+    const r = this.canvas.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    if (!this.isOnPriceAxis(x)) return;
+    const pane = this.paneAtY(y);
+    if (pane === null) return;
+    pane.priceScaleManual = false;
+    this.scheduleRender();
   };
 
   private readonly onPointerLeave = (): void => {
@@ -540,6 +690,7 @@ export class RobustusChartCore implements IChartApi {
 
     for (const pane of this.panes) {
       const topo = this.paneTop(pane.index);
+      const local = this.crosshairInPane(pane, topo);
       ctx.save();
       try {
         // Recorta e translada para a faixa da pane, em pixel de bitmap.
@@ -557,8 +708,10 @@ export class RobustusChartCore implements IChartApi {
           pane.series.map((s) => s.model),
           this.theme,
           // Crosshair so na pane sob o cursor.
-          this.crosshairInPane(pane, topo),
+          local,
           true,
+          // Rotulo de preco do crosshair: so na pane efetivamente sob o cursor.
+          this.priceLabelForCrosshair(pane, local),
         );
 
         this.drawPriceLines(ctx, pane);
@@ -568,6 +721,69 @@ export class RobustusChartCore implements IChartApi {
         ctx.restore();
       }
     }
+
+    this.renderTimeAxisStrip(ctx);
+  }
+
+  /**
+   * Desenha o eixo de tempo na tira reservada abaixo de todas as panes.
+   *
+   * O eixo de tempo e um so, compartilhado — por isso desenha UMA vez, fora do
+   * laco de panes. A tira ocupa `[totalHeight - timeAxisHeight, totalHeight]`.
+   */
+  private renderTimeAxisStrip(ctx: CanvasRenderingContext2D): void {
+    if (!this.opts.timeScale.timeVisible) return;
+    const topo = this.totalHeight - this.timeAxisHeight;
+    if (topo <= 0 || this.ts.width <= 0) return;
+
+    const cfg: TimeAxisConfig = {
+      height: this.timeAxisHeight,
+      timeZone: this.timeZone,
+      secondsVisible: this.opts.timeScale.secondsVisible,
+    };
+    // Rotulo de data/hora do crosshair: coluna do cursor + tempo formatado.
+    const crossX = this.crosshair !== null ? this.crosshair.x : null;
+    const timeLabel = crossX !== null ? this.formatTimeLabel(crossX) : null;
+
+    ctx.save();
+    try {
+      ctx.beginPath();
+      ctx.rect(0, topo * this.dpr, this.ts.width * this.dpr, this.timeAxisHeight * this.dpr);
+      ctx.clip();
+      ctx.translate(0, topo * this.dpr);
+      renderTimeAxis(
+        ctx,
+        this.dpr,
+        this.dpr,
+        this.ts,
+        this.ts.width,
+        this.timeAxisHeight,
+        cfg,
+        this.theme,
+        crossX,
+        timeLabel,
+      );
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  /** Preco formatado sob o cursor, para a caixa de crosshair; `null` se fora. */
+  private priceLabelForCrosshair(pane: Pane, local: CrosshairState | null): string | null {
+    if (local === null || local.y < 0 || local.y > pane.priceScale.height) return null;
+    const preco = coordinateToPrice(pane.priceScale, local.y);
+    if (preco === null || !Number.isFinite(preco)) return null;
+    const span = pane.priceScale.topPrice - pane.priceScale.bottomPrice;
+    return preco.toFixed(decimalsForSpan(span));
+  }
+
+  /** Data/hora formatada sob o cursor, para a caixa do eixo de tempo. */
+  private formatTimeLabel(x: number): string | null {
+    const t = coordinateToTime(this.ts, x);
+    if (t === null) return null;
+    const p = timePartsInZone(t, this.timeZone);
+    if (p === null) return null;
+    return formatDataHoraCompleta(p, this.opts.timeScale.secondsVisible);
   }
 
   /** Reconstroi o eixo de tempo a partir da serie de preco mais longa da pane 0. */
@@ -589,6 +805,9 @@ export class RobustusChartCore implements IChartApi {
 
   /** Autoescala uma pane pelo min/max das barras visiveis das suas series. */
   private autoScalePane(pane: Pane): void {
+    // Escala manual: o usuario arrastou o eixo. A autoescala arrancaria a faixa
+    // que ele acabou de definir, entao pula ate o duplo-clique religar.
+    if (pane.priceScaleManual) return;
     const lr = visibleLogicalRange(this.ts);
     if (lr === null) return;
     const de = Math.max(0, Math.floor(lr.from));
@@ -707,6 +926,18 @@ export function createChart(container: HTMLElement, options?: Partial<ChartOptio
 // Auxiliares
 // ═════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Casas decimais adequadas a amplitude do eixo — mesma escada do rotulo fixo do
+ * eixo de preco (renderer.ts), para o rotulo do crosshair nao divergir dele.
+ */
+function decimalsForSpan(span: number): number {
+  if (span >= 100) return 0;
+  if (span >= 10) return 1;
+  if (span >= 1) return 2;
+  if (span >= 0.1) return 3;
+  return 4;
+}
+
 function mergeOptions(base: ChartOptions, over?: Partial<ChartOptions>): ChartOptions {
   if (over === undefined) return base;
   return {
@@ -717,6 +948,7 @@ function mergeOptions(base: ChartOptions, over?: Partial<ChartOptions>): ChartOp
     },
     crosshair: { ...base.crosshair, ...over.crosshair },
     timeScale: { ...base.timeScale, ...over.timeScale },
+    // timeScale spread acima ja carrega `timeZone` se veio no override.
     rightPriceScale: {
       scaleMargins: { ...base.rightPriceScale.scaleMargins, ...over.rightPriceScale?.scaleMargins },
     },

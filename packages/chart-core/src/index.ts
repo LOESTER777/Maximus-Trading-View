@@ -26,11 +26,17 @@
  * empilhados, linhas de preco, marcadores, e o contrato de primitive completo
  * (bookmap, footprint e desenho anexam sem mudanca).
  *
+ * FAZ TAMBEM (acrescentado): eixo de tempo com ROTULOS de data/hora desenhados na
+ * base (passo escolhido pelo zoom, virada de dia marcada, fuso injetavel via
+ * `Intl` — default `America/Sao_Paulo`), escala de preco INTERATIVA (arrasto
+ * vertical sobre o eixo escala em torno do centro e congela a autoescala;
+ * duplo-clique no eixo religa), e as CAIXAS de crosshair (preco na borda do eixo
+ * de preco, data/hora na borda do eixo de tempo).
+ *
  * AINDA NAO: escala logaritmica plenamente exercitada, animacao de transicao,
- * pinca em touch, eixo de tempo com rotulos de data desenhados (o eixo funciona;
- * os rotulos de data ainda nao sao pintados). Sao refinamentos — o grafico opera
- * sem eles, e foram deixados para depois de proposito, para o motor nascer usavel
- * em vez de nascer perfeito e tarde.
+ * pinca em touch. Sao refinamentos — o grafico opera sem eles, e foram deixados
+ * para depois de proposito, para o motor nascer usavel em vez de nascer perfeito
+ * e tarde.
  *
  * ⚠️ Este motor v1 e mais simples que o lightweight-charts, que teve anos de
  * ajuste. Priorizamos o que o projeto USA. Se algo faltar, e acrescimo aqui, nao
@@ -79,5 +85,13 @@ export type {
   TimeRange,
 } from './contracts.js';
 
-export { DEFAULT_THEME } from './renderer.js';
-export type { RenderTheme } from './renderer.js';
+export { DEFAULT_THEME, TIME_AXIS_HEIGHT } from './renderer.js';
+export type { RenderTheme, TimeAxisConfig } from './renderer.js';
+
+export {
+  DEFAULT_TIME_ZONE,
+  chooseTickUnit,
+  timePartsInZone,
+  formatDataHoraCompleta,
+} from './time-format.core.js';
+export type { TimeParts, TimeTickUnit } from './time-format.core.js';

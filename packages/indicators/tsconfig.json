@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // ⚠️ O pacote de indicadores e PURO: nada de DOM. A `lib` sem DOM e a
+    // barreira que faz um `document` ou `fetch` acidental virar erro de
+    // compilacao em vez de dependencia escondida. Como `core`, calcula numeros
+    // a partir de barras — nao conhece canvas nem rede.
+    "lib": ["ES2020"],
+    "types": []
+  },
+  // Sem `references`: este pacote nao depende de nenhum irmao (contratos e
+  // rolling.core sao locais). Vazio de proposito.
+  "references": [],
+  "include": ["src/**/*.ts"],
+  // Exclui __tests__ inteiro: `geradores.ts` (auxiliar de teste, sem sufixo
+  // .spec) importa fast-check, que nao e dependencia do pacote — nao pode vazar
+  // para o dist publicado.
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "src/**/__bench__/**", "src/__tests__/**"]
+}
