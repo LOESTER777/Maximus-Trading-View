@@ -33,6 +33,14 @@
  * duplo-clique no eixo religa), e as CAIXAS de crosshair (preco na borda do eixo
  * de preco, data/hora na borda do eixo de tempo).
  *
+ * FAZ TAMBEM (acrescentado depois): MARCADORES com forma real (circulo, quadrado,
+ * seta pra cima/baixo) e texto — antes desenhava sempre um circulo; serie 'Band'
+ * (faixa preenchida entre `upper` e `lower`, o preenchimento de Bollinger/Keltner);
+ * o evento de crosshair carrega o `seriesData` (OHLC/valor da barra sob o cursor,
+ * insumo da legenda O/H/L/C); e formatacao de preco por TICK/casas do instrumento
+ * (`rightPriceScale.priceFormat`), via o nucleo puro `price-format.core.ts`, com
+ * fallback na heuristica de amplitude quando nao configurada.
+ *
  * AINDA NAO: escala logaritmica plenamente exercitada, animacao de transicao,
  * pinca em touch. Sao refinamentos — o grafico opera sem eles, e foram deixados
  * para depois de proposito, para o motor nascer usavel em vez de nascer perfeito
@@ -53,9 +61,11 @@ export type {
 } from './canvas-target.js';
 
 export type {
+  BandData,
   CandlestickData,
   ChartOptions,
   Coordinate,
+  CrosshairSeriesData,
   HandleScaleOptions,
   HandleScrollOptions,
   IChartApi,
@@ -87,6 +97,16 @@ export type {
 
 export { DEFAULT_THEME, TIME_AXIS_HEIGHT } from './renderer.js';
 export type { RenderTheme, TimeAxisConfig } from './renderer.js';
+
+// Formatacao PURA de preco por tick/casas decimais — usada pelo eixo de preco e
+// pelo rotulo de crosshair quando o instrumento declara `priceFormat`.
+export {
+  formatPrice,
+  roundToTick,
+  decimalsFromTick,
+  PRICE_PLACEHOLDER,
+} from './price-format.core.js';
+export type { PriceFormatOptions } from './price-format.core.js';
 
 // Transformacoes de serie de velas: Heikin-Ashi e Renko produzem CandlestickData
 // derivado (plotado como 'Candlestick'); barras OHLC sao o SeriesType 'Bar' no

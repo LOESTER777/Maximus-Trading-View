@@ -80,17 +80,24 @@ export interface UseReplayResult {
 }
 
 /**
- * O `TimerLike` do browser. Fora do componente para ter identidade estavel — e
- * um objeto sem estado, so encaminha para `window`.
+ * Constroi o `TimerLike` do browser SOB DEMANDA, nunca no topo do modulo.
+ *
+ * ⚠️ **Nao pode ser uma constante de modulo.** Um `window.setInterval` avaliado
+ * no escopo do modulo e executado no INSTANTE do `import` — e no SSR (Next, teste
+ * em Node) `window` nao existe ali, entao o simples `import` deste hook derrubaria
+ * o servidor com `window is not defined`. Encapsular numa funcao adia o toque em
+ * `window` para o efeito, que so roda no cliente.
  *
  * ⚠️ `window.setInterval` num browser devolve `number`; a assinatura do
  * `TimerLike` promete `unknown`, entao o cast e so para satisfazer o contrato
  * generico. O `clearInterval` aceita o `number` de volta sem problema.
  */
-const browserTimer: TimerLike = {
-  setInterval: (cb, ms) => window.setInterval(cb, ms),
-  clearInterval: (h) => window.clearInterval(h as number),
-};
+function criarBrowserTimer(): TimerLike {
+  return {
+    setInterval: (cb, ms) => window.setInterval(cb, ms),
+    clearInterval: (h) => window.clearInterval(h as number),
+  };
+}
 
 /**
  * Reproduz um pregao barra a barra no ciclo do React.
@@ -122,7 +129,9 @@ export function useReplay(params: UseReplayParams): UseReplayResult {
   // que faz a fatia revelada crescer na tela durante o play.
   useEffect(() => {
     const { speed: s, tickMs: t, startAtEnd: end } = iniciais.current;
-    const controller = new ReplayController(browserTimer, {
+    // O timer e criado AQUI, dentro do efeito (so roda no cliente), nao no topo
+    // do modulo — ver `criarBrowserTimer`.
+    const controller = new ReplayController(criarBrowserTimer(), {
       bars,
       startPosition: end ? bars.length : 0,
       speed: s,

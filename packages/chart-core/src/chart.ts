@@ -33,6 +33,7 @@
 import { createCanvasTarget } from './canvas-target.js';
 import type {
   ChartOptions,
+  CrosshairSeriesData,
   HandleScrollOptions,
   IChartApi,
   IPriceScaleApi,
@@ -68,6 +69,7 @@ import {
   formatDataHoraCompleta,
   timePartsInZone,
 } from './time-format.core.js';
+import { formatPrice, type PriceFormatOptions } from './price-format.core.js';
 import { SeriesImpl, type SeriesModel } from './series.js';
 import {
   coordinateToLogical,
@@ -663,6 +665,49 @@ export class RobustusChartCore implements IChartApi {
     this.scheduleRender();
   };
 
+  /**
+   * A barra da serie de preco principal (pane 0) sob a coluna `x` do cursor.
+   *
+   * ⭐ E o insumo da legenda O/H/L/C: acha a barra pelo INDICE
+   * (`timeToIndex(findNearest)`), nao pelo tempo exato — o cursor cai entre barras
+   * o tempo todo, e a leitura de fita e "qual barra esta debaixo do cursor". Para
+   * Candlestick/Bar devolve {open,high,low,close}; para Line/Area {value}.
+   *
+   * Tolerante: sem serie de preco, sem dado ou indice fora da faixa devolve
+   * `undefined` — o campo entao nem aparece no evento, como manda o contrato.
+   * Usa a serie de preco MAIS LONGA da pane 0, a mesma fonte que `rebuildTimes`
+   * elege como verdade temporal.
+   */
+  private barSobCursor(x: number): CrosshairSeriesData | undefined {
+    const idx = timeToIndex(this.ts, coordinateToTime(this.ts, x) ?? NaN, true);
+    if (idx === null) return undefined;
+    const i = Math.round(idx);
+    if (i < 0) return undefined;
+
+    let fonte: SeriesModel | null = null;
+    for (const s of this.panes[0]!.series) {
+      const t = s.model.type;
+      if (t === 'Candlestick' || t === 'Bar' || t === 'Line' || t === 'Area') {
+        if (fonte === null || s.model.data.length > fonte.data.length) fonte = s.model;
+      }
+    }
+    if (fonte === null) return undefined;
+
+    const bar = fonte.data[i];
+    if (bar === undefined) return undefined;
+
+    const c = bar as { open?: number; high?: number; low?: number; close?: number; value?: number };
+    if (c.high !== undefined && c.low !== undefined) {
+      // OHLC (Candlestick/Bar).
+      return { open: c.open, high: c.high, low: c.low, close: c.close };
+    }
+    if (c.value !== undefined) {
+      // Ponto de valor (Line/Area).
+      return { value: c.value };
+    }
+    return undefined;
+  }
+
   private emitCrosshair(): void {
     if (this.crosshairListeners.size === 0) return;
     const p = this.crosshair;
@@ -673,6 +718,7 @@ export class RobustusChartCore implements IChartApi {
             point: { x: p.x, y: p.y },
             time: coordinateToTime(this.ts, p.x) ?? undefined,
             logical: coordinateToLogical(this.ts, p.x) ?? undefined,
+            seriesData: this.barSobCursor(p.x),
           };
     for (const l of this.crosshairListeners) {
       try {
@@ -769,6 +815,7 @@ export class RobustusChartCore implements IChartApi {
           true,
           // Rotulo de preco do crosshair: so na pane efetivamente sob o cursor.
           this.priceLabelForCrosshair(pane, local),
+          this.priceFormatOpts(),
         );
 
         this.drawPriceLines(ctx, pane);
@@ -830,8 +877,25 @@ export class RobustusChartCore implements IChartApi {
     if (local === null || local.y < 0 || local.y > pane.priceScale.height) return null;
     const preco = coordinateToPrice(pane.priceScale, local.y);
     if (preco === null || !Number.isFinite(preco)) return null;
+    // Com `priceFormat` configurado, a caixa usa o mesmo formato do eixo (tick/
+    // casas do instrumento) — para o rotulo do cursor bater com o rotulo fixo.
+    // Sem ele, a heuristica de amplitude, como antes.
+    const fmt = this.priceFormatOpts();
+    if (fmt !== undefined) return formatPrice(preco, fmt);
     const span = pane.priceScale.topPrice - pane.priceScale.bottomPrice;
     return preco.toFixed(decimalsForSpan(span));
+  }
+
+  /**
+   * Opcoes de formatacao de preco vindas de `rightPriceScale.priceFormat`, ou
+   * `undefined` quando nao configuradas (o motor entao usa a heuristica de
+   * amplitude). Ponto UNICO de leitura, para o eixo e o crosshair nao divergirem.
+   */
+  private priceFormatOpts(): PriceFormatOptions | undefined {
+    const pf = this.opts.rightPriceScale.priceFormat;
+    if (pf === undefined) return undefined;
+    if (pf.precision === undefined && pf.tickSize === undefined) return undefined;
+    return { precision: pf.precision, tickSize: pf.tickSize };
   }
 
   /** Data/hora formatada sob o cursor, para a caixa do eixo de tempo. */
@@ -853,6 +917,9 @@ export class RobustusChartCore implements IChartApi {
         s.model.type === 'Line' ||
         s.model.type === 'Area'
       ) {
+        // Banda de proposito FORA daqui: ela acompanha o preco, nunca e a fonte
+        // temporal — as velas (ou a linha/area) sao. Deixar a banda ditar o eixo
+        // faria a banda de um indicador definir os tempos do grafico inteiro.
         if (fonte === null || s.model.data.length > fonte.data.length) fonte = s.model;
       }
     }
@@ -882,7 +949,13 @@ export class RobustusChartCore implements IChartApi {
       for (let i = de; i <= ate && i < d.length; i++) {
         const b = d[i];
         if (b === undefined) continue;
-        if ((b as { high?: number }).high !== undefined) {
+        const banda = b as { upper?: number; lower?: number };
+        if (banda.upper !== undefined && banda.lower !== undefined) {
+          // Banda: a autoescala precisa englobar AMBAS as bordas, senao a faixa
+          // sairia cortada pela borda da pane no zoom-out.
+          if (Number.isFinite(banda.lower) && banda.lower < min) min = banda.lower;
+          if (Number.isFinite(banda.upper) && banda.upper > max) max = banda.upper;
+        } else if ((b as { high?: number }).high !== undefined) {
           const c = b as { high: number; low: number };
           if (c.low < min) min = c.low;
           if (c.high > max) max = c.high;
@@ -945,6 +1018,19 @@ export class RobustusChartCore implements IChartApi {
     }
   }
 
+  /**
+   * Desenha os marcadores de cada serie HONRANDO `shape` e `text`.
+   *
+   * ⚠️ O defeito que este metodo corrige: antes desenhava SEMPRE um `ctx.arc`
+   * (circulo), ignorando `m.shape` e `m.text` — o contrato (`SeriesMarker`) promete
+   * `'circle' | 'square' | 'arrowUp' | 'arrowDown'` e um `text` opcional, e nada
+   * disso chegava a tela. Compra/venda (seta pra cima/baixo) sao a leitura mais
+   * comum de marcador de mercado, e todas apareciam como bolinha indistinta.
+   *
+   * As formas sao geometria simples de canvas (nao dependem de fonte de icone).
+   * O ancoramento por posicao (aboveBar/belowBar/inBar) e preservado. Tolerante:
+   * marcador com tempo fora da serie e PULADO, como antes.
+   */
   private drawMarkers(ctx: CanvasRenderingContext2D, pane: Pane): void {
     for (const s of pane.series) {
       for (const m of s.model.markers) {
@@ -961,11 +1047,76 @@ export class RobustusChartCore implements IChartApi {
           const y = preco !== undefined ? priceToCoordinate(pane.priceScale, preco) : null;
           if (y !== null) yBase = y + (m.position === 'aboveBar' ? -12 : m.position === 'belowBar' ? 12 : 0);
         }
-        ctx.fillStyle = m.color;
-        ctx.beginPath();
-        ctx.arc(x * this.dpr, yBase * this.dpr, (m.size ?? 4) * this.dpr, 0, Math.PI * 2);
-        ctx.fill();
+
+        const cx = x * this.dpr;
+        const cy = yBase * this.dpr;
+        const r = (m.size ?? 4) * this.dpr;
+
+        ctx.save();
+        try {
+          ctx.fillStyle = m.color;
+          ctx.strokeStyle = m.color;
+          this.desenharFormaMarcador(ctx, m.shape, cx, cy, r);
+
+          if (m.text !== undefined && m.text.length > 0) {
+            // Texto do marcador: abaixo quando ancorado acima da barra, acima
+            // quando abaixo — sempre "afastando" o texto da vela para nao cobri-la.
+            const acima = m.position === 'belowBar';
+            const fontePx = Math.round(10 * this.dpr);
+            ctx.font = `${fontePx}px ui-sans-serif, system-ui, sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = acima ? 'bottom' : 'top';
+            const dy = acima ? -(r + 3 * this.dpr) : r + 3 * this.dpr;
+            ctx.fillText(m.text, cx, cy + dy);
+          }
+        } finally {
+          ctx.restore();
+        }
       }
+    }
+  }
+
+  /**
+   * Rasteriza UMA forma de marcador no ponto (cx, cy) de bitmap, raio/meia-aresta
+   * `r`. Formas simples em canvas — circulo, quadrado e as duas setas triangulares.
+   *
+   * ⭐ A seta e um triangulo cheio apontando na direcao do nome: `arrowUp` com o
+   * vertice em cima (sinal de compra abaixo da barra), `arrowDown` com o vertice
+   * embaixo (venda acima da barra). E a leitura classica de fita.
+   */
+  private desenharFormaMarcador(
+    ctx: CanvasRenderingContext2D,
+    shape: 'circle' | 'square' | 'arrowUp' | 'arrowDown',
+    cx: number,
+    cy: number,
+    r: number,
+  ): void {
+    ctx.beginPath();
+    switch (shape) {
+      case 'square':
+        ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+        return;
+      case 'arrowUp':
+        // Vertice no topo, base embaixo.
+        ctx.moveTo(cx, cy - r);
+        ctx.lineTo(cx + r, cy + r);
+        ctx.lineTo(cx - r, cy + r);
+        ctx.closePath();
+        ctx.fill();
+        return;
+      case 'arrowDown':
+        // Vertice embaixo, base em cima.
+        ctx.moveTo(cx, cy + r);
+        ctx.lineTo(cx + r, cy - r);
+        ctx.lineTo(cx - r, cy - r);
+        ctx.closePath();
+        ctx.fill();
+        return;
+      case 'circle':
+      default:
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.fill();
+        return;
     }
   }
 
@@ -1013,6 +1164,8 @@ function mergeOptions(base: ChartOptions, over?: Partial<ChartOptions>): ChartOp
     // timeScale spread acima ja carrega `timeZone` se veio no override.
     rightPriceScale: {
       scaleMargins: { ...base.rightPriceScale.scaleMargins, ...over.rightPriceScale?.scaleMargins },
+      // priceFormat: o override vence; senao mantem o da base (pode ser undefined).
+      priceFormat: over.rightPriceScale?.priceFormat ?? base.rightPriceScale.priceFormat,
     },
     handleScroll: over.handleScroll ?? base.handleScroll,
     handleScale: over.handleScale ?? base.handleScale,

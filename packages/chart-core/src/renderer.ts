@@ -20,6 +20,7 @@ import {
   type TimeScaleState,
 } from './time-scale.core.js';
 import { priceToCoordinate, priceTicks, type PriceScaleState } from './price-scale.core.js';
+import { formatPrice, type PriceFormatOptions } from './price-format.core.js';
 import {
   chooseTickUnit,
   formatDiaMes,
@@ -112,6 +113,12 @@ export function renderPane(
   mostrarEixoPreco: boolean,
   /** Preco sob o cursor, ja formatado, para a caixa de crosshair no eixo. */
   priceLabel: string | null = null,
+  /**
+   * Formatacao de preco do eixo (tick/casas). Ausente => heuristica de amplitude.
+   * So afeta os ROTULOS FIXOS do eixo; o rotulo de crosshair chega ja formatado
+   * em `priceLabel` (o chamador aplica o mesmo formato la, para os dois baterem).
+   */
+  priceFormat?: PriceFormatOptions,
 ): void {
   const w = ts.width;
   const h = ps.height;
@@ -126,7 +133,7 @@ export function renderPane(
 
   for (const s of series) drawSeries(ctx, hpr, vpr, ts, ps, s, theme);
 
-  if (mostrarEixoPreco) drawPriceAxis(ctx, hpr, vpr, ps, w, theme);
+  if (mostrarEixoPreco) drawPriceAxis(ctx, hpr, vpr, ps, w, theme, priceFormat);
 
   if (crosshair !== null) {
     drawCrosshair(ctx, hpr, vpr, crosshair, w, h, theme);
@@ -206,16 +213,21 @@ function drawPriceAxis(
   ps: PriceScaleState,
   w: number,
   theme: RenderTheme,
+  priceFormat?: PriceFormatOptions,
 ): void {
   ctx.fillStyle = theme.text;
   ctx.font = `${Math.round(11 * vpr)}px ui-monospace, monospace`;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
+  // Com `priceFormat` (tick/casas do instrumento) o rotulo vem do formatador
+  // puro; sem ele, cai na heuristica de amplitude — o comportamento anterior.
+  const usaTick = priceFormat !== undefined;
   const casas = decimalsFor(ps.topPrice - ps.bottomPrice);
   for (const p of priceTicks(ps)) {
     const y = priceToCoordinate(ps, p);
     if (y === null) continue;
-    ctx.fillText(p.toFixed(casas), (w - 6) * hpr, y * vpr);
+    const texto = usaTick ? formatPrice(p, priceFormat) : p.toFixed(casas);
+    ctx.fillText(texto, (w - 6) * hpr, y * vpr);
   }
 }
 
@@ -386,6 +398,7 @@ function drawSeries(
   if (s.type === 'Candlestick') drawCandles(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
   else if (s.type === 'Bar') drawBars(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
   else if (s.type === 'Histogram') drawHistogram(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
+  else if (s.type === 'Band') drawBand(ctx, hpr, vpr, ts, ps, s, de, ate);
   else drawLineOrArea(ctx, hpr, vpr, ts, ps, s, de, ate);
 }
 
@@ -536,6 +549,12 @@ interface ValueLike {
   readonly color?: string;
 }
 
+/** Forma minima de um ponto de banda: a faixa [lower, upper] num instante. */
+interface BandLike {
+  readonly upper: number;
+  readonly lower: number;
+}
+
 function drawHistogram(
   ctx: CanvasRenderingContext2D,
   hpr: number,
@@ -607,6 +626,79 @@ function drawLineOrArea(
     ctx.fillStyle = cor;
     ctx.fill();
     ctx.globalAlpha = 1;
+  }
+}
+
+/**
+ * Desenha a FAIXA preenchida de uma banda (Bollinger/Keltner) entre `upper` e
+ * `lower`, com alpha baixo — o preenchimento tenue que da corpo a banda sem
+ * competir com as velas.
+ *
+ * ⭐ O poligono e montado percorrendo o `upper` da esquerda para a direita e
+ * voltando pelo `lower` da direita para a esquerda — o mesmo truque de "ida e
+ * volta" da area, mas fechando entre DUAS series moveis em vez de contra a base.
+ * Alpha 0.12: medido para a faixa "aparecer" sobre fundo escuro sem borrar a
+ * vela; abaixo de ~0.08 some, acima de ~0.2 encardida a leitura do preco.
+ *
+ * ⚠️ Ponto com upper/lower nao-finito interrompe a faixa (fecha o poligono
+ * corrente e recomeca), em vez de ligar por cima do buraco — durante o
+ * aquecimento a banda nao existe, e uma faixa "chapada" ligando o vazio mentiria.
+ */
+function drawBand(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  ts: TimeScaleState,
+  ps: PriceScaleState,
+  s: SeriesModel,
+  de: number,
+  ate: number,
+): void {
+  const cor = (s.options.color as string) ?? '#38bdf8';
+  const pontos = s.data as readonly BandLike[];
+
+  ctx.save();
+  try {
+    ctx.fillStyle = cor;
+    ctx.globalAlpha = 0.12;
+
+    // Acumula os segmentos CONTIGUOS (sem buraco) e pinta cada um como um poligono
+    // fechado ida-volta. `upper` na ida, `lower` na volta.
+    let seg: Array<{ x: number; yU: number; yL: number }> = [];
+    const pintar = (): void => {
+      if (seg.length < 2) {
+        seg = [];
+        return;
+      }
+      ctx.beginPath();
+      // Ida pelo topo.
+      ctx.moveTo(seg[0]!.x, seg[0]!.yU);
+      for (let k = 1; k < seg.length; k++) ctx.lineTo(seg[k]!.x, seg[k]!.yU);
+      // Volta pela base.
+      for (let k = seg.length - 1; k >= 0; k--) ctx.lineTo(seg[k]!.x, seg[k]!.yL);
+      ctx.closePath();
+      ctx.fill();
+      seg = [];
+    };
+
+    for (let i = de; i <= ate; i++) {
+      const d = pontos[i];
+      if (d === undefined || !Number.isFinite(d.upper) || !Number.isFinite(d.lower)) {
+        pintar();
+        continue;
+      }
+      const x = logicalToCoordinate(ts, i);
+      const yU = priceToCoordinate(ps, d.upper);
+      const yL = priceToCoordinate(ps, d.lower);
+      if (x === null || yU === null || yL === null) {
+        pintar();
+        continue;
+      }
+      seg.push({ x: x * hpr, yU: yU * vpr, yL: yL * vpr });
+    }
+    pintar();
+  } finally {
+    ctx.restore();
   }
 }
 

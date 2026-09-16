@@ -161,6 +161,18 @@ export interface OutputSpec {
   readonly color?: string;
   /** Linhas de referencia horizontais (RSI 30/70, por exemplo). */
   readonly referenceLines?: readonly number[];
+  /**
+   * Papel desta saida numa BANDA (Bollinger, Keltner).
+   *
+   * ⭐ Marca as tres saidas de um mesmo indicador como partes de uma faixa: as
+   * marcadas `'upper'` e `'lower'` delimitam o preenchimento; `'middle'` e a
+   * linha central. NAO muda o `plot` da saida (as linhas continuam sendo linha) —
+   * e um dado A MAIS que diz ao plotter "monte tambem uma faixa preenchida entre
+   * a `upper` e a `lower` deste indicador". Ausente = saida solta, sem banda.
+   *
+   * O CALCULO do indicador nao muda por causa disto; so a forma de plotar.
+   */
+  readonly band?: 'upper' | 'lower' | 'middle';
 }
 
 /** Tudo que descreve um indicador sem calcula-lo. */

@@ -30,9 +30,11 @@ import {
   useIndicators,
   useAlerts,
   useReplay,
+  useCrosshair,
+  useChartState,
 } from '@robustus/charts-react';
 import type { ActiveTool, SnapBar } from '@robustus/charts-drawings';
-import type { IndicatorPlot, PriceSeriesType } from '@robustus/charts-engine';
+import type { IndicatorPlot, PriceSeriesType, IndicatorState } from '@robustus/charts-engine';
 import { emaFactory, bollingerFactory, rsiFactory, macdFactory } from '@robustus/charts-indicators';
 import type { AlertSpec } from '@robustus/charts-react';
 import { makeSyntheticBundle } from './synthetic.js';
@@ -174,6 +176,19 @@ function App(): JSX.Element {
   // Indicadores seguem a fatia EXIBIDA, para o que se calcula ser o que se ve.
   useIndicators({ engine, plots, bars: velasExibidas });
 
+  // ── LEGENDA OHLC ────────────────────────────────────────────────────────
+  //
+  // Le a barra sob o cursor. O motor entrega O/H/L/C no evento; esta legenda e
+  // HTML, montada pelo consumidor — o motor nao desenha legenda de proposito.
+  const ohlc = useCrosshair({ engine });
+
+  // ── PERSISTENCIA DE LAYOUT ──────────────────────────────────────────────
+  //
+  // Salva/restaura tipo de grafico, indicadores, alertas e desenhos no
+  // localStorage. E o que separa "pecas" de "cliente": o operador reencontra o
+  // que montou.
+  const { capture, restore } = useChartState();
+
   // ── ALERTAS DE PRECO ──────────────────────────────────────────────────────
   //
   // Dois alertas de exemplo, derivados da faixa do pregao para sempre haver o
@@ -216,6 +231,61 @@ function App(): JSX.Element {
         : [],
     [alertasLigados, niveis],
   );
+
+  // Os indicadores ligados, no formato serializavel (id + nome no registry +
+  // params). O restore religa os toggles a partir disto.
+  const indicadoresState = useMemo<IndicatorState[]>(() => {
+    const lista: IndicatorState[] = [];
+    if (emaOn) lista.push({ id: 'ema20', name: 'ema', params: { period: 20 } });
+    if (bbOn) lista.push({ id: 'bb', name: 'bollinger', params: { period: 20, mult: 2 } });
+    if (rsiOn) lista.push({ id: 'rsi', name: 'rsi', params: { period: 14 } });
+    if (macdOn) lista.push({ id: 'macd', name: 'macd' });
+    return lista;
+  }, [emaOn, bbOn, rsiOn, macdOn]);
+
+  const salvarLayout = (): void => {
+    const doc = capture({
+      symbol: 'SINTETICO',
+      priceSeriesType: serieAtual,
+      indicators: indicadoresState,
+      alerts: alertSpecs.map((s) => ({ key: s.key, condition: s.condition, mode: s.options?.mode })),
+      drawings: desenho.drawings,
+    });
+    localStorage.setItem('robustus-layout', JSON.stringify(doc));
+    setTick((n) => n + 1);
+  };
+
+  const restaurarLayout = (): void => {
+    const bruto = localStorage.getItem('robustus-layout');
+    if (bruto === null) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(bruto);
+    } catch {
+      return; // localStorage corrompido: ignora, o restore nem chega a rodar
+    }
+    const { state } = restore(parsed);
+    // Aplica o tipo de grafico. Heikin-Ashi/Renko sao transformacao (plotam como
+    // Candlestick), entao mapeamos o SeriesType de volta para o modo mais direto.
+    const modoDoTipo: ModoGrafico =
+      state.priceSeriesType === 'Line'
+        ? 'LINHA'
+        : state.priceSeriesType === 'Area'
+          ? 'AREA'
+          : state.priceSeriesType === 'Bar'
+            ? 'BARRAS'
+            : 'VELA';
+    setModo(modoDoTipo);
+    // Religa os toggles de indicador pelo nome salvo.
+    const nomes = new Set(state.indicators.map((i) => i.name));
+    setEmaOn(nomes.has('ema'));
+    setBbOn(nomes.has('bollinger'));
+    setRsiOn(nomes.has('rsi'));
+    setMacdOn(nomes.has('macd'));
+    // Desenhos: carrega no controlador.
+    desenho.load(state.drawings.drawings as never);
+    setTick((n) => n + 1);
+  };
 
   void tick; // forca re-render quando a colecao de desenho muda
 
@@ -262,6 +332,12 @@ function App(): JSX.Element {
           </button>
           <button type="button" onClick={() => setMostrarBookmap((v) => !v)} style={botao(mostrarBookmap)}>
             Bookmap {mostrarBookmap ? 'on' : 'off'}
+          </button>
+          <button type="button" onClick={salvarLayout} style={botao(false)}>
+            Salvar
+          </button>
+          <button type="button" onClick={restaurarLayout} style={botao(false)}>
+            Restaurar
           </button>
         </div>
       </header>
@@ -322,7 +398,43 @@ function App(): JSX.Element {
       </div>
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
+        <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
+          {/* Legenda O/H/L/C sobre o grafico, alimentada pelo crosshair. */}
+          <div
+            style={{
+              position: 'absolute',
+              top: 8,
+              left: 12,
+              zIndex: 2,
+              fontSize: 12,
+              fontFamily: 'ui-monospace, monospace',
+              color: '#cbd5e1',
+              pointerEvents: 'none',
+              display: 'flex',
+              gap: 10,
+            }}
+          >
+            {ohlc.close !== null ? (
+              <>
+                <span>O <b style={{ color: '#e2e8f0' }}>{ohlc.open?.toFixed(1)}</b></span>
+                <span>H <b style={{ color: '#e2e8f0' }}>{ohlc.high?.toFixed(1)}</b></span>
+                <span>L <b style={{ color: '#e2e8f0' }}>{ohlc.low?.toFixed(1)}</b></span>
+                <span>C <b style={{ color: '#e2e8f0' }}>{ohlc.close?.toFixed(1)}</b></span>
+                {ohlc.changePercent !== null && (
+                  <span style={{ color: ohlc.change! >= 0 ? '#16c784' : '#ea3943' }}>
+                    {ohlc.change! >= 0 ? '+' : ''}
+                    {ohlc.changePercent.toFixed(2)}%
+                  </span>
+                )}
+              </>
+            ) : ohlc.value !== null ? (
+              <span>Valor <b style={{ color: '#e2e8f0' }}>{ohlc.value.toFixed(1)}</b></span>
+            ) : (
+              <span style={{ color: '#64748b' }}>passe o cursor no gráfico</span>
+            )}
+          </div>
+          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+        </div>
 
         {/* Painel de alertas */}
         <aside

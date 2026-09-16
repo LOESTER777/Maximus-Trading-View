@@ -74,7 +74,16 @@ export interface TimeRange {
  * TRANSFORMADO (ver `candle-transforms.core.ts`) e o consumidor os plota como
  * `'Candlestick'`.
  */
-export type SeriesType = 'Candlestick' | 'Bar' | 'Line' | 'Histogram' | 'Area';
+/**
+ * ⭐ `'Band'` e uma FAIXA preenchida entre dois precos por instante
+ * (`upper`/`lower`), pintada com alpha baixo — o preenchimento de Bollinger e
+ * Keltner. Nao substitui as linhas: o consumidor plota a banda para o miolo e
+ * linhas por cima para as bordas. Foi escolhido um SeriesType proprio, e nao uma
+ * variacao da serie de Area, porque a Area preenche ate a BASE do eixo (uma
+ * referencia fixa), enquanto a banda preenche entre duas series que se movem —
+ * geometria diferente, dado diferente (`BandData`), rasterizacao diferente.
+ */
+export type SeriesType = 'Candlestick' | 'Bar' | 'Line' | 'Histogram' | 'Area' | 'Band';
 
 /** Uma vela. Campos identicos ao `CandlestickData` que o engine usava. */
 export interface CandlestickData {
@@ -93,7 +102,21 @@ export interface LineData {
   readonly color?: string;
 }
 
-export type SeriesData = CandlestickData | LineData;
+/**
+ * Um ponto de banda: a faixa `[lower, upper]` num instante.
+ *
+ * ⚠️ `upper` e `lower` sao ambos precos no MESMO eixo — nao ha "valor" unico. O
+ * preenchimento vai de um ao outro. A ordem nao precisa ser garantida pelo
+ * chamador: o renderer trata `upper < lower` desenhando a faixa mesmo assim (a
+ * area entre os dois nao tem orientacao).
+ */
+export interface BandData {
+  readonly time: Time;
+  readonly upper: number;
+  readonly lower: number;
+}
+
+export type SeriesData = CandlestickData | LineData | BandData;
 
 /** Opcoes comuns a toda serie. */
 export interface SeriesOptionsCommon {
@@ -318,7 +341,18 @@ export interface ChartOptions {
      */
     readonly timeZone?: string;
   };
-  readonly rightPriceScale: { readonly scaleMargins: { readonly top: number; readonly bottom: number } };
+  readonly rightPriceScale: {
+    readonly scaleMargins: { readonly top: number; readonly bottom: number };
+    /**
+     * Formatacao de preco do eixo e do rotulo de crosshair.
+     *
+     * ⭐ Opcional: quando o instrumento e conhecido (tick 0.5 de mini-indice,
+     * 0.00001 de forex), o motor formata pelo INSTRUMENTO em vez de pela
+     * amplitude visivel. Ausente, cai na heuristica de amplitude (`decimalsForSpan`)
+     * — o comportamento anterior, preservado para quem nao configura tick.
+     */
+    readonly priceFormat?: { readonly precision?: number; readonly tickSize?: number };
+  };
   readonly handleScroll: HandleScrollOptions | boolean;
   readonly handleScale: HandleScaleOptions | boolean;
   readonly autoSize: boolean;
@@ -357,10 +391,33 @@ export interface IChartApi extends IChartApiBase {
   remove(): void;
 }
 
+/**
+ * O dado da barra sob o cursor, para a serie de preco principal.
+ *
+ * Uniao aberta: OHLC para `Candlestick`/`Bar`, `value` para `Line`/`Area`. E o
+ * insumo minimo para o consumidor montar a legenda O/H/L/C — o motor NAO desenha
+ * legenda, so entrega o dado. Ausente quando nao ha barra sob o cursor.
+ */
+export interface CrosshairSeriesData {
+  readonly open?: number;
+  readonly high?: number;
+  readonly low?: number;
+  readonly close?: number;
+  readonly value?: number;
+}
+
 /** O que chega num evento de mouse do grafico. */
 export interface MouseEventParams {
   readonly time?: Time;
   readonly logical?: Logical;
   readonly point?: { readonly x: Coordinate; readonly y: Coordinate };
   readonly hoveredObjectId?: string;
+  /**
+   * Dado da barra sob o cursor na serie de preco principal (pane 0).
+   *
+   * Opcional e tolerante: sem barra sob o cursor (grafico vazio, cursor fora da
+   * faixa de dados), o campo simplesmente NAO vem. E o que permite a legenda
+   * O/H/L/C sem o motor precisar conhecer legenda.
+   */
+  readonly seriesData?: CrosshairSeriesData;
 }

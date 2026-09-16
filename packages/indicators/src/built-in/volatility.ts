@@ -213,9 +213,12 @@ export const bollingerFactory: IndicatorFactory = (() => {
     category: 'volatility',
     params: specs,
     outputs: [
-      { key: 'upper', label: 'Superior', plot: 'line', pane: 'price' },
-      { key: 'middle', label: 'Media', plot: 'line', pane: 'price' },
-      { key: 'lower', label: 'Inferior', plot: 'line', pane: 'price' },
+      // As tres formam uma banda: upper/lower delimitam o preenchimento, middle e
+      // a linha central. `band` nao muda o calculo, so instrui o plotter a pintar
+      // a faixa entre upper e lower alem de desenhar as linhas.
+      { key: 'upper', label: 'Superior', plot: 'line', pane: 'price', band: 'upper' },
+      { key: 'middle', label: 'Media', plot: 'line', pane: 'price', band: 'middle' },
+      { key: 'lower', label: 'Inferior', plot: 'line', pane: 'price', band: 'lower' },
     ],
     warmup: (p) => Math.round(numParam(p, pSpec)),
   };
@@ -282,9 +285,11 @@ export const keltnerFactory: IndicatorFactory = (() => {
     category: 'volatility',
     params: specs,
     outputs: [
-      { key: 'upper', label: 'Superior', plot: 'line', pane: 'price' },
-      { key: 'middle', label: 'Media', plot: 'line', pane: 'price' },
-      { key: 'lower', label: 'Inferior', plot: 'line', pane: 'price' },
+      // Banda de Keltner: mesma modelagem da Bollinger — upper/lower delimitam o
+      // preenchimento, middle e a EMA central.
+      { key: 'upper', label: 'Superior', plot: 'line', pane: 'price', band: 'upper' },
+      { key: 'middle', label: 'Media', plot: 'line', pane: 'price', band: 'middle' },
+      { key: 'lower', label: 'Inferior', plot: 'line', pane: 'price', band: 'lower' },
     ],
     warmup: (p) => Math.max(Math.round(numParam(p, pSpec)), Math.round(numParam(p, atrSpec))),
   };

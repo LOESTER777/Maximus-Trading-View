@@ -46,6 +46,12 @@ export type {
 export { useReplay } from './useReplay.js';
 export type { UseReplayParams, UseReplayResult } from './useReplay.js';
 
+export { useCrosshair } from './useCrosshair.js';
+export type { UseCrosshairParams, CrosshairReadout } from './useCrosshair.js';
+
+export { useChartState } from './useChartState.js';
+export type { UseChartStateResult, CaptureInput } from './useChartState.js';
+
 export { RobustusChart } from './RobustusChart.js';
 export type { RobustusChartProps } from './RobustusChart.js';
 

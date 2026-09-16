@@ -1,34 +1,50 @@
-# Robustus Charts
+# Maximus Trading View
 
-Biblioteca de visualização de mercado: **bookmap** (heatmap de livro por região
-de preço), **footprint**, **perfil de volume** e a aritmética de desenho que os
-sustenta. Agnóstica de fonte de dados e de framework.
+Biblioteca de charting de mercado **própria**, em canvas puro, **sem nenhum
+terceiro** — nem `lightweight-charts`, nem `fancy-canvas`, nem widget da
+TradingView. Motor de renderização, indicadores técnicos, ferramentas de desenho,
+alertas de preço, replay de mercado e as camadas de fluxo de ordem (bookmap,
+footprint, perfil de volume), todos construídos aqui.
 
-Existe para que qualquer ferramenta possa desenhar fluxo de ordem sem depender de
-provedor de gráfico de terceiro.
-
-## Estado
-
-| Pacote | O que é | Situação |
-|---|---|---|
-| `@robustus/charts-core` | Núcleos puros: agregação por zoom, escala de cor por percentil, célula→pixel, decodificação colunar, cobertura, paredes, perfil, footprint | ✅ copiado e verificado |
-| `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive` | ✅ copiado e verificado |
-| `@robustus/charts-devtools` | Bancada de desempenho com dublês de canvas e relógio injetável | ✅ copiado e verificado |
-| `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados + dia de mercado + adaptador HTTP de referência | ✅ novo |
-| `@robustus/charts-drawings` | 8 ferramentas de desenho, hit-test, histórico, persistência | ✅ novo |
-| `@robustus/charts-engine` | Motor sem framework sobre o substrato | ✅ novo |
-| `@robustus/charts-react` | `useChartEngine`, `useDrawings`, `<RobustusChart />` | ✅ novo |
-
-**703 testes passando em 31 arquivos.** 519 deles vieram junto com o código copiado:
-é essa suíte que prova que a extração não mudou comportamento.
+Existe para que qualquer ferramenta desenhe mercado — velas, fluxo, indicadores,
+anotações — sem depender de provedor de gráfico de terceiro.
 
 ```bash
 npm install
-npm test          # 703 testes
+npm test          # 988 testes, 51 arquivos
 npm run build     # compila todos os pacotes
+npm run dev -w @robustus/charts-playground   # http://127.0.0.1:5173
 ```
 
-### Uso mínimo
+## Pacotes
+
+| Pacote | O que é |
+|---|---|
+| `@robustus/charts-core` | Núcleos puros (sem DOM): agregação por zoom, escala de cor por percentil, decodificação colunar, perfil de volume, footprint |
+| `@robustus/chart-core` | **Motor de renderização próprio** em canvas: eixo de tempo com sessão irregular, autoescala, pan/zoom, crosshair com rótulos, sub-painéis, marcadores com forma, banda, formatação de preço |
+| `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive` |
+| `@robustus/charts-indicators` | 20 indicadores incrementais (SMA/EMA/WMA/RMA/DEMA/TEMA, RSI/Stoch/CCI/Williams %R/ROC/Momentum, ATR/StdDev/Bollinger/Keltner, MACD/ADX/OBV/VWAP) |
+| `@robustus/charts-drawings` | 8 ferramentas de desenho, hit-test priorizado, ímã ao OHLC, desfazer/refazer, persistência versionada |
+| `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados: dia de mercado, HTTP bars/depth, WS ao vivo com reconexão, agregador de timeframes |
+| `@robustus/charts-alerts` | Motor puro de alerta de preço, máquina ARMED→TRIGGERED sem repique |
+| `@robustus/charts-replay` | Replay de mercado determinístico, relógio injetado, pausa no fim |
+| `@robustus/charts-engine` | Motor sem framework + persistência de layout (`serializeChartState`) |
+| `@robustus/charts-react` | Hooks finos: `useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, e `<RobustusChart />` |
+| `@robustus/charts-devtools` | Bancada de desempenho com dublês de canvas |
+
+## Recursos
+
+- **Tipos de gráfico:** velas, barras OHLC, linha, área, Heikin-Ashi e Renko.
+- **Indicadores incrementais** (`warmup`+`update`+`preview` O(1)): sobre o preço
+  ou em sub-painel próprio, com bandas preenchidas (Bollinger, Keltner).
+- **Ferramentas de desenho:** linha, raio, reta, horizontal, vertical, retângulo,
+  Fibonacci e régua — com ímã ao OHLC, seleção, edição por alça e histórico.
+- **Alertas de preço:** cruzamento, toque, faixa e variação percentual, sem repique.
+- **Replay de mercado:** reproduz o pregão barra a barra, com play/pause/velocidade.
+- **Legenda O/H/L/C** sob o cursor e **persistência de layout** completa.
+- **Fluxo de ordem:** bookmap (heatmap de livro), footprint e perfil de volume.
+
+### Uso mínimo (React)
 
 ```tsx
 import { RobustusChart } from '@robustus/charts-react';
@@ -45,8 +61,11 @@ import { RobustusChart } from '@robustus/charts-react';
 Sem React, o motor é direto:
 
 ```ts
+import { ChartEngine } from '@robustus/charts-engine';
+
 const motor = ChartEngine.create(container, { withVolume: true });
 motor.setCandles(velas);
+motor.setPriceSeriesType('Line');                 // troca o tipo sem recriar
 const parar = motor.onCoordinateMapperChange((m) => posicionarOverlays(m));
 ```
 
@@ -69,120 +88,59 @@ const feed: Datafeed = {
 
 ```
 core          (zero dependência, sem DOM)
- └── primitives   (+ lightweight-charts e fancy-canvas, SÓ por tipo)
-      └── engine     (+ lightweight-charts em runtime)
-           └── react
-datafeed      (depende só de core)
+chart-core    (motor próprio em canvas; sem terceiros)
+ ├── primitives    (+ chart-core, SÓ por tipo)
+ ├── datafeed      (+ nada; fetch é injetado)
+ └── drawings      (+ chart-core, tipo e runtime)
+engine        (core + chart-core + primitives; usa createChart do chart-core)
+ └── react        (+ drawings, indicators, alerts, replay — hooks opcionais)
 devtools      (core + primitives) — não entra em aplicação
+
+alerts        (ILHA independente — zero dependência, motor puro)
+replay        (ILHA independente — tipo ReplayBar local, relógio injetado)
 ```
 
-Três decisões que explicam o resto:
+Regras que sustentam o grafo:
 
-**O substrato de renderização é o `lightweight-charts`, e isso é deliberado.**
-Ele é Apache 2.0 e entrega a parte chata: eixo de tempo com sessão irregular,
-inércia de pan/zoom, crosshair, autoescala, resize com `devicePixelRatio`, e a
-API de `ISeriesPrimitive`. O diferencial da biblioteca — bookmap, footprint,
-absorção — é construído *sobre* isso. Não confundir com depender da TradingView
-como serviço: são coisas diferentes, e só a segunda tem amarra comercial.
+1. **`core` não vê DOM.** `"lib": ["ES2020"]` no `tsconfig` — um `document`
+   acidental vira erro de compilação.
+2. **`chart-core` não importa terceiro.** É o motor próprio, em canvas.
+3. **`primitives` importa o motor só por tipo** — verificável no artefato.
+4. **`engine` não importa `drawings`.** Desenho é opcional; a ligação vive em
+   `react/useDrawings.ts`. O mesmo vale para alerts e replay.
 
-**As primitives importam o substrato apenas por tipo.** Verificável no artefato:
+Verificação de que não há terceiro:
 
 ```bash
-grep -nE "^\s*(import|export)[^*]*from ['\"]" packages/primitives/dist/*.js
-# nenhuma linha cita lightweight-charts — só @robustus/charts-core
+grep -rn "from 'lightweight-charts'\|from 'fancy-canvas'" packages/*/src apps/*/src
+# saída vazia
 ```
 
-Consequência prática: as camadas são testáveis com dublês, sem instanciar
-gráfico, e trocar o substrato um dia mexe no `engine`, não nas 2.700 linhas de
-desenho.
+## Motor próprio — a decisão central
 
-**O core compila sem DOM.** `"lib": ["ES2020"]` em `packages/core/tsconfig.json`.
-Um `document` ou `fetch` acidental vira erro de compilação, não dependência
-escondida.
+O projeto começou sobre `lightweight-charts` (Apache 2.0), mas por decisão de
+projeto — nada de terceiros — o substrato foi **substituído por motor próprio**,
+`@robustus/chart-core`, em canvas puro. A troca foi cirúrgica: o contrato do
+`chart-core` foi desenhado compatível com o do terceiro, então bookmap, footprint
+e desenho mudaram só o import, sem tocar na lógica — e a suíte herdada provou que
+o comportamento não mudou.
+
+O motor entrega eixo de tempo com sessão irregular (espaço lógico contínuo — velas
+equidistantes, fim de semana não ocupa espaço), autoescala pela janela visível,
+pan/zoom, crosshair com rótulos de preço e data, sub-painéis empilhados, marcadores
+com forma, banda preenchida, formatação de preço por tick e o contrato de
+`ISeriesPrimitive`. Ainda faltam pinça em touch, animação de transição e escala
+logarítmica plenamente exercitada — acréscimos que vão **aqui**, nunca de volta a
+terceiro.
 
 ## Sobre a origem do código
 
-O núcleo foi **copiado** de um cockpit de mesa em produção
-(`Projetos/Trading/frontend`), que permanece **intocado** — é fonte somente
-leitura. O que foi generalizado na cópia:
-
-| Era | Virou | Por quê |
-|---|---|---|
-| Fuso `America/Sao_Paulo` fixo no código | `ClockFormatter` injetável, BRT como default | A mesma camada pode ser lida por mesa em SP, backtest em UTC e painel em Chicago |
-| `toLocaleString('pt-BR')` no corpo | `NumberFormatter` injetável, pt-BR default | Locale de número é eixo legítimo de localização |
-| Import relativo sem extensão | ESM resolvível pelo Node | `moduleResolution: Bundler` emite `dist` que só funciona dentro de bundler; SSR e Node quebram |
-| Hooks React com URL de backend cravada | (a fazer) pacote `datafeed` | Uma biblioteca não conhece o backend de ninguém |
-
-Em todos os casos o **default reproduz o comportamento da origem**, para que os
-519 testes herdados continuassem valendo como prova.
-
-### Duas grafias na API
-
-Os núcleos têm identificadores em português (`agregarFootprint`, `RAMPA_TERMICA`)
-porque foram copiados verbatim — renomear 500 KB destruiria a suíte que torna a
-extração verificável. O índice de cada pacote publica **as duas grafias**: a
-original e um apelido em inglês (`aggregateFootprint`, `THERMAL_RAMP`), via
-`export { x as y }` — mesmo símbolo, custo zero em runtime.
-
-## Ferramentas de desenho
-
-Oito ferramentas — linha de tendência, raio, reta, horizontal, vertical, retângulo,
-retração de Fibonacci e régua — com criação por arrasto, seleção, edição por alça,
-ímã ao OHLC, desfazer/refazer e persistência versionada.
-
-```tsx
-const { containerRef, engine } = useChartEngine({ candles });
-const desenho = useDrawings({ engine, bars: () => velas, snapEnabled: () => shift });
-
-<button onClick={() => desenho.setTool('TRENDLINE')}>Linha</button>
-<button onClick={desenho.undo} disabled={!desenho.canUndo}>Desfazer</button>
-```
-
-Atalhos já tratados: `Esc` cancela e restaura, `Delete` remove a seleção,
-`Ctrl/Cmd+Z` desfaz, `Ctrl/Cmd+Shift+Z` refaz. Ignorados quando o foco está em campo
-de texto.
-
-### Três armadilhas do substrato que este pacote resolve
-
-**Desenho que desaparece ao trocar de período.** `timeToCoordinate` devolve `null`
-quando o instante não é barra da escala corrente — uma linha traçada em M5 tem âncora
-que não existe em H1. A conversão correta passa por `timeToIndex(t, findNearest)` +
-`logicalToCoordinate`, com interpolação da fração da barra.
-
-**Arrastar a alça move o desenho inteiro.** A alça fica dentro da região e sobre o
-traço; sem prioridade de acerto, o empate por distância entrega a região. Alça = 2,
-traço = 1, região = 0.
-
-**O gráfico rola por baixo do desenho.** O substrato usa arrasto pressionado para pan
-e não expõe evento de arrasto. O controlador desliga `handleScroll.pressedMouseMove`
-ao iniciar e religa em bloco de encerramento, com `setPointerCapture`.
-
-### Velocidade — medida, não afirmada
-
-| Medida | Valor |
-|---|---|
-| hit-test, 500 desenhos | **0,0076 ms** por movimento de cursor (p95 0,0095) |
-| escala 50 → 500 desenhos | **7,9×** para 10× mais itens — sub-linear |
-| projeção, 500 desenhos | 0,743 ms por mudança de viewport |
-
-7,6 µs é 0,05% de um quadro de 16 ms. O crescimento sub-linear é a prova empírica de
-que o prefiltro de caixa envolvente em array plano basta: quadtree traria
-reconstrução a cada pan e perda de localidade de cache — mais lenta **e** mais
-complexa para este N. O ganho de ordem de grandeza está em **não converter
-coordenada durante o movimento**: o plano de tela fica em cache, invalidado por época
-de viewport.
-
-Reproduza com `npx vitest --run packages/drawings/src/__tests__/desempenho.spec.ts`.
-
-## O que a biblioteca ainda não faz
-
-- **Não há sub-painel (`pane`) real.** Indicador "em painel separado" na origem é
-  escala de preço de overlay com `scaleMargins`, no mesmo pane. O substrato v5 tem
-  panes nativos; nunca foram usados.
-- **Não há persistência de layout** nem template nomeado. Desenho tem persistência
-  versionada; layout de gráfico não.
-- **Não há indicadores calculados no cliente.** A origem recebe as linhas prontas do
-  backend.
+Parte dos núcleos foi **copiada** de um cockpit de mesa em produção
+(`Projetos/Trading/frontend`), que permanece **intocado** — fonte somente leitura.
+Boa parte dos testes veio junto, e é essa suíte que prova que a extração não mudou
+comportamento. Os núcleos copiados têm identificadores em português
+(`agregarFootprint`, `RAMPA_TERMICA`); o índice de cada pacote publica também um
+apelido em inglês via `export { x as y }` — mesmo símbolo, custo zero em runtime.
 
 ## Licença
 

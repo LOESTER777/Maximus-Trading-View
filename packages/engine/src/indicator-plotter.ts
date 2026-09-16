@@ -62,6 +62,14 @@ export interface PlottableOutput {
   readonly pane: 'price' | 'separate';
   readonly color?: string;
   readonly referenceLines?: readonly number[];
+  /**
+   * Papel numa banda preenchida (Bollinger/Keltner). Ver `OutputSpec.band` no
+   * pacote de indicadores — replicado aqui por ESTRUTURA, sem importar aquele
+   * pacote. `'upper'`/`'lower'` marcam as bordas do preenchimento; `'middle'` a
+   * linha central. Quando um plot tem upper+lower, o plotter cria UMA serie de
+   * banda ('Band') alem das linhas.
+   */
+  readonly band?: 'upper' | 'lower' | 'middle';
 }
 
 export interface PlottableBar {
@@ -104,11 +112,20 @@ const PALETA: readonly string[] = [
 // O plotter
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** Uma serie viva criada pelo plotter, para atualizar ou remover. */
+/**
+ * Uma serie viva criada pelo plotter, para atualizar ou remover.
+ *
+ * Uma serie de linha/histograma/area guarda uma unica `outputKey`. Uma serie de
+ * BANDA ('Band') guarda `upperKey`+`lowerKey` em vez de `outputKey` — ela e
+ * alimentada por DUAS saidas do mesmo indicador, montadas em `{time, upper, lower}`.
+ */
 interface SerieViva {
   readonly plotId: string;
+  /** Chave da saida para series de valor unico; vazia em series de banda. */
   readonly outputKey: string;
   readonly api: ISeriesApi<SeriesType>;
+  /** Presente so em serie de banda: as chaves das bordas superior e inferior. */
+  readonly band?: { readonly upperKey: string; readonly lowerKey: string };
 }
 
 /** Uma pane de sub-painel criada pelo plotter. */
@@ -163,12 +180,21 @@ export class IndicatorPlotter {
   updateData(history: readonly PlottableBar[]): void {
     for (const plot of this.plots) {
       const pontos = plot.instance.warmup(history);
+
+      // Series de valor unico (linha/histograma/area), casadas pela outputKey.
       for (const output of plot.instance.meta.outputs) {
         const serie = this.seriesVivas.find(
-          (s) => s.plotId === plot.id && s.outputKey === output.key,
+          (s) => s.plotId === plot.id && s.band === undefined && s.outputKey === output.key,
         );
         if (serie === undefined) continue;
         const dados = this.pontosParaSerie(pontos, output.key);
+        serie.api.setData(dados);
+      }
+
+      // Serie(s) de banda deste plot: montadas de DUAS chaves (upper+lower).
+      for (const serie of this.seriesVivas) {
+        if (serie.plotId !== plot.id || serie.band === undefined) continue;
+        const dados = this.pontosParaBanda(pontos, serie.band.upperKey, serie.band.lowerKey);
         serie.api.setData(dados);
       }
     }
@@ -190,6 +216,32 @@ export class IndicatorPlotter {
     if (precisaPane) {
       paneDoPlot = this.chart.addPane();
       this.panesVivas.push({ plotId: plot.id, paneIndex: paneDoPlot });
+    }
+
+    // ⭐ Banda preenchida (Bollinger/Keltner): se este plot tem uma saida marcada
+    // `band:'upper'` E uma `band:'lower'`, cria UMA serie de banda ('Band') a
+    // partir das duas, ALEM das linhas. A banda entra ANTES das linhas para
+    // renderizar por baixo delas (a ordem de desenho na pane segue a ordem de
+    // insercao). O calculo do indicador nao muda — a banda so reagrupa saidas que
+    // ja existem.
+    const upperOut = plot.instance.meta.outputs.find((o) => o.band === 'upper');
+    const lowerOut = plot.instance.meta.outputs.find((o) => o.band === 'lower');
+    if (upperOut !== undefined && lowerOut !== undefined) {
+      const paneIndex = upperOut.pane === 'separate' ? (paneDoPlot ?? 0) : 0;
+      // Cor da faixa: herda a cor da borda superior, para o preenchimento
+      // combinar com as linhas do mesmo indicador.
+      const cor = plot.colors?.[upperOut.key] ?? upperOut.color ?? this.proximaCor();
+      const apiBanda = this.chart.addSeries(
+        'Band',
+        { color: cor, priceLineVisible: false, lastValueVisible: false },
+        paneIndex,
+      );
+      this.seriesVivas.push({
+        plotId: plot.id,
+        outputKey: '',
+        api: apiBanda,
+        band: { upperKey: upperOut.key, lowerKey: lowerOut.key },
+      });
     }
 
     for (const output of plot.instance.meta.outputs) {
@@ -233,6 +285,38 @@ export class IndicatorPlotter {
       // passa a ter valor, em vez de uma reta no zero durante o aquecimento.
       if (v === null || v === undefined || !Number.isFinite(v)) continue;
       saida.push({ time: p.time, value: v } as unknown as SeriesData);
+    }
+    return saida;
+  }
+
+  /**
+   * Monta os pontos de uma serie de banda a partir de DUAS chaves de saida.
+   *
+   * So emite ponto quando AMBAS as bordas tem valor finito na mesma barra — a
+   * faixa nao existe durante o aquecimento (uma borda ainda nula), e emitir com
+   * metade dos dados desenharia uma faixa degenerada. `{time, upper, lower}` e o
+   * formato que a serie 'Band' do motor consome.
+   */
+  private pontosParaBanda(
+    pontos: readonly PlottablePoint[],
+    upperKey: string,
+    lowerKey: string,
+  ): readonly SeriesData[] {
+    const saida: SeriesData[] = [];
+    for (const p of pontos) {
+      const u = p.values[upperKey];
+      const l = p.values[lowerKey];
+      if (
+        u === null ||
+        l === null ||
+        u === undefined ||
+        l === undefined ||
+        !Number.isFinite(u) ||
+        !Number.isFinite(l)
+      ) {
+        continue;
+      }
+      saida.push({ time: p.time, upper: u, lower: l } as unknown as SeriesData);
     }
     return saida;
   }

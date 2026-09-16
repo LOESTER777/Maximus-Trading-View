@@ -39,29 +39,46 @@
  * ```
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * O QUE O MOTOR AINDA NAO FAZ
+ * O QUE JA FOI FEITO (era "ainda nao")
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Vale dizer, porque e o que separa isto de um substituto completo:
+ * O bloco abaixo era uma lista de faltas; viraram entregas, e ficam aqui como
+ * registro do caminho:
  *
- * **Nao ha ferramenta de desenho do usuario.** Sem linha de tendencia, regua nem
- * Fibonacci desenhado a mao. Fibonacci existe na origem, mas CALCULADO pelo
- * backend e entregue como `ChartLineSeries` — nao tracado pelo operador. Desenho
- * interativo precisa de acerto de ponteiro, alca de arrasto e estado de selecao,
- * e as camadas de canvas desta biblioteca deliberadamente NAO tem `hitTest` (ha
- * property test que falha se aparecer). Portanto e subsistema novo, nao extensao.
+ * **Ferramenta de desenho do usuario — FEITO** em `@robustus/charts-drawings`
+ * (8 ferramentas, hit-test com prioridade, historico, persistencia). A ligacao
+ * opcional ao motor vive em `react/useDrawings.ts`.
  *
- * **Nao ha sub-painel (`pane`) de verdade.** `ChartLineSeries.priceScaleId` cria
- * escala de OVERLAY no mesmo painel, que e como a origem desenha delta cumulativo.
- * Para RSI ou MACD numa faixa propria embaixo do preco, o substrato v5 tem panes
- * nativos — nunca usados na origem, e ainda nao expostos aqui.
+ * **Sub-painel (`pane`) de verdade — FEITO** no motor proprio (`addPane`/
+ * `removePane`, panes empilhadas com eixo de tempo unico). RSI/MACD plotam numa
+ * faixa propria via `OutputSpec.pane === 'separate'`.
  *
- * **Nao ha persistencia de layout.** Nem template nomeado, nem sincronizacao com
- * servidor.
+ * **Persistencia de layout — FEITO** em `@robustus/charts-engine`
+ * (`serializeChartState`/`deserializeChartState`): tipo de serie, indicadores +
+ * params, alertas, desenhos e viewport num descritor versionado.
  */
 
 export { ChartEngine } from './chart-engine.js';
 export type { ChartEngineOptions, PriceSeriesType } from './chart-engine.js';
+
+export {
+  serializeChartState,
+  deserializeChartState,
+  CHART_STATE_SCHEMA_VERSION,
+} from './chart-state.core.js';
+export type {
+  ChartState,
+  IndicatorState,
+  AlertState as ChartAlertState,
+  ViewportState,
+  SerializeChartInput,
+  DeserializeResult,
+} from './chart-state.core.js';
+
+export type {
+  CrosshairSeriesData,
+  MouseEventParams,
+} from '@robustus/chart-core';
 
 export { IndicatorPlotter } from './indicator-plotter.js';
 export type {
