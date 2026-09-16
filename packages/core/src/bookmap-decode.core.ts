@@ -229,10 +229,27 @@ function readLabel(value: unknown): string {
  * passada de cópia.
  */
 export function decodeColumnar(
-  payload: BookmapDepthColunar,
+  payload: BookmapDepthColunar | unknown,
 ): BookmapGrid | null {
   // ── 1. Envoltória e discriminante ─────────────────────────────────────────
-  const raw = payload as unknown as LoosePayload | null | undefined;
+  //
+  // ── ALARGAMENTO DO PARÂMETRO (generalização) ──────────────────────────────
+  //
+  // Na origem o parâmetro era declarado `BookmapDepthColunar`, mas a primeira
+  // linha do corpo sempre foi este `as unknown as LoosePayload | null | undefined`
+  // seguido de validação completa — inclusive de `null` e de não-objeto. Ou seja,
+  // o tipo declarado era MAIS ESTREITO que a tolerância real da função.
+  //
+  // Num app isso é inofensivo: o payload chega de um lugar conhecido. Numa
+  // biblioteca é armadilha: o dado entra pela rede como `unknown`, e a assinatura
+  // estreita obrigava todo adaptador a escrever um cast — que parece inseguro,
+  // vira ruído em revisão, e a certa altura alguém o troca por um `any` e perde
+  // a validação de outra coisa junto.
+  //
+  // Aceitar `unknown` é estritamente mais permissivo: toda chamada que compilava
+  // antes continua compilando. E é honesto sobre o que a função faz — ela é o
+  // ponto de validação, não uma função que confia no chamador.
+  const raw = payload as LoosePayload | null | undefined;
   if (raw === null || typeof raw !== 'object') return null;
   if (raw.formato !== 'colunar') return null;
 
