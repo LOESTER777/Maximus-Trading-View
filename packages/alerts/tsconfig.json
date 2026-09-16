@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // ⚠️ Alerts e PURO: nada de DOM aqui. A `lib` sem DOM e a barreira que faz
+    // um `document`, `fetch` ou `Date.now()` acidental virar erro de compilacao
+    // em vez de dependencia escondida. O tempo do alerta vem SEMPRE na amostra.
+    "lib": ["ES2020"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "src/**/__bench__/**"]
+}

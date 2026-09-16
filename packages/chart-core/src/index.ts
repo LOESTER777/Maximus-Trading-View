@@ -88,6 +88,11 @@ export type {
 export { DEFAULT_THEME, TIME_AXIS_HEIGHT } from './renderer.js';
 export type { RenderTheme, TimeAxisConfig } from './renderer.js';
 
+// Transformacoes de serie de velas: Heikin-Ashi e Renko produzem CandlestickData
+// derivado (plotado como 'Candlestick'); barras OHLC sao o SeriesType 'Bar' no
+// motor. `brickSizeAutomatico` deriva um tamanho de tijolo do proprio dado.
+export { heikinAshi, renko, brickSizeAutomatico } from './candle-transforms.core.js';
+
 export {
   DEFAULT_TIME_ZONE,
   chooseTickUnit,

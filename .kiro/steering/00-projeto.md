@@ -32,11 +32,13 @@ cosmética.
 | `@robustus/charts-indicators` | 20 indicadores incrementais (warmup+update+preview O(1)), registry | 45 |
 | `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 |
 | `@robustus/charts-engine` | motor sem framework | 18 novos |
-| `@robustus/charts-react` | `useChartEngine`, `useDrawings`, `<RobustusChart />` | 12 novos |
+| `@robustus/charts-react` | `useChartEngine`, `useDrawings`, `useAlerts`, `useReplay`, `<RobustusChart />` | 12 novos |
+| `@robustus/charts-alerts` | motor PURO de alerta de preço, máquina ARMED→TRIGGERED sem repique; condições CROSS/TOUCH/ENTER_ZONE/EXIT_ZONE/PERCENT_CHANGE; `AlertStore` | 29 novos |
+| `@robustus/charts-replay` | controlador de replay de mercado determinístico, `TimerLike` injetado, pausa no fim sem loop | 31 novos |
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test          # 843 testes, 39 arquivos
+npm test          # 922 testes, 44 arquivos
 npm run build     # todos os pacotes
 ```
 
@@ -56,8 +58,8 @@ motor não importa o pacote de indicadores. O descritor `OutputSpec.pane` decide
 `'price'` sobre as velas, `'separate'` em sub-painel nativo (`addPane`). No React,
 `useIndicators` faz a costura.
 
-⚠️ Falta `removePane` no motor: alternar osciladores deixa a pane vazia. Próximo
-passo no `chart-core`.
+⭐ Dívida FECHADA: `removePane` existe no motor. Alternar osciladores não deixa
+mais pane órfã — a pane é removida junto com sua série ao desligar o indicador.
 
 ## Grafo de dependência — não viole
 
@@ -68,9 +70,18 @@ chart-core    (motor em canvas; sem terceiros; lib com DOM)
  ├── datafeed      (+ nada; fetch é injetado)
  └── drawings      (+ chart-core, tipo e runtime)
 engine        (core + chart-core + primitives; usa createChart do chart-core)
- └── react        (+ drawings, para o hook opcional)
+ └── react        (+ drawings, alerts, replay, para os hooks opcionais)
 devtools      (core + primitives) — não entra em aplicação
+
+alerts        (INDEPENDENTE — zero dependência, lib SEM DOM, motor puro)
+replay        (INDEPENDENTE — zero dependência; tipo ReplayBar local, TimerLike injetado)
 ```
+
+⭐ `alerts` e `replay` são **ilhas**: não importam nenhum irmão nem terceiro. Cada um
+carrega seu próprio tipo (`ReplayBar` no replay) de propósito, para não amarrar quem
+os consome à camada de dado. Quem os liga ao ciclo React são hooks OPCIONAIS
+(`useAlerts`, `useReplay`) — o motor não os conhece, pela mesma regra 4: recurso
+opcional não pode custar peso a quem não o usa.
 
 Quatro regras que sustentam isso:
 
@@ -112,6 +123,19 @@ Verificação de que não há terceiro:
 grep -rn "from 'lightweight-charts'\|from 'fancy-canvas'" packages/*/src apps/*/src
 # deve ser vazio
 ```
+
+## Tipos de gráfico — transformação de dado vs. tipo de série
+
+Duas naturezas distintas, não confundir:
+
+- **Heikin-Ashi e Renko são transformação de DADO**, não tipo novo de série. Vivem em
+  `packages/chart-core/src/candle-transforms.core.ts` (`heikinAshi(velas)`,
+  `renko(velas, brickSize)`, `brickSizeAutomatico(velas, fracao=0.002)`), são núcleos
+  puros que derivam `CandlestickData` a partir das velas e **plotam como
+  `'Candlestick'`**. O motor não sabe que existe Heikin-Ashi: recebe velas comuns.
+- **Bar (barras OHLC) é um `SeriesType` do motor** — `'Bar'`, desenhado por `drawBars`
+  no renderer. É tipo de série, não transformação: os mesmos dados OHLC, outra
+  rasterização.
 
 ## Playground local
 

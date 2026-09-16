@@ -61,7 +61,7 @@
  */
 
 export { ChartEngine } from './chart-engine.js';
-export type { ChartEngineOptions } from './chart-engine.js';
+export type { ChartEngineOptions, PriceSeriesType } from './chart-engine.js';
 
 export { IndicatorPlotter } from './indicator-plotter.js';
 export type {

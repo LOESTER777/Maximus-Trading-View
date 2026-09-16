@@ -35,6 +35,17 @@ export type { UseDrawingsParams, UseDrawingsResult } from './useDrawings.js';
 export { useIndicators, useIndicatorPlots } from './useIndicators.js';
 export type { UseIndicatorsParams } from './useIndicators.js';
 
+export { useAlerts } from './useAlerts.js';
+export type {
+  UseAlertsParams,
+  UseAlertsResult,
+  AlertBar,
+  AlertSpec,
+} from './useAlerts.js';
+
+export { useReplay } from './useReplay.js';
+export type { UseReplayParams, UseReplayResult } from './useReplay.js';
+
 export { RobustusChart } from './RobustusChart.js';
 export type { RobustusChartProps } from './RobustusChart.js';
 

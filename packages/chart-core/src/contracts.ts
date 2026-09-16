@@ -65,8 +65,16 @@ export interface TimeRange {
 // Series
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** Tipos de serie que o motor desenha. */
-export type SeriesType = 'Candlestick' | 'Line' | 'Histogram' | 'Area';
+/**
+ * Tipos de serie que o motor desenha.
+ *
+ * `'Bar'` (barras OHLC) e um MODO DE DESENHO da mesma `CandlestickData`, nao um
+ * dado novo: tick de abertura a esquerda, de fechamento a direita, linha vertical
+ * do range. Heikin-Ashi e Renko NAO aparecem aqui de proposito — sao `CandlestickData`
+ * TRANSFORMADO (ver `candle-transforms.core.ts`) e o consumidor os plota como
+ * `'Candlestick'`.
+ */
+export type SeriesType = 'Candlestick' | 'Bar' | 'Line' | 'Histogram' | 'Area';
 
 /** Uma vela. Campos identicos ao `CandlestickData` que o engine usava. */
 export interface CandlestickData {

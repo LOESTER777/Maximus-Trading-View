@@ -11,12 +11,14 @@
   },
   "dependencies": {
     "@robustus/chart-core": "0.1.0",
+    "@robustus/charts-alerts": "0.1.0",
     "@robustus/charts-core": "0.1.0",
     "@robustus/charts-drawings": "0.1.0",
     "@robustus/charts-engine": "0.1.0",
     "@robustus/charts-indicators": "0.1.0",
     "@robustus/charts-primitives": "0.1.0",
     "@robustus/charts-react": "0.1.0",
+    "@robustus/charts-replay": "0.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

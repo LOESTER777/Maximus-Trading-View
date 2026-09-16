@@ -847,7 +847,12 @@ export class RobustusChartCore implements IChartApi {
   private rebuildTimes(): void {
     let fonte: SeriesModel | null = null;
     for (const s of this.panes[0]!.series) {
-      if (s.model.type === 'Candlestick' || s.model.type === 'Line' || s.model.type === 'Area') {
+      if (
+        s.model.type === 'Candlestick' ||
+        s.model.type === 'Bar' ||
+        s.model.type === 'Line' ||
+        s.model.type === 'Area'
+      ) {
         if (fonte === null || s.model.data.length > fonte.data.length) fonte = s.model;
       }
     }

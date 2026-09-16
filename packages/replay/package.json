@@ -1,0 +1,23 @@
+{
+  "name": "@robustus/charts-replay",
+  "version": "0.1.0",
+  "description": "Controlador de REPLAY DE MERCADO: reproduz um pregao historico barra a barra (play/pause, velocidade, passo, seek). Nucleo PURO e deterministico com relogio INJETADO. Independente: zero dependencia de runtime, nenhum import de outro pacote.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  }
+}

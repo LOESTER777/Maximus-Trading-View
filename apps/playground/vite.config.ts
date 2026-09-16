@@ -25,6 +25,8 @@ export default defineConfig({
       '@robustus/charts-datafeed': path.join(raizPacotes, 'datafeed/src/index.ts'),
       '@robustus/charts-drawings': path.join(raizPacotes, 'drawings/src/index.ts'),
       '@robustus/charts-engine': path.join(raizPacotes, 'engine/src/index.ts'),
+      '@robustus/charts-alerts': path.join(raizPacotes, 'alerts/src/index.ts'),
+      '@robustus/charts-replay': path.join(raizPacotes, 'replay/src/index.ts'),
       '@robustus/charts-react': path.join(raizPacotes, 'react/src/index.ts'),
     },
   },

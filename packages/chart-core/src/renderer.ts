@@ -384,6 +384,7 @@ function drawSeries(
   if (ate < de) return;
 
   if (s.type === 'Candlestick') drawCandles(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
+  else if (s.type === 'Bar') drawBars(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
   else if (s.type === 'Histogram') drawHistogram(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
   else drawLineOrArea(ctx, hpr, vpr, ts, ps, s, de, ate);
 }
@@ -452,6 +453,72 @@ function drawCandles(
       const alturaCorpo = Math.max(1, Math.abs(yC - yO) * vpr);
       ctx.fillRect(x * hpr - corpoW / 2, topo, corpoW, alturaCorpo);
     }
+  }
+}
+
+/**
+ * Barras OHLC (bar chart): a MESMA `CandlestickData` desenhada como barra de tick.
+ *
+ * ⭐ Nao ha corpo. Cada barra e uma linha vertical do `high` ao `low`, com um tick
+ * horizontal para a ESQUERDA na altura do `open` e outro para a DIREITA na altura
+ * do `close`. E a leitura classica de fita: abre a esquerda, fecha a direita. A
+ * cor segue a direcao (alta/baixa), igual a vela — up quando `close >= open`.
+ *
+ * Isto NAO transforma dado: Heikin-Ashi e Renko produzem `CandlestickData` novo e
+ * usam `drawCandles`. Barra OHLC so muda o traco da mesma vela; por isso e um
+ * `SeriesType` proprio (`'Bar'`) e vive no renderer, nao em `candle-transforms`.
+ */
+function drawBars(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  ts: TimeScaleState,
+  ps: PriceScaleState,
+  s: SeriesModel,
+  de: number,
+  ate: number,
+  theme: RenderTheme,
+): void {
+  const up = (s.options.upColor as string) ?? theme.upColor;
+  const down = (s.options.downColor as string) ?? theme.downColor;
+  // Comprimento do tick, em pixel de bitmap: metade do espacamento de barra, com
+  // piso de 1 px para nao sumir no zoom-out (o antialias apaga tick menor que 1).
+  const tick = Math.max(1, ts.barSpacing * 0.4 * hpr);
+  const barras = s.data as readonly CandleLike[];
+
+  // Uma passada por cor, como no candle: agrupa o strokeStyle e reduz troca de
+  // estado do contexto.
+  for (const dir of ['up', 'down'] as const) {
+    ctx.strokeStyle = dir === 'up' ? up : down;
+    ctx.lineWidth = Math.max(1, Math.min(hpr, vpr));
+    ctx.beginPath();
+    for (let i = de; i <= ate; i++) {
+      const c = barras[i];
+      if (c === undefined) continue;
+      const alta = c.close >= c.open;
+      if ((dir === 'up') !== alta) continue;
+
+      const x = logicalToCoordinate(ts, i);
+      if (x === null) continue;
+      const cx = x * hpr;
+
+      const yH = priceToCoordinate(ps, c.high);
+      const yL = priceToCoordinate(ps, c.low);
+      const yO = priceToCoordinate(ps, c.open);
+      const yC = priceToCoordinate(ps, c.close);
+      if (yH === null || yL === null || yO === null || yC === null) continue;
+
+      // Linha vertical do range high-low.
+      ctx.moveTo(cx, yH * vpr);
+      ctx.lineTo(cx, yL * vpr);
+      // Tick de abertura, para a esquerda.
+      ctx.moveTo(cx - tick, yO * vpr);
+      ctx.lineTo(cx, yO * vpr);
+      // Tick de fechamento, para a direita.
+      ctx.moveTo(cx, yC * vpr);
+      ctx.lineTo(cx + tick, yC * vpr);
+    }
+    ctx.stroke();
   }
 }
 

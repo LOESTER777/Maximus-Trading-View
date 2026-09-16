@@ -44,6 +44,8 @@ export default defineConfig({
       '@robustus/charts-indicators': path.resolve(__dirname, 'packages/indicators/src'),
       '@robustus/charts-react': path.resolve(__dirname, 'packages/react/src'),
       '@robustus/charts-devtools': path.resolve(__dirname, 'packages/devtools/src'),
+      '@robustus/charts-alerts': path.resolve(__dirname, 'packages/alerts/src'),
+      '@robustus/charts-replay': path.resolve(__dirname, 'packages/replay/src'),
     },
   },
 });

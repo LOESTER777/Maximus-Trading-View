@@ -42,8 +42,11 @@ import {
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type PriceLineOptions,
   type SeriesData,
   type SeriesMarker,
+  type SeriesOptionsCommon,
+  type SeriesType,
   type Time,
 } from '@robustus/chart-core';
 import { BookmapPrimitive, FootprintPrimitive } from '@robustus/charts-primitives';
@@ -63,6 +66,15 @@ import {
 
 /** Identificador da escala do histograma de volume. */
 const VOLUME_SCALE_ID = 'volume';
+
+/**
+ * Tipos de serie que a serie de PRECO pode assumir.
+ *
+ * ⭐ E um subconjunto do `SeriesType` do motor: so os que fazem sentido como a
+ * serie principal de preco. `Histogram` fica de fora de proposito — ele e o
+ * volume, uma grandeza distinta que vive na sua propria escala de overlay.
+ */
+export type PriceSeriesType = 'Candlestick' | 'Line' | 'Area' | 'Bar';
 
 /** Opcoes de construcao do motor. */
 export interface ChartEngineOptions {
@@ -102,8 +114,42 @@ export class ChartEngine {
   private readonly chart: IChartApi;
   /** O elemento hospedeiro, guardado para quem precisa de pointer events. */
   private readonly host: HTMLElement;
-  private readonly candleSeries: ISeriesApi<'Candlestick'>;
+  /**
+   * A serie de PRECO. Nao e `readonly` nem fixa em `'Candlestick'`: pode trocar
+   * de tipo em runtime via `setPriceSeriesType`.
+   *
+   * ⚠️ **O nome do campo continua `candleSeries` de proposito.** Um teste de
+   * regressao alcanca a serie por esse nome (`(motor as ...).candleSeries`) para
+   * espiar `removePriceLine`. Renomear quebraria esse acesso sem ganho real — o
+   * tipo foi generalizado para `SeriesType`, que e o que muda de fato.
+   */
+  private candleSeries: ISeriesApi<SeriesType>;
   private readonly volumeSeries: ISeriesApi<'Histogram'> | null;
+
+  /** Tipo corrente da serie de preco. Comparado em `setPriceSeriesType`. */
+  private priceSeriesType: PriceSeriesType = 'Candlestick';
+  /** Cores da serie de preco, guardadas para recriar a serie ao trocar de tipo. */
+  private readonly priceColors: { readonly up: string; readonly down: string };
+
+  /**
+   * Velas correntes, ja filtradas.
+   *
+   * ⭐ Guardadas para poder REAPLICAR ao trocar de tipo de serie. Line/Area
+   * consomem o `close` de cada vela como `value`; Candlestick/Bar consomem o OHLC
+   * inteiro. Sem esta copia, trocar de tipo apagaria o grafico — a serie nova
+   * nasce vazia.
+   */
+  private candles: readonly CandlestickData[] = [];
+  /** Marcadores correntes, para reaplicar na serie nova ao trocar de tipo. */
+  private markers: readonly SeriesMarker<Time>[] = [];
+  /**
+   * Configuracao das linhas de preco correntes, para recria-las na serie nova.
+   *
+   * ⚠️ Guardamos as OPCOES, nao os `IPriceLine` — o handle so vale na serie que o
+   * criou. Ao trocar de serie, os handles velhos morrem com a serie antiga e
+   * precisam ser recriados na nova a partir da configuracao.
+   */
+  private priceLineOptions: readonly PriceLineOptions[] = [];
 
   /** Linhas de preco vivas, para remover antes de aplicar o proximo conjunto. */
   private priceLines: IPriceLine[] = [];
@@ -123,15 +169,17 @@ export class ChartEngine {
     this.chart = chart;
     this.host = host;
 
+    this.priceColors = {
+      up: opts.colors?.upColor ?? '#16c784',
+      down: opts.colors?.downColor ?? '#ea3943',
+    };
+
     // API do motor proprio: o tipo de serie e uma STRING, nao uma factory. Foi
     // decisao do contrato — string nao tem dialeto entre versoes, factory sim.
-    this.candleSeries = chart.addSeries('Candlestick', {
-      upColor: opts.colors?.upColor ?? '#16c784',
-      downColor: opts.colors?.downColor ?? '#ea3943',
-      borderVisible: false,
-      wickUpColor: opts.colors?.upColor ?? '#16c784',
-      wickDownColor: opts.colors?.downColor ?? '#ea3943',
-    });
+    // A criacao passa pelo mesmo ponto que a troca de tipo em runtime, para as
+    // cores e opcoes nao divergirem entre "criou como Candlestick" e "trocou para
+    // Candlestick".
+    this.candleSeries = this.createPriceSeries('Candlestick');
 
     if (opts.withVolume === true) {
       this.volumeSeries = chart.addSeries('Histogram', {
@@ -207,9 +255,29 @@ export class ChartEngine {
    */
   setCandles(candles: readonly unknown[]): void {
     if (this.disposed) return;
-    const validas = candles.filter(isValidCandle);
-    this.candleSeries.setData(validas as unknown as CandlestickData[]);
+    const validas = candles.filter(isValidCandle) as unknown as CandlestickData[];
+    // Guarda as velas correntes para reaplicar ao trocar de tipo de serie: Line/
+    // Area precisam do `close`, Candlestick/Bar do OHLC, e a serie nova nasce
+    // vazia.
+    this.candles = validas;
+    this.applyCandlesToPriceSeries();
     this.scheduleEmit();
+  }
+
+  /**
+   * Escreve as velas correntes na serie de preco, no formato que o tipo dela pede.
+   *
+   * ⭐ Candlestick/Bar recebem o OHLC como esta; Line/Area recebem pontos
+   * `{time, value}` derivados do `close`. E o unico ponto que conhece essa
+   * traducao, chamado tanto no `setCandles` quanto na troca de tipo.
+   */
+  private applyCandlesToPriceSeries(): void {
+    if (this.priceSeriesType === 'Line' || this.priceSeriesType === 'Area') {
+      const pontos = this.candles.map((c) => ({ time: c.time, value: c.close }));
+      this.candleSeries.setData(pontos as unknown as SeriesData[]);
+    } else {
+      this.candleSeries.setData(this.candles as unknown as SeriesData[]);
+    }
   }
 
   /** Aplica o histograma de volume. Sem efeito se o motor foi criado sem volume. */
@@ -236,18 +304,20 @@ export class ChartEngine {
         // Serie ja descartada: nada a remover, e nada a relatar.
       }
     }
-    this.priceLines = lines
+    // Guarda as OPCOES resolvidas (nao os handles): ao trocar de tipo de serie,
+    // os handles morrem com a serie antiga e precisam ser recriados na nova a
+    // partir desta configuracao.
+    this.priceLineOptions = lines
       .filter((l) => Number.isFinite(l.price))
-      .map((l) =>
-        this.candleSeries.createPriceLine({
-          price: l.price,
-          color: l.color,
-          lineWidth: l.lineWidth ?? 1,
-          lineStyle: l.lineStyle ?? 0,
-          axisLabelVisible: l.axisLabelVisible ?? true,
-          title: l.title ?? '',
-        }),
-      );
+      .map((l) => ({
+        price: l.price,
+        color: l.color,
+        lineWidth: l.lineWidth ?? 1,
+        lineStyle: l.lineStyle ?? 0,
+        axisLabelVisible: l.axisLabelVisible ?? true,
+        title: l.title ?? '',
+      }));
+    this.priceLines = this.priceLineOptions.map((o) => this.candleSeries.createPriceLine(o));
   }
 
   /**
@@ -299,18 +369,119 @@ export class ChartEngine {
   setMarkers(markers: readonly ChartMarker[]): void {
     if (this.disposed) return;
     // No motor proprio o marcador vive na serie, nao num plugin.
-    this.candleSeries.setMarkers(
-      markers
-        .filter((m) => Number.isFinite(m.time))
-        .map((m) => ({
-          time: m.time as Time,
-          position: m.position,
-          color: m.color,
-          shape: m.shape,
-          ...(m.text === undefined ? {} : { text: m.text }),
-          ...(m.size === undefined ? {} : { size: m.size }),
-        })) as SeriesMarker<Time>[],
-    );
+    // Guarda o conjunto mapeado para reaplicar na serie nova ao trocar de tipo.
+    this.markers = markers
+      .filter((m) => Number.isFinite(m.time))
+      .map((m) => ({
+        time: m.time as Time,
+        position: m.position,
+        color: m.color,
+        shape: m.shape,
+        ...(m.text === undefined ? {} : { text: m.text }),
+        ...(m.size === undefined ? {} : { size: m.size }),
+      })) as SeriesMarker<Time>[];
+    this.candleSeries.setMarkers(this.markers);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Tipo da serie de preco
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Cria uma serie de preco do tipo pedido, com as opcoes de cor coerentes.
+   *
+   * ⭐ Ponto UNICO de criacao da serie de preco — usado pelo construtor e pela
+   * troca de tipo. Candlestick e Bar usam `upColor`/`downColor` (a direcao pinta
+   * a vela/barra); Line e Area usam uma unica `color` de traco. Nao ha `throw`:
+   * `addSeries` do motor sempre devolve uma serie.
+   */
+  private createPriceSeries(type: PriceSeriesType): ISeriesApi<SeriesType> {
+    const { up, down } = this.priceColors;
+    let options: Partial<SeriesOptionsCommon>;
+    if (type === 'Candlestick' || type === 'Bar') {
+      options = {
+        upColor: up,
+        downColor: down,
+        borderVisible: false,
+        wickUpColor: up,
+        wickDownColor: down,
+      };
+    } else {
+      // Line/Area: uma cor de traco so. Reaproveita a cor de ALTA como cor da
+      // linha — e a cor "positiva" do tema, a escolha natural para o traco unico.
+      options = { color: up, lineWidth: 2 };
+    }
+    return this.chart.addSeries(type, options);
+  }
+
+  /**
+   * Troca o tipo da serie de preco em runtime, SEM recriar o grafico nem perder a
+   * viewport.
+   *
+   * ⚠️ **Nao chama `resetViewport`.** Trocar o desenho das mesmas velas nao e
+   * trocar de dado — o operador quer ver o MESMO trecho, so desenhado de outro
+   * jeito. Reenquadrar aqui seria um salto de camera que ninguem pediu.
+   *
+   * ⭐ Reaplica tudo que estava preso a serie antiga: velas (no formato do novo
+   * tipo), marcadores, linhas de preco e as camadas (bookmap/footprint). A serie
+   * antiga e removida do motor; os handles de linha de preco morrem com ela e sao
+   * recriados a partir da configuracao guardada.
+   *
+   * No-op se o tipo pedido ja for o corrente — evita o custo de recriar a serie e
+   * o piscar das camadas por nada.
+   */
+  setPriceSeriesType(type: PriceSeriesType): void {
+    if (this.disposed || type === this.priceSeriesType) return;
+
+    const antiga = this.candleSeries;
+
+    // Cria a nova ANTES de remover a antiga: o eixo de tempo reconstroi a partir
+    // da serie de preco mais longa da pane, e ter a nova ja com dado evita um
+    // quadro intermediario com o eixo vazio.
+    this.priceSeriesType = type;
+    this.candleSeries = this.createPriceSeries(type);
+    this.applyCandlesToPriceSeries();
+    this.candleSeries.setMarkers(this.markers);
+
+    // Recria as linhas de preco na serie nova a partir das opcoes guardadas: os
+    // handles antigos so valiam na serie que os criou.
+    this.priceLines = this.priceLineOptions.map((o) => this.candleSeries.createPriceLine(o));
+
+    // Move as camadas de canvas para a serie nova. Desanexa da antiga (que sera
+    // removida) e anexa na nova, preservando a instancia — recriar faria piscar,
+    // igual a disciplina de `setBookmapLayer`.
+    if (this.bookmap !== null) {
+      try {
+        antiga.detachPrimitive(this.bookmap);
+      } catch {
+        // Serie antiga em descarte: nada a desanexar.
+      }
+      this.candleSeries.attachPrimitive(this.bookmap);
+    }
+    if (this.footprint !== null) {
+      try {
+        antiga.detachPrimitive(this.footprint);
+      } catch {
+        // Idem.
+      }
+      this.candleSeries.attachPrimitive(this.footprint);
+    }
+
+    // Agora remove a serie antiga do motor.
+    try {
+      this.chart.removeSeries(antiga);
+    } catch {
+      // Ja removida.
+    }
+
+    // O mapeador de coordenada aponta para a serie corrente; reemite para os
+    // assinantes reposicionarem sobreposicoes contra a serie nova.
+    this.scheduleEmit();
+  }
+
+  /** O tipo corrente da serie de preco. */
+  get currentPriceSeriesType(): PriceSeriesType {
+    return this.priceSeriesType;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -504,7 +675,7 @@ export class ChartEngine {
    * importasse `@robustus/charts-drawings`, toda aplicacao pagaria o peso do
    * desenho mesmo sem usar.
    */
-  get priceSeries(): ISeriesApi<'Candlestick'> {
+  get priceSeries(): ISeriesApi<SeriesType> {
     return this.candleSeries;
   }
 
@@ -553,6 +724,9 @@ export class ChartEngine {
     this.footprint = null;
     this.priceLines = [];
     this.lineSeries = [];
+    this.candles = [];
+    this.markers = [];
+    this.priceLineOptions = [];
 
     try {
       this.chart.remove();

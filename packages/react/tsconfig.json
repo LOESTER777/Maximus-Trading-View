@@ -13,6 +13,8 @@
     { "path": "../primitives" },
     { "path": "../datafeed" },
     { "path": "../drawings" },
-    { "path": "../engine" }
+    { "path": "../engine" },
+    { "path": "../alerts" },
+    { "path": "../replay" }
   ]
 }

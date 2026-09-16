@@ -1,0 +1,23 @@
+{
+  "name": "@robustus/charts-alerts",
+  "version": "0.1.0",
+  "description": "Motor PURO de alertas de preco: cruzamento, toque, entrada/saida de zona e variacao percentual. Incremental, sem repique, deterministico. Zero dependencia e zero acoplamento a indicador ou fonte de dado.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  }
+}

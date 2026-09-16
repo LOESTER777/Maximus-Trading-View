@@ -11,6 +11,8 @@
     { "path": "./packages/engine" },
     { "path": "./packages/indicators" },
     { "path": "./packages/react" },
-    { "path": "./packages/devtools" }
+    { "path": "./packages/devtools" },
+    { "path": "./packages/replay" },
+    { "path": "./packages/alerts" }
   ]
 }
