@@ -6,6 +6,7 @@
     { "path": "./packages/core" },
     { "path": "./packages/primitives" },
     { "path": "./packages/datafeed" },
+    { "path": "./packages/drawings" },
     { "path": "./packages/engine" },
     { "path": "./packages/react" },
     { "path": "./packages/devtools" }

@@ -23,6 +23,7 @@
   "dependencies": {
     "@robustus/charts-core": "0.1.0",
     "@robustus/charts-datafeed": "0.1.0",
+    "@robustus/charts-drawings": "0.1.0",
     "@robustus/charts-engine": "0.1.0",
     "@robustus/charts-primitives": "0.1.0"
   },

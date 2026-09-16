@@ -104,6 +104,8 @@ export interface ChartEngineOptions {
  */
 export class ChartEngine {
   private readonly chart: IChartApi;
+  /** O elemento hospedeiro, guardado para quem precisa de pointer events. */
+  private readonly host: HTMLElement;
   private readonly candleSeries: ISeriesApi<'Candlestick'>;
   private readonly volumeSeries: ISeriesApi<'Histogram'> | null;
   private readonly markersPlugin: ISeriesMarkersPluginApi<Time>;
@@ -122,8 +124,9 @@ export class ChartEngine {
   private frame: number | null = null;
   private disposed = false;
 
-  private constructor(chart: IChartApi, opts: ChartEngineOptions) {
+  private constructor(chart: IChartApi, host: HTMLElement, opts: ChartEngineOptions) {
     this.chart = chart;
+    this.host = host;
 
     this.candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: opts.colors?.upColor ?? '#16c784',
@@ -189,7 +192,7 @@ export class ChartEngine {
       autoSize: true,
     });
 
-    return new ChartEngine(chart, opts);
+    return new ChartEngine(chart, container, opts);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -493,6 +496,29 @@ export class ChartEngine {
   /** Acesso ao grafico do substrato, para o que o motor ainda nao cobre. */
   get api(): IChartApi {
     return this.chart;
+  }
+
+  /**
+   * A serie de preco, para anexar camada propria.
+   *
+   * Exposta para que pacotes OPCIONAIS — as ferramentas de desenho, por exemplo —
+   * possam anexar primitives sem que o motor precise depender deles. Se o motor
+   * importasse `@robustus/charts-drawings`, toda aplicacao pagaria o peso do
+   * desenho mesmo sem usar.
+   */
+  get priceSeries(): ISeriesApi<'Candlestick'> {
+    return this.candleSeries;
+  }
+
+  /**
+   * O elemento que hospeda o grafico.
+   *
+   * Necessario para quem precisa de pointer events do DOM — o substrato expoe
+   * `click` e `dblClick`, e nada de arrasto. Sem acesso ao container nao ha como
+   * implementar gesto de arrastar.
+   */
+  get container(): HTMLElement {
+    return this.host;
   }
 
   /** O motor ja foi descartado? */

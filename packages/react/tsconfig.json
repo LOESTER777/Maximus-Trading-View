@@ -12,6 +12,7 @@
     { "path": "../core" },
     { "path": "../primitives" },
     { "path": "../datafeed" },
+    { "path": "../drawings" },
     { "path": "../engine" }
   ]
 }

@@ -1,0 +1,30 @@
+{
+  "name": "@robustus/charts-drawings",
+  "version": "0.1.0",
+  "description": "Ferramentas de desenho do usuario: linha de tendencia, raio, retangulo, Fibonacci, regua. Ancoradas em (tempo, preco), com hit-test e edicao por alcas.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  },
+  "dependencies": {
+    "@robustus/charts-core": "0.1.0"
+  },
+  "peerDependencies": {
+    "fancy-canvas": "^2.1.0",
+    "lightweight-charts": "^5.1.0"
+  }
+}

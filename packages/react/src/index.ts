@@ -29,6 +29,9 @@
 export { useChartEngine } from './useChartEngine.js';
 export type { UseChartEngineParams, UseChartEngineResult } from './useChartEngine.js';
 
+export { useDrawings } from './useDrawings.js';
+export type { UseDrawingsParams, UseDrawingsResult } from './useDrawings.js';
+
 export { RobustusChart } from './RobustusChart.js';
 export type { RobustusChartProps } from './RobustusChart.js';
 
