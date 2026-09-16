@@ -22,6 +22,10 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'jsdom',
+    // Preenche `matchMedia` e `ResizeObserver`, que o jsdom nao tem e o substrato
+    // de grafico usa. Sem isto, uma execucao de 18 testes produzia 63 rejeicoes
+    // nao tratadas — ruido que afoga erro de verdade. Ver `vitest.setup.ts`.
+    setupFiles: ['./vitest.setup.ts'],
     include: ['packages/*/src/**/*.{test,spec}.{ts,tsx}'],
     // As bancadas nao sao teste de regressao: elas medem. Rodam por comando
     // proprio para nao somar tempo (nem variancia de maquina) ao `npm test`.

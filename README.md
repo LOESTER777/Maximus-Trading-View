@@ -11,20 +11,58 @@ provedor de gráfico de terceiro.
 
 | Pacote | O que é | Situação |
 |---|---|---|
-| `@robustus/charts-core` | Núcleos puros: agregação por zoom, escala de cor por percentil, célula→pixel, decodificação colunar, cobertura, paredes, perfil, footprint | ✅ extraído e verificado |
-| `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive` | ✅ extraído e verificado |
-| `@robustus/charts-devtools` | Bancada de desempenho com dublês de canvas e relógio injetável | ✅ extraído e verificado |
-| `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados | ⬜ a construir |
-| `@robustus/charts-engine` | Motor sem framework sobre o substrato | ⬜ a construir |
-| `@robustus/charts-react` | Ligação React | ⬜ a construir |
+| `@robustus/charts-core` | Núcleos puros: agregação por zoom, escala de cor por percentil, célula→pixel, decodificação colunar, cobertura, paredes, perfil, footprint | ✅ copiado e verificado |
+| `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive` | ✅ copiado e verificado |
+| `@robustus/charts-devtools` | Bancada de desempenho com dublês de canvas e relógio injetável | ✅ copiado e verificado |
+| `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados + dia de mercado + adaptador HTTP de referência | ✅ novo |
+| `@robustus/charts-engine` | Motor sem framework sobre o substrato | ✅ novo |
+| `@robustus/charts-react` | `useChartEngine` + `<RobustusChart />` | ✅ novo |
 
-**519 testes passando em 22 arquivos**, incluindo 10 property tests. A suíte veio
-junto com o código: é ela que prova que a extração não mudou comportamento.
+**594 testes passando em 26 arquivos**, incluindo 10 property tests. 519 deles
+vieram junto com o código copiado: é essa suíte que prova que a extração não mudou
+comportamento.
 
 ```bash
 npm install
-npm test          # 519 testes
+npm test          # 594 testes
 npm run build     # compila todos os pacotes
+```
+
+### Uso mínimo
+
+```tsx
+import { RobustusChart } from '@robustus/charts-react';
+
+<RobustusChart
+  options={{ withVolume: true }}
+  candles={velas}
+  bookmap={grid ? { grid, metrica: 'AMBAS', escala: 'P99_GAMMA', tickSize: 5 } : null}
+  resetViewportOn={periodo}
+  height="520px"
+/>
+```
+
+Sem React, o motor é direto:
+
+```ts
+const motor = ChartEngine.create(container, { withVolume: true });
+motor.setCandles(velas);
+const parar = motor.onCoordinateMapperChange((m) => posicionarOverlays(m));
+```
+
+Ligar um backend é implementar o contrato de `datafeed` — capacidades são
+opcionais, e uma fonte que só tem candles é válida:
+
+```ts
+const feed: Datafeed = {
+  bars: {
+    async getBars(req, signal) {
+      const r = await fetch(minhaUrl(req), { signal });
+      if (!r.ok) return fail(r.status === 404 ? 'INDISPONIVEL' : 'TRANSPORTE');
+      return ok(await r.json());
+    },
+  },
+};
 ```
 
 ## Arquitetura
