@@ -1,0 +1,42 @@
+LICENÇA PROPRIETÁRIA — USO INTERNO
+
+Copyright (c) 2026 Loester Rodrigo. Todos os direitos reservados.
+
+Este software e a documentação que o acompanha ("o Software") são material
+proprietário e confidencial de Loester Rodrigo. Nenhuma licença de uso,
+cópia, modificação, distribuição, sublicenciamento ou venda é concedida,
+seja expressa ou implícita, exceto pela autorização escrita do detentor dos
+direitos.
+
+PERMITIDO
+  Uso interno pelo detentor dos direitos e por quem ele autorizar por
+  escrito, incluindo consumo do Software como dependência em projetos
+  próprios do detentor.
+
+NÃO PERMITIDO
+  Redistribuição pública, publicação em registry público, incorporação em
+  produto de terceiro, engenharia reversa por terceiro, ou qualquer uso por
+  quem não tenha autorização escrita.
+
+PACOTES
+  Os pacotes `@robustus/*` deste repositório são publicados com visibilidade
+  PRIVADA. O campo `license` de cada `package.json` é `UNLICENSED`, que é o
+  valor do npm para "nenhuma licença concedida" — e é essa a intenção.
+
+ORIGEM DE PARTE DO CÓDIGO
+  Parte dos núcleos foi extraída de um cockpit de mesa em produção do próprio
+  detentor dos direitos. A extração não introduziu código de terceiro: a
+  biblioteca não depende de `lightweight-charts`, `fancy-canvas` nem de
+  qualquer widget de provedor de gráfico. O motor de renderização é próprio.
+
+SEM GARANTIA
+  O SOFTWARE É FORNECIDO "COMO ESTÁ", SEM GARANTIA DE QUALQUER NATUREZA,
+  EXPRESSA OU IMPLÍCITA, INCLUINDO MAS NÃO SE LIMITANDO A GARANTIAS DE
+  COMERCIABILIDADE, ADEQUAÇÃO A UM PROPÓSITO ESPECÍFICO E NÃO VIOLAÇÃO. EM
+  NENHUMA HIPÓTESE O DETENTOR DOS DIREITOS SERÁ RESPONSÁVEL POR QUALQUER
+  RECLAMAÇÃO, DANO OU OUTRA RESPONSABILIDADE DECORRENTE DO SOFTWARE OU DE SEU
+  USO.
+
+  ⚠️ Este software calcula e exibe informação de mercado financeiro. Ele não
+  é recomendação de investimento e não substitui a fonte oficial de dados da
+  corretora ou da bolsa.

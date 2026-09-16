@@ -1603,14 +1603,20 @@ export class RobustusChartCore implements IChartApi {
     series: readonly SeriesImpl<SeriesType>[],
     lr: { from: number; to: number },
   ): void {
-    const de = Math.max(0, Math.floor(lr.from));
-    const ate = Math.ceil(lr.to);
-
     let min = Infinity;
     let max = -Infinity;
     for (const s of series) {
       const d = s.model.data;
-      for (let i = de; i <= ate && i < d.length; i++) {
+      // ⚠️ A faixa de indices e resolvida POR SERIE, pelo TEMPO das bordas da
+      // janela — nao pelo indice logico direto.
+      //
+      // Usar `lr.from..lr.to` como indice do array assume que `d[i]` e a barra
+      // logica `i`, o que so vale para a serie que origina o eixo. Numa serie
+      // desalinhada (indicador que descarta o aquecimento) a autoescala lia os
+      // valores das barras ERRADAS — a faixa saia calculada sobre outro trecho do
+      // indicador. Mesmo mecanismo do defeito de desenho, mesma correcao.
+      const { de, ate } = this.faixaVisivelDaSerie(d, lr);
+      for (let i = de; i <= ate; i++) {
         const b = d[i];
         if (b === undefined) continue;
         const banda = b as { upper?: number; lower?: number };
@@ -1646,6 +1652,48 @@ export class RobustusChartCore implements IChartApi {
     }
 
     autoScale(escala, min, max);
+  }
+
+  /**
+   * A faixa de indices do array de UMA serie que cai na janela logica visivel.
+   *
+   * ⭐ Resolve por TEMPO, nao por indice: converte as bordas da janela em instante
+   * (`indexToTime`) e acha o trecho correspondente no array da serie. Para a serie
+   * alinhada ao eixo o resultado e o mesmo que indexar direto; para uma serie
+   * desalinhada (indicador que descartou o aquecimento) e a diferenca entre ler os
+   * valores certos e ler os de outro trecho.
+   *
+   * Serie vazia devolve uma faixa vazia (`de > ate`), que o laco do chamador
+   * simplesmente nao percorre.
+   */
+  private faixaVisivelDaSerie(
+    data: readonly { readonly time: number }[],
+    lr: { from: number; to: number },
+  ): { de: number; ate: number } {
+    const n = data.length;
+    if (n === 0) return { de: 0, ate: -1 };
+
+    const tDe = indexToTime(this.ts, lr.from);
+    const tAte = indexToTime(this.ts, lr.to);
+    if (tDe === null || tAte === null) return { de: 0, ate: n - 1 };
+
+    // Busca binaria pelo primeiro indice com `time >= t`.
+    const primeiroDesde = (t: number): number => {
+      let lo = 0;
+      let hi = n;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const d = data[mid];
+        if (d !== undefined && d.time < t) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    };
+
+    return {
+      de: Math.max(0, primeiroDesde(tDe)),
+      ate: Math.min(n - 1, primeiroDesde(tAte)),
+    };
   }
 
   private crosshairInPane(pane: Pane, topo: number): CrosshairState | null {
@@ -1718,8 +1766,12 @@ export class RobustusChartCore implements IChartApi {
         const x = timeToCoordinate(this.ts, m.time);
         if (x === null) continue;
         // Ancora o marcador ao preco da barra: acima/abaixo/dentro.
-        const idx = timeToIndex(this.ts, m.time, false);
-        const bar = idx === null ? undefined : s.model.data[idx];
+        //
+        // ⚠️ A barra e achada por TEMPO no array DA SERIE, nao pelo indice logico
+        // do eixo. `timeToIndex` devolve indice LOGICO; usa-lo para indexar
+        // `s.model.data` acerta so quando a serie esta alinhada ao eixo — numa
+        // serie desalinhada o marcador ancorava no preco de outra barra.
+        const bar = this.barraPorTempo(s.model.data, m.time);
         let yBase = pane.priceScale.height / 2;
         if (bar !== undefined) {
           const c = bar as { high?: number; low?: number; value?: number };
@@ -1755,6 +1807,29 @@ export class RobustusChartCore implements IChartApi {
         }
       }
     }
+  }
+
+  /**
+   * O ponto de uma serie cujo `time` e exatamente `t`, ou `undefined`.
+   *
+   * Busca binaria no array DA SERIE. Existe para nao confundir indice logico do
+   * eixo com indice de array — ver a nota em `drawMarkers`.
+   */
+  private barraPorTempo(
+    data: readonly { readonly time: number }[],
+    t: number,
+  ): { readonly time: number } | undefined {
+    let lo = 0;
+    let hi = data.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const d = data[mid];
+      if (d === undefined) return undefined;
+      if (d.time === t) return d;
+      if (d.time < t) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return undefined;
   }
 
   /**

@@ -3,14 +3,24 @@
   "version": "0.1.0",
   "description": "Ferramental de desenvolvimento: bancada de desempenho com dubles de canvas, verificacao de independencia e relogio injetavel. Nao entra no bundle de aplicacao.",
   "license": "UNLICENSED",
+  "author": "Loester Rodrigo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LOESTER777/Maximus-Trading-View.git",
+    "directory": "packages/devtools"
+  },
+  "//private": "NAO PUBLICAVEL de proposito. Isto e bancada de desempenho: le os.cpus() para rotular o relatorio com a maquina que mediu, e existe para medir a biblioteca, nao para entrar em aplicacao. `private: true` faz o `npm publish` RECUSAR — barreira mecanica, nao convencao. Por isso tambem nao ha publishConfig nem prepublishOnly aqui.",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -21,8 +31,8 @@
     "clean": "tsc --build --clean"
   },
   "dependencies": {
-    "@robustus/chart-core": "0.1.0",
-    "@robustus/charts-core": "0.1.0",
-    "@robustus/charts-primitives": "0.1.0"
+    "@robustus/chart-core": "^0.1.0",
+    "@robustus/charts-core": "^0.1.0",
+    "@robustus/charts-primitives": "^0.1.0"
   }
 }

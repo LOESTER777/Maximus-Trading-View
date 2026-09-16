@@ -7,6 +7,10 @@ coverage/
 # Relatorios de bancada: sao medicao de maquina, nao fonte.
 bench-report*.json
 __bench__/out/
+# Tarballs de `npm run pack:tarballs`: sao artefato de build, reproduzivel a
+# qualquer momento a partir do fonte. Nao versionar binario derivado.
+tarballs/
+*.tgz
 
 # Ambiente
 .env

@@ -3,21 +3,39 @@
   "version": "0.1.0",
   "description": "Motor de grafico proprio em canvas: eixo de tempo com sessao irregular, escala de preco, laco de render, interacao e contrato de primitive. Zero terceiros em runtime.",
   "license": "UNLICENSED",
+  "author": "Loester Rodrigo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LOESTER777/Maximus-Trading-View.git",
+    "directory": "packages/chart-core"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "!src/**/__tests__/**",
+    "!src/**/__bench__/**",
+    "!src/**/*.spec.ts",
+    "!src/**/*.test.ts"
   ],
   "sideEffects": false,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "scripts": {
     "build": "tsc --build",
-    "clean": "tsc --build --clean"
+    "clean": "tsc --build --clean",
+    "prepublishOnly": "npm run build"
   }
 }

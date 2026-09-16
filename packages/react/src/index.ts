@@ -35,6 +35,42 @@ export type { UseDrawingsParams, UseDrawingsResult } from './useDrawings.js';
 export { useIndicators, useIndicatorPlots } from './useIndicators.js';
 export type { UseIndicatorsParams } from './useIndicators.js';
 
+// ── Caixa de ferramentas de indicadores ───────────────────────────────────────
+//
+// ⚠️ O `registry` e INJETADO pelo consumidor (`import { registry } from
+// '@robustus/charts-indicators'`). Este pacote NAO depende do pacote de
+// indicadores de proposito — ver o cabecalho de `useIndicatorCatalog.ts`.
+export {
+  useIndicatorCatalog,
+  nextIndicatorId,
+  paramsWithDefaults,
+  paneKindOf,
+  plotsSignature,
+  CATEGORY_LABELS,
+} from './useIndicatorCatalog.js';
+export type {
+  UseIndicatorCatalogParams,
+  UseIndicatorCatalogResult,
+  ActiveIndicator,
+  ActiveIndicatorInit,
+  CatalogEntry,
+  CatalogGroup,
+  CatalogFactory,
+  CatalogInstance,
+  CatalogMeta,
+  CatalogOutputSpec,
+  CatalogParamSpec,
+  CatalogParamValue,
+  CatalogParams,
+  CatalogValidation,
+  CatalogLoadResult,
+  IndicatorPaneKind,
+  ParamUpdateResult,
+} from './useIndicatorCatalog.js';
+
+export { IndicatorToolbox } from './IndicatorToolbox.js';
+export type { IndicatorToolboxProps } from './IndicatorToolbox.js';
+
 export { useAlerts } from './useAlerts.js';
 export type {
   UseAlertsParams,

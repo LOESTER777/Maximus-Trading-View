@@ -5,6 +5,11 @@
   "type": "module",
   "description": "Biblioteca de visualizacao de mercado (bookmap, footprint, perfil de volume, heatmap por regiao de preco) agnostica de fonte de dados e de framework.",
   "license": "UNLICENSED",
+  "author": "Loester Rodrigo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LOESTER777/Maximus-Trading-View.git"
+  },
   "engines": {
     "node": ">=18.18"
   },
@@ -19,6 +24,8 @@
     "typecheck": "tsc --build tsconfig.build.json --force",
     "typecheck:playground": "tsc --noEmit -p apps/playground",
     "verify": "npm run typecheck && npm run typecheck:playground && node scripts/add-esm-extensions.mjs --check packages/*/src && npm run test",
+    "smoke:consumo": "node scripts/smoke-consumo.mjs",
+    "pack:tarballs": "node scripts/smoke-consumo.mjs --pack-only --out tarballs",
     "test": "vitest --run",
     "test:watch": "vitest",
     "test:core": "vitest --run packages/core",

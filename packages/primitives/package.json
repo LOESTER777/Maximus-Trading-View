@@ -3,25 +3,43 @@
   "version": "0.1.0",
   "description": "Camadas de canvas (bookmap heatmap, footprint) sobre o motor proprio. Zero terceiros.",
   "license": "UNLICENSED",
+  "author": "Loester Rodrigo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LOESTER777/Maximus-Trading-View.git",
+    "directory": "packages/primitives"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "!src/**/__tests__/**",
+    "!src/**/__bench__/**",
+    "!src/**/*.spec.ts",
+    "!src/**/*.test.ts"
   ],
   "sideEffects": false,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "scripts": {
     "build": "tsc --build",
-    "clean": "tsc --build --clean"
+    "clean": "tsc --build --clean",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@robustus/chart-core": "0.1.0",
-    "@robustus/charts-core": "0.1.0"
+    "@robustus/chart-core": "^0.1.0",
+    "@robustus/charts-core": "^0.1.0"
   }
 }

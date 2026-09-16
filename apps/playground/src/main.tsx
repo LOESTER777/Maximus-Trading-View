@@ -28,34 +28,16 @@ import {
   useChartEngine,
   useDrawings,
   useIndicators,
+  useIndicatorCatalog,
+  IndicatorToolbox,
   useAlerts,
   useReplay,
   useCrosshair,
   useChartState,
 } from '@robustus/charts-react';
 import type { ActiveTool, SnapBar } from '@robustus/charts-drawings';
-import type {
-  IndicatorPlot,
-  PriceSeriesType,
-  IndicatorState,
-  ChartPriceLine,
-} from '@robustus/charts-engine';
-import {
-  emaFactory,
-  bollingerFactory,
-  rsiFactory,
-  macdFactory,
-  supertrendFactory,
-  ichimokuFactory,
-  parabolicSarFactory,
-  donchianFactory,
-  keltnerFactory,
-  vwapBandsFactory,
-  mfiFactory,
-  awesomeOscillatorFactory,
-  adxFactory,
-  atrFactory,
-} from '@robustus/charts-indicators';
+import type { PriceSeriesType, ChartPriceLine } from '@robustus/charts-engine';
+import { registry } from '@robustus/charts-indicators';
 import type { AlertSpec } from '@robustus/charts-react';
 import { makeSyntheticBundle } from './synthetic.js';
 
@@ -92,40 +74,23 @@ const MODOS: ReadonlyArray<{ id: ModoGrafico; rotulo: string; serie: PriceSeries
 const VELOCIDADES = [1, 2, 4, 8, 16] as const;
 
 /**
- * Catalogo de indicadores do playground.
+ * Indicadores de partida.
  *
- * `id` e a chave estavel do plot (e a mesma que entra no layout salvo); `nome` e
- * o nome no registry (o que a persistencia grava); `criar` instancia com os
- * parametros da vitrine. Nao e o catalogo completo da biblioteca — sao 29
- * indicadores — e sim uma amostra que cobre as quatro naturezas: media/tendencia
- * sobre o preco, canal com banda preenchida, oscilador em sub-painel e ponto de
- * parada.
+ * ⭐ **Nao ha mais catalogo de indicador aqui.** Antes este arquivo tinha um
+ * `CATALOGO` com 14 entradas escritas a mao, cada uma com `criar: () =>
+ * emaFactory.create({ period: 20 })`. Isso deixava 15 dos 29 indicadores
+ * inalcancaveis, congelava os parametros no literal (nao havia como trocar o
+ * periodo pela interface) e fazia o layout salvo gravar parametros que nao eram os
+ * do operador — porque nao havia escolha.
+ *
+ * Agora a `<IndicatorToolbox />` le o `registry` inteiro e gera o menu e o
+ * formulario de propriedades a partir de `IndicatorMeta`. Isto aqui e so a
+ * semente: o que o grafico mostra ao abrir.
  */
-const CATALOGO: ReadonlyArray<{
-  readonly id: string;
-  readonly nome: string;
-  readonly rotulo: string;
-  readonly grupo: 'preco' | 'painel';
-  readonly criar: () => IndicatorPlot['instance'];
-  readonly cor?: string;
-}> = [
-  // ── Sobre o preco ──
-  { id: 'ema20', nome: 'ema', rotulo: 'EMA 20', grupo: 'preco', criar: () => emaFactory.create({ period: 20 }), cor: '#e9c46a' },
-  { id: 'bb', nome: 'bollinger', rotulo: 'Bollinger', grupo: 'preco', criar: () => bollingerFactory.create({ period: 20, mult: 2 }) },
-  { id: 'keltner', nome: 'keltner', rotulo: 'Keltner', grupo: 'preco', criar: () => keltnerFactory.create({ period: 20, atrPeriod: 10, mult: 2 }) },
-  { id: 'donchian', nome: 'donchian', rotulo: 'Donchian', grupo: 'preco', criar: () => donchianFactory.create({ period: 20 }) },
-  { id: 'vwapb', nome: 'vwap_bands', rotulo: 'VWAP±σ', grupo: 'preco', criar: () => vwapBandsFactory.create({ mult: 2 }) },
-  { id: 'supertrend', nome: 'supertrend', rotulo: 'SuperTrend', grupo: 'preco', criar: () => supertrendFactory.create({ period: 10, mult: 3 }) },
-  { id: 'psar', nome: 'psar', rotulo: 'Parabolic SAR', grupo: 'preco', criar: () => parabolicSarFactory.create() },
-  { id: 'ichimoku', nome: 'ichimoku', rotulo: 'Ichimoku', grupo: 'preco', criar: () => ichimokuFactory.create() },
-  // ── Sub-painel ──
-  { id: 'rsi', nome: 'rsi', rotulo: 'RSI', grupo: 'painel', criar: () => rsiFactory.create({ period: 14 }) },
-  { id: 'macd', nome: 'macd', rotulo: 'MACD', grupo: 'painel', criar: () => macdFactory.create() },
-  { id: 'mfi', nome: 'mfi', rotulo: 'MFI', grupo: 'painel', criar: () => mfiFactory.create({ period: 14 }) },
-  { id: 'ao', nome: 'ao', rotulo: 'Awesome Osc.', grupo: 'painel', criar: () => awesomeOscillatorFactory.create() },
-  { id: 'adx', nome: 'adx', rotulo: 'ADX/DMI', grupo: 'painel', criar: () => adxFactory.create({ period: 14 }) },
-  { id: 'atr', nome: 'atr', rotulo: 'ATR', grupo: 'painel', criar: () => atrFactory.create({ period: 14 }) },
-];
+const INDICADORES_INICIAIS = [
+  { name: 'ema', params: { period: 20 }, colors: { value: '#e9c46a' } },
+  { name: 'rsi', params: { period: 14 } },
+] as const;
 
 function App(): JSX.Element {
   // Pregao sintetico deterministico, gerado uma vez.
@@ -139,20 +104,13 @@ function App(): JSX.Element {
   const [modo, setModo] = useState<ModoGrafico>('VELA');
   const [modoReplay, setModoReplay] = useState(false);
 
-  // ── INDICADORES ligados, por id do catalogo ───────────────────────────────
+  // ── CAIXA DE FERRAMENTAS DE INDICADORES ───────────────────────────────────
   //
-  // Um conjunto em vez de um booleano por indicador: sao 14 no catalogo do
-  // playground, e um `useState` para cada viraria parede de codigo repetido.
-  const [ligados, setLigados] = useState<ReadonlySet<string>>(
-    () => new Set(['ema20', 'rsi']),
-  );
-  const alternar = (id: string): void =>
-    setLigados((atual) => {
-      const novo = new Set(atual);
-      if (novo.has(id)) novo.delete(id);
-      else novo.add(id);
-      return novo;
-    });
+  // O `registry` e INJETADO no hook: `@robustus/charts-react` nao depende de
+  // `@robustus/charts-indicators` de proposito (quem usa o grafico sem indicador
+  // nao carrega os 29). Quem tem os dois pacotes e o app — como em
+  // `useIndicators`, a costura cross-package mora no consumidor.
+  const indicadores = useIndicatorCatalog({ registry, initial: INDICADORES_INICIAIS });
 
   // Recursos visuais do motor, para exercitar na tela.
   const [gradeVertical, setGradeVertical] = useState(false);
@@ -233,18 +191,13 @@ function App(): JSX.Element {
   });
 
   // ── INDICADORES ───────────────────────────────────────────────────────────
-  const plots: IndicatorPlot[] = useMemo(
-    () =>
-      CATALOGO.filter((c) => ligados.has(c.id)).map((c) => ({
-        id: c.id,
-        instance: c.criar(),
-        ...(c.cor === undefined ? {} : { colors: { value: c.cor } }),
-      })),
-    [ligados],
-  );
-
+  //
+  // `indicadores.plots` ja vem memoizado por CONTEUDO pelo hook: a identidade so
+  // muda quando conjunto, parametro, cor ou visibilidade mudam. Isso importa
+  // porque `useIndicators` chama `setPlots`, que recria todas as series e panes.
+  //
   // Indicadores seguem a fatia EXIBIDA, para o que se calcula ser o que se ve.
-  useIndicators({ engine, plots, bars: velasExibidas });
+  useIndicators({ engine, plots: indicadores.plots, bars: velasExibidas });
 
   // ── LEGENDA OHLC ────────────────────────────────────────────────────────
   //
@@ -302,14 +255,6 @@ function App(): JSX.Element {
     [alertasLigados, niveis],
   );
 
-  // Os indicadores ligados, no formato serializavel (id + nome no registry +
-  // params). O restore religa os toggles a partir disto.
-  const indicadoresState = useMemo<IndicatorState[]>(
-    () =>
-      CATALOGO.filter((c) => ligados.has(c.id)).map((c) => ({ id: c.id, name: c.nome })),
-    [ligados],
-  );
-
   // ── RECURSOS VISUAIS DO MOTOR ─────────────────────────────────────────────
   //
   // Grade vertical, marca d'agua e formatacao de preco por TICK do instrumento.
@@ -352,7 +297,10 @@ function App(): JSX.Element {
     const doc = capture({
       symbol: 'SINTETICO',
       priceSeriesType: serieAtual,
-      indicators: indicadoresState,
+      // ⭐ MELHORIA sobre o que existia: `states` grava os parametros REAIS que o
+      // operador editou na caixa de ferramentas. Antes o playground gravava
+      // `{ id, name }` sem params, e o restore reconstruia com os do literal.
+      indicators: indicadores.states,
       alerts: alertSpecs.map((s) => ({ key: s.key, condition: s.condition, mode: s.options?.mode })),
       drawings: desenho.drawings,
     });
@@ -381,10 +329,10 @@ function App(): JSX.Element {
             ? 'BARRAS'
             : 'VELA';
     setModo(modoDoTipo);
-    // Religa os indicadores pelos ids salvos. Ids desconhecidos (de uma versao
-    // com outro catalogo) simplesmente nao acendem — o layout carrega o que existe.
-    const idsConhecidos = new Set(CATALOGO.map((c) => c.id));
-    setLigados(new Set(state.indicators.map((i) => i.id).filter((id) => idsConhecidos.has(id))));
+    // Recria os indicadores com id, nome E parametros salvos. `load` faz recusa
+    // parcial: nome fora do registry corrente e descartado e reportado em
+    // `rejected`, em vez de derrubar o layout inteiro.
+    indicadores.load(state.indicators);
     // Desenhos: carrega no controlador.
     desenho.load(state.drawings.drawings as never);
     setTick((n) => n + 1);
@@ -465,26 +413,11 @@ function App(): JSX.Element {
         </button>
       </div>
 
-      {/* Indicadores: sobre o preço e em sub-painel */}
-      <div style={barra()}>
-        <span style={rotuloBarra()}>Preço:</span>
-        {CATALOGO.filter((c) => c.grupo === 'preco').map((c) => (
-          <button key={c.id} type="button" onClick={() => alternar(c.id)} style={botao(ligados.has(c.id))}>
-            {c.rotulo}
-          </button>
-        ))}
-      </div>
-      <div style={barra()}>
-        <span style={rotuloBarra()}>Painel:</span>
-        {CATALOGO.filter((c) => c.grupo === 'painel').map((c) => (
-          <button key={c.id} type="button" onClick={() => alternar(c.id)} style={botao(ligados.has(c.id))}>
-            {c.rotulo}
-          </button>
-        ))}
-        <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>
-          arraste a divisória entre painéis para redimensionar
-        </span>
-      </div>
+      {/*
+        As duas barras de botao liga/desliga por indicador sairam daqui: viraram a
+        `<IndicatorToolbox />` no painel da direita, que cobre os 29 do registry e
+        permite editar parametro e cor. Botao por indicador nao escala para 29.
+      */}
 
       {/* Controles de replay */}
       <div style={barra()}>
@@ -565,19 +498,36 @@ function App(): JSX.Element {
           <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
         </div>
 
-        {/* Painel de alertas */}
+        {/* Painel lateral: caixa de ferramentas de indicadores + alertas */}
         <aside
           style={{
-            width: 240,
+            width: 300,
             borderLeft: '1px solid rgba(148,163,184,0.15)',
             padding: '10px 12px',
             display: 'flex',
             flexDirection: 'column',
-            gap: 8,
+            gap: 10,
             overflowY: 'auto',
+            color: '#cbd5e1',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {/*
+            ⭐ A caixa de ferramentas. Nao recebe lista de indicador nenhuma: le o
+            `registry` pelo hook e monta menu agrupado + formulario de propriedades
+            a partir de `IndicatorMeta`. Sem estilo proprio pesado de proposito —
+            ela herda a cor e a fonte deste painel.
+          */}
+          <IndicatorToolbox catalog={indicadores} />
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              borderTop: '1px solid rgba(148,163,184,0.15)',
+              paddingTop: 10,
+            }}
+          >
             <strong style={{ color: '#e2e8f0', fontSize: 13 }}>Alertas</strong>
             <button
               type="button"

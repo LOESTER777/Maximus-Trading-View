@@ -3,21 +3,39 @@
   "version": "0.1.0",
   "description": "Controlador de REPLAY DE MERCADO: reproduz um pregao historico barra a barra (play/pause, velocidade, passo, seek). Nucleo PURO e deterministico com relogio INJETADO. Independente: zero dependencia de runtime, nenhum import de outro pacote.",
   "license": "UNLICENSED",
+  "author": "Loester Rodrigo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LOESTER777/Maximus-Trading-View.git",
+    "directory": "packages/replay"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "src",
+    "!src/**/__tests__/**",
+    "!src/**/__bench__/**",
+    "!src/**/*.spec.ts",
+    "!src/**/*.test.ts"
   ],
   "sideEffects": false,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "scripts": {
     "build": "tsc --build",
-    "clean": "tsc --build --clean"
+    "clean": "tsc --build --clean",
+    "prepublishOnly": "npm run build"
   }
 }

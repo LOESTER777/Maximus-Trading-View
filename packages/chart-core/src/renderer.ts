@@ -16,7 +16,9 @@
 import type { WatermarkOptions } from './contracts.js';
 import type { SeriesModel } from './series.js';
 import {
+  indexToTime,
   logicalToCoordinate,
+  timeToIndex,
   visibleLogicalRange,
   visibleTickIndices,
   type TimeScaleState,
@@ -487,6 +489,117 @@ function medianStepSeconds(ts: TimeScaleState, de: number, ate: number): number 
 // Series
 // ═════════════════════════════════════════════════════════════════════════════
 
+/**
+ * A janela visivel de UMA serie: quais indices do array dela desenhar, e em que
+ * posicao do EIXO cada um vai.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⭐ O DEFEITO QUE ISTO CORRIGE — INDICE DE ARRAY ≠ INDICE LOGICO
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * O renderer desenhava toda serie assim: `logicalToCoordinate(ts, i)`, com `i`
+ * sendo o indice no array DA PROPRIA SERIE. Isso equivale a afirmar que
+ * `serie.data[i]` e a barra logica `i` — verdade apenas para a serie que ORIGINA
+ * o eixo (as velas, ver `rebuildTimes`).
+ *
+ * Consequencia medida em tela (240 velas, EMA 20): o plotter de indicadores
+ * descarta os pontos de aquecimento, entao a serie da EMA tinha **221** pontos.
+ * Desenhados nas colunas 0..220, a linha:
+ *  - **terminava 19 barras antes da ultima vela** — o sintoma que o usuario viu;
+ *  - e estava **deslocada 19 barras para a ESQUERDA**, ou seja o valor da barra 19
+ *    aparecia na coluna da barra 0. O indicador mentia sobre a posicao, nao apenas
+ *    "faltava um pedaco".
+ *
+ * A correcao e posicionar por TEMPO: cada ponto vai onde o `time` dele cai no
+ * eixo. Isso conserta a classe inteira do defeito e passa a suportar serie
+ * ESPARSA — indicador com buraco no meio (SuperTrend que vira `null` na inversao),
+ * serie de outro periodo, barra descartada por dado sujo.
+ *
+ * ⚠️ **Caminho rapido preservado.** Quando a serie esta alinhada ao eixo (mesmo
+ * comprimento e mesmas pontas), o indice de array E o indice logico, e a conversao
+ * por tempo seria desperdicio — as velas caem sempre nesse caso, que e o mais
+ * quente do laco. So a serie desalinhada paga a busca binaria.
+ */
+interface JanelaSerie {
+  /** Primeiro indice do array da serie a desenhar. */
+  readonly de: number;
+  /** Ultimo indice do array da serie a desenhar. */
+  readonly ate: number;
+  /** Posicao no EIXO do ponto `i` do array. `null` = sem posicao (nao desenha). */
+  readonly logical: (i: number) => number | null;
+}
+
+/** Primeiro indice cujo `time` e >= `t`. Busca binaria; serie ordenada por tempo. */
+function primeiroDesde(data: readonly { readonly time: number }[], t: number): number {
+  let lo = 0;
+  let hi = data.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const d = data[mid];
+    if (d !== undefined && d.time < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * Calcula a janela de desenho de uma serie. `null` quando nao ha o que desenhar.
+ */
+function janelaDaSerie(ts: TimeScaleState, s: SeriesModel): JanelaSerie | null {
+  const lr = visibleLogicalRange(ts);
+  if (lr === null) return null;
+  const n = s.data.length;
+  if (n === 0) return null;
+  const m = ts.times.length;
+
+  // ── Caminho rapido: serie ALINHADA ao eixo ────────────────────────────────
+  //
+  // Mesmo comprimento E mesmas pontas => o indice de array e o indice logico.
+  // Conferir as pontas (e nao so o comprimento) e o que impede uma serie de
+  // mesmo tamanho mas deslocada no tempo de entrar aqui por engano.
+  const primeiro = s.data[0];
+  const ultimo = s.data[n - 1];
+  if (
+    n === m &&
+    primeiro !== undefined &&
+    ultimo !== undefined &&
+    primeiro.time === ts.times[0] &&
+    ultimo.time === ts.times[m - 1]
+  ) {
+    const de = Math.max(0, Math.floor(lr.from) - 1);
+    const ate = Math.min(n - 1, Math.ceil(lr.to) + 1);
+    if (ate < de) return null;
+    return { de, ate, logical: (i) => i };
+  }
+
+  // ── Caminho por TEMPO: serie desalinhada (indicador aquecendo, esparsa) ───
+  //
+  // Traduz as bordas da janela logica para TEMPO e acha, por busca binaria, o
+  // trecho do array da serie que cai nela. Uma de folga de cada lado para o traco
+  // de linha entrar e sair pela borda em vez de terminar dentro da tela.
+  const tDe = indexToTime(ts, lr.from - 1);
+  const tAte = indexToTime(ts, lr.to + 1);
+
+  const de = tDe === null ? 0 : Math.max(0, primeiroDesde(s.data, tDe) - 1);
+  const ate =
+    tAte === null ? n - 1 : Math.min(n - 1, primeiroDesde(s.data, tAte));
+  if (ate < de) return null;
+
+  return {
+    de,
+    ate,
+    logical: (i) => {
+      const d = s.data[i];
+      if (d === undefined) return null;
+      // `findNearest = true`: um ponto cujo tempo nao e barra exata (indicador de
+      // outro periodo, ponto projetado) cai no indice FRACIONARIO interpolado, em
+      // vez de perder a posicao. E o mesmo mecanismo que mantem desenho ancorado
+      // no lugar ao trocar de periodo.
+      return timeToIndex(ts, d.time, true);
+    },
+  };
+}
+
 function drawSeries(
   ctx: CanvasRenderingContext2D,
   hpr: number,
@@ -496,19 +609,14 @@ function drawSeries(
   s: SeriesModel,
   theme: RenderTheme,
 ): void {
-  const lr = visibleLogicalRange(ts);
-  if (lr === null) return;
-  // So percorre as barras visiveis, com uma de folga de cada lado para o traco de
-  // linha nao "entrar" cortado pela borda.
-  const de = Math.max(0, Math.floor(lr.from) - 1);
-  const ate = Math.min(s.data.length - 1, Math.ceil(lr.to) + 1);
-  if (ate < de) return;
+  const janela = janelaDaSerie(ts, s);
+  if (janela === null) return;
 
-  if (s.type === 'Candlestick') drawCandles(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
-  else if (s.type === 'Bar') drawBars(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
-  else if (s.type === 'Histogram') drawHistogram(ctx, hpr, vpr, ts, ps, s, de, ate, theme);
-  else if (s.type === 'Band') drawBand(ctx, hpr, vpr, ts, ps, s, de, ate);
-  else drawLineOrArea(ctx, hpr, vpr, ts, ps, s, de, ate);
+  if (s.type === 'Candlestick') drawCandles(ctx, hpr, vpr, ts, ps, s, janela, theme);
+  else if (s.type === 'Bar') drawBars(ctx, hpr, vpr, ts, ps, s, janela, theme);
+  else if (s.type === 'Histogram') drawHistogram(ctx, hpr, vpr, ts, ps, s, janela, theme);
+  else if (s.type === 'Band') drawBand(ctx, hpr, vpr, ts, ps, s, janela);
+  else drawLineOrArea(ctx, hpr, vpr, ts, ps, s, janela);
 }
 
 function drawCandles(
@@ -518,10 +626,10 @@ function drawCandles(
   ts: TimeScaleState,
   ps: PriceScaleState,
   s: SeriesModel,
-  de: number,
-  ate: number,
+  janela: JanelaSerie,
   theme: RenderTheme,
 ): void {
+  const { de, ate } = janela;
   const up = (s.options.upColor as string) ?? theme.upColor;
   const down = (s.options.downColor as string) ?? theme.downColor;
   // Largura do corpo: 80% do espacamento, com piso de 1 px para nao sumir no
@@ -544,7 +652,9 @@ function drawCandles(
       const alta = c.close >= c.open;
       if ((dir === 'up') !== alta) continue;
 
-      const x = logicalToCoordinate(ts, i);
+      const lg = janela.logical(i);
+      if (lg === null) continue;
+      const x = logicalToCoordinate(ts, lg);
       if (x === null) continue;
       const cx = x * hpr;
 
@@ -565,7 +675,9 @@ function drawCandles(
       const alta = c.close >= c.open;
       if ((dir === 'up') !== alta) continue;
 
-      const x = logicalToCoordinate(ts, i);
+      const lg = janela.logical(i);
+      if (lg === null) continue;
+      const x = logicalToCoordinate(ts, lg);
       if (x === null) continue;
       const yO = priceToCoordinate(ps, c.open);
       const yC = priceToCoordinate(ps, c.close);
@@ -597,10 +709,10 @@ function drawBars(
   ts: TimeScaleState,
   ps: PriceScaleState,
   s: SeriesModel,
-  de: number,
-  ate: number,
+  janela: JanelaSerie,
   theme: RenderTheme,
 ): void {
+  const { de, ate } = janela;
   const up = (s.options.upColor as string) ?? theme.upColor;
   const down = (s.options.downColor as string) ?? theme.downColor;
   // Comprimento do tick, em pixel de bitmap: metade do espacamento de barra, com
@@ -620,7 +732,9 @@ function drawBars(
       const alta = c.close >= c.open;
       if ((dir === 'up') !== alta) continue;
 
-      const x = logicalToCoordinate(ts, i);
+      const lg = janela.logical(i);
+      if (lg === null) continue;
+      const x = logicalToCoordinate(ts, lg);
       if (x === null) continue;
       const cx = x * hpr;
 
@@ -671,10 +785,10 @@ function drawHistogram(
   ts: TimeScaleState,
   ps: PriceScaleState,
   s: SeriesModel,
-  de: number,
-  ate: number,
+  janela: JanelaSerie,
   theme: RenderTheme,
 ): void {
+  const { de, ate } = janela;
   const larguraBarra = Math.max(1, ts.barSpacing * 0.7 * hpr);
   const yZero = priceToCoordinate(ps, 0);
   const base = yZero !== null ? yZero * vpr : ps.height * vpr;
@@ -683,7 +797,9 @@ function drawHistogram(
   for (let i = de; i <= ate; i++) {
     const d = pontos[i];
     if (d === undefined || !Number.isFinite(d.value)) continue;
-    const x = logicalToCoordinate(ts, i);
+    const lg = janela.logical(i);
+    if (lg === null) continue;
+    const x = logicalToCoordinate(ts, lg);
     const y = priceToCoordinate(ps, d.value);
     if (x === null || y === null) continue;
     ctx.fillStyle = d.color ?? (s.options.color as string) ?? theme.text;
@@ -700,9 +816,9 @@ function drawLineOrArea(
   ts: TimeScaleState,
   ps: PriceScaleState,
   s: SeriesModel,
-  de: number,
-  ate: number,
+  janela: JanelaSerie,
 ): void {
+  const { de, ate } = janela;
   const cor = (s.options.color as string) ?? '#38bdf8';
   const largura = ((s.options.lineWidth as number) ?? 1) * Math.min(hpr, vpr);
 
@@ -711,25 +827,39 @@ function drawLineOrArea(
   ctx.beginPath();
   const pontos = s.data as readonly ValueLike[];
   let primeiro = true;
+  // Extremos EFETIVAMENTE desenhados, em pixel — o fechamento da area precisa
+  // deles, e nao das bordas da janela: com serie desalinhada ou ponto nao-finito,
+  // o primeiro e o ultimo ponto pintados podem estar bem dentro da janela.
+  let xPrimeiro: number | null = null;
+  let xUltimo: number | null = null;
   for (let i = de; i <= ate; i++) {
     const d = pontos[i];
     if (d === undefined || !Number.isFinite(d.value)) continue;
-    const x = logicalToCoordinate(ts, i);
+    const lg = janela.logical(i);
+    if (lg === null) continue;
+    const x = logicalToCoordinate(ts, lg);
     const y = priceToCoordinate(ps, d.value);
     if (x === null || y === null) continue;
     if (primeiro) {
       ctx.moveTo(x * hpr, y * vpr);
       primeiro = false;
+      xPrimeiro = x * hpr;
     } else {
       ctx.lineTo(x * hpr, y * vpr);
     }
+    xUltimo = x * hpr;
   }
   ctx.stroke();
 
-  if (s.type === 'Area') {
-    // Preenche ate a base. `lineTo` de volta fecha o poligono.
-    ctx.lineTo(logicalToCoordinate(ts, ate)! * hpr, ps.height * vpr);
-    ctx.lineTo(logicalToCoordinate(ts, de)! * hpr, ps.height * vpr);
+  if (s.type === 'Area' && xPrimeiro !== null && xUltimo !== null) {
+    // Fecha o poligono contra a base, pelos extremos REAIS do traco.
+    //
+    // ⚠️ A versao anterior usava `logicalToCoordinate(ts, ate)!` — com `!`. Além de
+    // assumir alinhamento entre indice de array e eixo, o `!` mentia: a funcao
+    // devolve `null` para entrada nao-finita, e um `null!` viraria `NaN` no caminho
+    // do canvas, apagando o preenchimento inteiro sem erro nenhum.
+    ctx.lineTo(xUltimo, ps.height * vpr);
+    ctx.lineTo(xPrimeiro, ps.height * vpr);
     ctx.closePath();
     ctx.globalAlpha = 0.15;
     ctx.fillStyle = cor;
@@ -760,9 +890,9 @@ function drawBand(
   ts: TimeScaleState,
   ps: PriceScaleState,
   s: SeriesModel,
-  de: number,
-  ate: number,
+  janela: JanelaSerie,
 ): void {
+  const { de, ate } = janela;
   const cor = (s.options.color as string) ?? '#38bdf8';
   const pontos = s.data as readonly BandLike[];
 
@@ -796,7 +926,8 @@ function drawBand(
         pintar();
         continue;
       }
-      const x = logicalToCoordinate(ts, i);
+      const lg = janela.logical(i);
+      const x = lg === null ? null : logicalToCoordinate(ts, lg);
       const yU = priceToCoordinate(ps, d.upper);
       const yL = priceToCoordinate(ps, d.lower);
       if (x === null || yU === null || yL === null) {
