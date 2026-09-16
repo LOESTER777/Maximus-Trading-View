@@ -1,0 +1,26 @@
+{
+  "name": "@robustus/charts-playground",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Superficie de desenvolvimento local: exercita a biblioteca com dado sintetico, sem backend nem feed.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@robustus/charts-core": "0.1.0",
+    "@robustus/charts-drawings": "0.1.0",
+    "@robustus/charts-engine": "0.1.0",
+    "@robustus/charts-primitives": "0.1.0",
+    "@robustus/charts-react": "0.1.0",
+    "lightweight-charts": "^5.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.0"
+  }
+}

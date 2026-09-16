@@ -76,3 +76,23 @@ construído *sobre* isso.
 
 Se um dia trocar: o que muda é `engine` e `drawings/chart-converters.ts`. Não as
 2.700 linhas de desenho do bookmap, nem os núcleos puros, nem nenhuma tela.
+
+## Playground local
+
+`apps/playground` — superfície para ver a biblioteca funcionando sem backend, com
+dado sintético determinístico.
+
+```
+npm run dev -w @robustus/charts-playground   # http://127.0.0.1:5173
+```
+
+Porta **5173** (padrão do Vite), com `strictPort: true` — falha em vez de pular de
+porta em silêncio. Verificada livre nesta máquina, longe das portas dos outros
+projetos (Trading 41000/41100, Postgres 543x, bridges 822x/823x). Reserva: 5174.
+
+Os alias do Vite apontam para `packages/*/src`, não para `dist`: editar um pacote
+reflete no navegador sem `tsc --build`. Isso **não** substitui `npm run build`, que
+verifica o que um consumidor de verdade importa.
+
+O dado vem de `apps/playground/src/synthetic.ts` — caminhada aleatória com semente
+fixa. **Não é formato de provedor real**; dado real entra pela camada `datafeed`.
