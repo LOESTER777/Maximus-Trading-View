@@ -140,6 +140,9 @@ export class RobustusChartCore implements IChartApi {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly ts: TimeScaleState;
   private panes: Pane[] = [];
+  /** Proximo indice ESTAVEL de pane. Nunca reutilizado, para a serie nao apontar
+   * para uma pane que virou outra apos remocao. A pane 0 e a principal. */
+  private nextPaneId = 1;
   private opts: ChartOptions;
   private theme: RenderTheme;
 
@@ -303,26 +306,80 @@ export class RobustusChartCore implements IChartApi {
     }
   }
 
-  /** Cria um sub-painel abaixo e devolve o indice. O principal fica com 60%. */
+  /**
+   * Cria um sub-painel abaixo e devolve o indice ESTAVEL dele.
+   *
+   * ⚠️ O indice e um identificador que NAO muda quando outra pane e removida — e
+   * a chave que a serie guarda. A POSICAO visual (ordem de empilhamento) vem da
+   * ordem no array `panes`, nao do indice. Separar as duas coisas e o que permite
+   * `removePane` tirar uma pane do meio sem renumerar as sobreviventes e sem
+   * orfanar as series delas.
+   */
   addPane(): number {
-    const index = this.panes.length;
-    // O principal mantem a maior fatia; sub-paineis dividem o resto. Sub-painel de
-    // oscilador precisa de menos altura que o preco.
-    this.panes[0]!.heightFraction = 0.62;
+    const index = this.nextPaneId++;
     this.panes.push({
       index,
       priceScale: createPriceScaleState(0.15, 0.15),
-      heightFraction: 0.38 / index,
+      heightFraction: 0, // definido por rebalancePanes
       series: [],
       priceScaleManual: false,
     });
-    // Reequilibra sub-paineis existentes.
-    for (let k = 1; k < this.panes.length; k++) {
-      this.panes[k]!.heightFraction = 0.38 / (this.panes.length - 1);
-    }
-    this.distributePaneHeights(this.panes[0]!.priceScale.height / (this.panes[0]!.heightFraction || 1));
+    this.rebalancePanes();
     this.measure();
     return index;
+  }
+
+  /**
+   * Remove um sub-painel e TODAS as series dele. Recompacta o layout.
+   *
+   * Fecha a divida do `IndicatorPlotter`: ao desligar um oscilador, a pane some de
+   * verdade em vez de ficar uma faixa vazia. A pane principal (indice 0) nao pode
+   * ser removida — ela e o grafico de preco; um pedido de remove-la e ignorado.
+   *
+   * Idempotente: remover um indice inexistente e no-op.
+   */
+  removePane(index: number): void {
+    if (this.disposed || index === 0) return;
+    const pos = this.panes.findIndex((p) => p.index === index);
+    if (pos < 0) return;
+
+    const pane = this.panes[pos]!;
+    // Desanexa as primitives das series antes de descartar, senao ficam vivas
+    // segurando referencia ao grafico.
+    for (const s of pane.series) {
+      for (const prim of s.model.primitives) {
+        try {
+          prim.detached();
+        } catch {
+          /* primitive em descarte */
+        }
+      }
+    }
+    this.panes.splice(pos, 1);
+    this.rebalancePanes();
+    this.measure();
+  }
+
+  /**
+   * Reparte a altura entre a pane principal e os sub-paineis.
+   *
+   * Ponto UNICO de decisao de fracao, chamado por `addPane` e `removePane` — antes
+   * a regra estava duplicada no `addPane` e divergia ao remover. O principal fica
+   * com a maior fatia; os sub-paineis dividem o resto por igual, porque oscilador
+   * precisa de menos altura que o preco e um nao vale mais que o outro.
+   */
+  private rebalancePanes(): void {
+    const subs = this.panes.length - 1;
+    if (subs <= 0) {
+      this.panes[0]!.heightFraction = 1;
+      return;
+    }
+    // Principal com 62%, sub-paineis dividindo 38% — os mesmos valores de antes,
+    // agora num lugar so.
+    this.panes[0]!.heightFraction = 0.62;
+    for (let k = 1; k < this.panes.length; k++) {
+      this.panes[k]!.heightFraction = 0.38 / subs;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

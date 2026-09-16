@@ -340,8 +340,10 @@ export interface IChartApi extends IChartApiBase {
     paneIndex?: number,
   ): ISeriesApi<S>;
   removeSeries(series: ISeriesApi<SeriesType>): void;
-  /** Cria um sub-painel abaixo do principal e devolve o indice dele. */
+  /** Cria um sub-painel abaixo do principal e devolve o indice ESTAVEL dele. */
   addPane(): number;
+  /** Remove um sub-painel e suas series. A pane principal (0) nao e removivel. */
+  removePane(index: number): void;
   subscribeClick(handler: (param: MouseEventParams) => void): void;
   subscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
   remove(): void;

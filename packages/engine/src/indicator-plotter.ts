@@ -252,9 +252,18 @@ export class IndicatorPlotter {
       }
     }
     this.seriesVivas.length = 0;
-    // As panes criadas por `addPane` ficam; o motor ainda nao expoe removePane.
-    // Reusar a pane pelo indice quando o mesmo plot volta seria o proximo passo;
-    // por ora, remover a serie ja esvazia a pane visualmente.
+    // Remove as panes que este plotter criou — fecha a divida de "pane orfa" que
+    // existia enquanto o motor nao tinha removePane. `removePane` ja desanexa as
+    // series restantes e recompacta o layout; remover em ordem decrescente de
+    // posicao nao e necessario porque o motor identifica por indice estavel, nao
+    // por posicao.
+    for (const pane of this.panesVivas) {
+      try {
+        this.chart.removePane(pane.paneIndex);
+      } catch {
+        // Motor sem a pane (ja removida) ou em descarte: no-op.
+      }
+    }
     this.panesVivas.length = 0;
   }
 }
