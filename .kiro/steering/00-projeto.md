@@ -42,40 +42,55 @@ npm run build     # todos os pacotes
 
 ```
 core          (zero dependência, lib SEM DOM)
- ├── primitives    (+ lightweight-charts e fancy-canvas, SÓ por tipo)
+chart-core    (motor em canvas; sem terceiros; lib com DOM)
+ ├── primitives    (+ chart-core, SÓ por tipo)
  ├── datafeed      (+ nada; fetch é injetado)
- └── drawings      (+ lightweight-charts, tipo e runtime)
-engine        (core + primitives; ÚNICO com lightweight-charts em runtime)
+ └── drawings      (+ chart-core, tipo e runtime)
+engine        (core + chart-core + primitives; usa createChart do chart-core)
  └── react        (+ drawings, para o hook opcional)
 devtools      (core + primitives) — não entra em aplicação
 ```
 
-Três regras que sustentam isso:
+Quatro regras que sustentam isso:
 
 1. **`core` não vê DOM.** `"lib": ["ES2020"]` no `tsconfig`. Um `document` ou
    `fetch` acidental é erro de compilação, não dependência escondida.
-2. **`primitives` importa o substrato só por tipo.** Verificável no artefato:
+2. **`chart-core` não importa terceiro.** É o motor próprio. Verificável:
+   `grep -rn "lightweight-charts\|fancy-canvas" packages/chart-core/dist` só acha
+   comentário, nunca `from`.
+3. **`primitives` importa o motor só por tipo.** Verificável no artefato:
    `grep -nE "^\s*(import|export)[^*]*from" packages/primitives/dist/*.js` não cita
-   `lightweight-charts`.
-3. **`engine` não importa `drawings`.** Desenho é opcional; se o motor o importasse,
+   o motor em runtime.
+4. **`engine` não importa `drawings`.** Desenho é opcional; se o motor o importasse,
    toda aplicação pagaria o peso. A ligação vive em `react/useDrawings.ts`.
 
-## Escolha de substrato — decidida, não reabra sem motivo novo
+## Motor de renderização — PRÓPRIO, zero terceiros
 
-O renderizador é o **`lightweight-charts` (Apache 2.0)**, e isso é deliberado.
+⚠️ **Atualizado.** O projeto começou sobre `lightweight-charts` (Apache 2.0), mas
+por decisão do usuário — "nada de terceiros" — isso foi **substituído por motor
+próprio**, `@robustus/chart-core`, em canvas puro. Não há mais nenhum
+`lightweight-charts` nem `fancy-canvas`, nem em runtime, nem em `node_modules`.
 
-Ser independente da TradingView como *serviço* não exige rejeitar uma biblioteca
-Apache 2.0 dela. São coisas diferentes: o **Advanced Charts** exige contrato
-assinado, atribuição visível e ambiente não-paywall; o `lightweight-charts` não tem
-amarra nenhuma.
+O motor entrega o que o terceiro entregava: eixo de tempo com sessão irregular
+(espaço lógico contínuo — velas equidistantes, fim de semana não ocupa espaço),
+autoescala de preço pela janela visível, pan/zoom, crosshair, sub-painéis
+empilhados, e o contrato de `ISeriesPrimitive`.
 
-O que o substrato entrega é a parte chata e madura: eixo de tempo com sessão
-irregular, inércia de pan/zoom, crosshair, autoescala, resize com
-`devicePixelRatio`, e a API de `ISeriesPrimitive`. O diferencial da biblioteca é
-construído *sobre* isso.
+A troca foi possível porque o contrato de `chart-core` foi desenhado **compatível**
+com o do terceiro: bookmap, footprint e desenho consumiam aquele contrato por tipo,
+e trocar o motor foi trocar o import (`'lightweight-charts'` → `'@robustus/chart-core'`),
+sem uma linha de lógica alterada. Os 703 testes provam isso.
 
-Se um dia trocar: o que muda é `engine` e `drawings/chart-converters.ts`. Não as
-2.700 linhas de desenho do bookmap, nem os núcleos puros, nem nenhuma tela.
+⚠️ O motor v1 é mais simples que o `lightweight-charts` maduro. Faltam: rótulos de
+data desenhados no eixo, pinça em touch, animação de transição, escala log
+plenamente exercitada. São acréscimos **aqui**, nunca volta a terceiro. Se algo
+faltar, implemente no `chart-core`.
+
+Verificação de que não há terceiro:
+```
+grep -rn "from 'lightweight-charts'\|from 'fancy-canvas'" packages/*/src apps/*/src
+# deve ser vazio
+```
 
 ## Playground local
 
