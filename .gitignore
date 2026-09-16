@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.vitest-cache/
+
+# Relatorios de bancada: sao medicao de maquina, nao fonte.
+bench-report*.json
+__bench__/out/
+
+# Ambiente
+.env
+.env.*
+!.env.example
+
+# Editor / SO
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -1,0 +1,30 @@
+{
+  "name": "@robustus/charts-devtools",
+  "version": "0.1.0",
+  "description": "Ferramental de desenvolvimento: bancada de desempenho com dubles de canvas, verificacao de independencia e relogio injetavel. Nao entra no bundle de aplicacao.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  },
+  "dependencies": {
+    "@robustus/charts-core": "0.1.0",
+    "@robustus/charts-primitives": "0.1.0"
+  },
+  "peerDependencies": {
+    "lightweight-charts": "^5.1.0"
+  }
+}

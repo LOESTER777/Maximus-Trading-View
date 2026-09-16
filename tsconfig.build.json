@@ -1,0 +1,13 @@
+{
+  // Orquestrador de build do workspace. A ordem e resolvida pelas
+  // `references` de cada pacote, nao por esta lista.
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/primitives" },
+    { "path": "./packages/datafeed" },
+    { "path": "./packages/engine" },
+    { "path": "./packages/react" },
+    { "path": "./packages/devtools" }
+  ]
+}

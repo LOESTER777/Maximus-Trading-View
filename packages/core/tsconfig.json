@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // ⚠️ O core e PURO: nada de DOM aqui. A `lib` sem DOM e a barreira que faz
+    // um `document` ou `fetch` acidental virar erro de compilacao em vez de
+    // dependencia escondida descoberta em producao.
+    "lib": ["ES2020"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "src/**/__bench__/**"]
+}

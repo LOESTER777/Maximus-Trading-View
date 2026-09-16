@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // A bancada le `os.cpus()` para rotular o relatorio com a maquina que
+    // mediu — um numero de desempenho sem a maquina nao significa nada.
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"],
+  "references": [{ "path": "../core" }, { "path": "../primitives" }]
+}

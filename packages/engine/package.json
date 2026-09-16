@@ -1,0 +1,30 @@
+{
+  "name": "@robustus/charts-engine",
+  "version": "0.1.0",
+  "description": "Motor de grafico sem framework: envolve o substrato lightweight-charts, expoe vocabulario proprio (linhas, series, marcadores, mapeador de coordenadas) e anexa as camadas de canvas.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc --build",
+    "clean": "tsc --build --clean"
+  },
+  "dependencies": {
+    "@robustus/charts-core": "0.1.0",
+    "@robustus/charts-primitives": "0.1.0"
+  },
+  "peerDependencies": {
+    "lightweight-charts": "^5.1.0"
+  }
+}

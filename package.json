@@ -1,0 +1,39 @@
+{
+  "name": "robustus-charts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Biblioteca de visualizacao de mercado (bookmap, footprint, perfil de volume, heatmap por regiao de preco) agnostica de fonte de dados e de framework.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.18"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "build:force": "tsc --build tsconfig.build.json --force",
+    "clean": "tsc --build tsconfig.build.json --clean",
+    "typecheck": "tsc --build tsconfig.build.json --force",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "test:core": "vitest --run packages/core",
+    "test:primitives": "vitest --run packages/primitives"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "fancy-canvas": "^2.1.0",
+    "fast-check": "^4.5.3",
+    "jsdom": "^25.0.1",
+    "lightweight-charts": "^5.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

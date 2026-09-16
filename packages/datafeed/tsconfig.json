@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // O datafeed descreve transporte, entao precisa dos tipos de DOM
+    // (`AbortSignal`, `Response`). Mas NAO importa `fetch` — quem chama injeta.
+    "lib": ["ES2020", "DOM"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"],
+  "references": [{ "path": "../core" }]
+}
