@@ -34,8 +34,28 @@ import {
   useChartState,
 } from '@robustus/charts-react';
 import type { ActiveTool, SnapBar } from '@robustus/charts-drawings';
-import type { IndicatorPlot, PriceSeriesType, IndicatorState } from '@robustus/charts-engine';
-import { emaFactory, bollingerFactory, rsiFactory, macdFactory } from '@robustus/charts-indicators';
+import type {
+  IndicatorPlot,
+  PriceSeriesType,
+  IndicatorState,
+  ChartPriceLine,
+} from '@robustus/charts-engine';
+import {
+  emaFactory,
+  bollingerFactory,
+  rsiFactory,
+  macdFactory,
+  supertrendFactory,
+  ichimokuFactory,
+  parabolicSarFactory,
+  donchianFactory,
+  keltnerFactory,
+  vwapBandsFactory,
+  mfiFactory,
+  awesomeOscillatorFactory,
+  adxFactory,
+  atrFactory,
+} from '@robustus/charts-indicators';
 import type { AlertSpec } from '@robustus/charts-react';
 import { makeSyntheticBundle } from './synthetic.js';
 
@@ -71,6 +91,42 @@ const MODOS: ReadonlyArray<{ id: ModoGrafico; rotulo: string; serie: PriceSeries
 /** Velocidades de replay oferecidas, em barras/segundo. */
 const VELOCIDADES = [1, 2, 4, 8, 16] as const;
 
+/**
+ * Catalogo de indicadores do playground.
+ *
+ * `id` e a chave estavel do plot (e a mesma que entra no layout salvo); `nome` e
+ * o nome no registry (o que a persistencia grava); `criar` instancia com os
+ * parametros da vitrine. Nao e o catalogo completo da biblioteca — sao 29
+ * indicadores — e sim uma amostra que cobre as quatro naturezas: media/tendencia
+ * sobre o preco, canal com banda preenchida, oscilador em sub-painel e ponto de
+ * parada.
+ */
+const CATALOGO: ReadonlyArray<{
+  readonly id: string;
+  readonly nome: string;
+  readonly rotulo: string;
+  readonly grupo: 'preco' | 'painel';
+  readonly criar: () => IndicatorPlot['instance'];
+  readonly cor?: string;
+}> = [
+  // ── Sobre o preco ──
+  { id: 'ema20', nome: 'ema', rotulo: 'EMA 20', grupo: 'preco', criar: () => emaFactory.create({ period: 20 }), cor: '#e9c46a' },
+  { id: 'bb', nome: 'bollinger', rotulo: 'Bollinger', grupo: 'preco', criar: () => bollingerFactory.create({ period: 20, mult: 2 }) },
+  { id: 'keltner', nome: 'keltner', rotulo: 'Keltner', grupo: 'preco', criar: () => keltnerFactory.create({ period: 20, atrPeriod: 10, mult: 2 }) },
+  { id: 'donchian', nome: 'donchian', rotulo: 'Donchian', grupo: 'preco', criar: () => donchianFactory.create({ period: 20 }) },
+  { id: 'vwapb', nome: 'vwap_bands', rotulo: 'VWAP±σ', grupo: 'preco', criar: () => vwapBandsFactory.create({ mult: 2 }) },
+  { id: 'supertrend', nome: 'supertrend', rotulo: 'SuperTrend', grupo: 'preco', criar: () => supertrendFactory.create({ period: 10, mult: 3 }) },
+  { id: 'psar', nome: 'psar', rotulo: 'Parabolic SAR', grupo: 'preco', criar: () => parabolicSarFactory.create() },
+  { id: 'ichimoku', nome: 'ichimoku', rotulo: 'Ichimoku', grupo: 'preco', criar: () => ichimokuFactory.create() },
+  // ── Sub-painel ──
+  { id: 'rsi', nome: 'rsi', rotulo: 'RSI', grupo: 'painel', criar: () => rsiFactory.create({ period: 14 }) },
+  { id: 'macd', nome: 'macd', rotulo: 'MACD', grupo: 'painel', criar: () => macdFactory.create() },
+  { id: 'mfi', nome: 'mfi', rotulo: 'MFI', grupo: 'painel', criar: () => mfiFactory.create({ period: 14 }) },
+  { id: 'ao', nome: 'ao', rotulo: 'Awesome Osc.', grupo: 'painel', criar: () => awesomeOscillatorFactory.create() },
+  { id: 'adx', nome: 'adx', rotulo: 'ADX/DMI', grupo: 'painel', criar: () => adxFactory.create({ period: 14 }) },
+  { id: 'atr', nome: 'atr', rotulo: 'ATR', grupo: 'painel', criar: () => atrFactory.create({ period: 14 }) },
+];
+
 function App(): JSX.Element {
   // Pregao sintetico deterministico, gerado uma vez.
   const bundle = useMemo(() => makeSyntheticBundle(240, 300, 42), []);
@@ -83,11 +139,24 @@ function App(): JSX.Element {
   const [modo, setModo] = useState<ModoGrafico>('VELA');
   const [modoReplay, setModoReplay] = useState(false);
 
-  // Indicadores ligados/desligados por toggle.
-  const [emaOn, setEmaOn] = useState(true);
-  const [bbOn, setBbOn] = useState(false);
-  const [rsiOn, setRsiOn] = useState(true);
-  const [macdOn, setMacdOn] = useState(false);
+  // ── INDICADORES ligados, por id do catalogo ───────────────────────────────
+  //
+  // Um conjunto em vez de um booleano por indicador: sao 14 no catalogo do
+  // playground, e um `useState` para cada viraria parede de codigo repetido.
+  const [ligados, setLigados] = useState<ReadonlySet<string>>(
+    () => new Set(['ema20', 'rsi']),
+  );
+  const alternar = (id: string): void =>
+    setLigados((atual) => {
+      const novo = new Set(atual);
+      if (novo.has(id)) novo.delete(id);
+      else novo.add(id);
+      return novo;
+    });
+
+  // Recursos visuais do motor, para exercitar na tela.
+  const [gradeVertical, setGradeVertical] = useState(false);
+  const [marcaDagua, setMarcaDagua] = useState(true);
 
   // ── REPLAY ──────────────────────────────────────────────────────────────
   //
@@ -164,14 +233,15 @@ function App(): JSX.Element {
   });
 
   // ── INDICADORES ───────────────────────────────────────────────────────────
-  const plots: IndicatorPlot[] = useMemo(() => {
-    const lista: IndicatorPlot[] = [];
-    if (emaOn) lista.push({ id: 'ema20', instance: emaFactory.create({ period: 20 }), colors: { value: '#e9c46a' } });
-    if (bbOn) lista.push({ id: 'bb', instance: bollingerFactory.create({ period: 20, mult: 2 }) });
-    if (rsiOn) lista.push({ id: 'rsi', instance: rsiFactory.create({ period: 14 }) });
-    if (macdOn) lista.push({ id: 'macd', instance: macdFactory.create() });
-    return lista;
-  }, [emaOn, bbOn, rsiOn, macdOn]);
+  const plots: IndicatorPlot[] = useMemo(
+    () =>
+      CATALOGO.filter((c) => ligados.has(c.id)).map((c) => ({
+        id: c.id,
+        instance: c.criar(),
+        ...(c.cor === undefined ? {} : { colors: { value: c.cor } }),
+      })),
+    [ligados],
+  );
 
   // Indicadores seguem a fatia EXIBIDA, para o que se calcula ser o que se ve.
   useIndicators({ engine, plots, bars: velasExibidas });
@@ -221,12 +291,12 @@ function App(): JSX.Element {
 
   // Linhas de preco marcando os niveis de alerta, para o operador ver onde eles
   // estao. Seguem os toggles.
-  const linhasAlerta = useMemo(
+  const linhasAlerta = useMemo<ChartPriceLine[]>(
     () =>
       alertasLigados
         ? [
-            { price: niveis.acima, color: '#16c784', title: 'Alerta ↑', lineStyle: 2 as const },
-            { price: niveis.abaixo, color: '#ea3943', title: 'Alerta ↓', lineStyle: 2 as const },
+            { price: niveis.acima, color: '#16c784', title: 'Alerta ↑', lineStyle: 2 },
+            { price: niveis.abaixo, color: '#ea3943', title: 'Alerta ↓', lineStyle: 2 },
           ]
         : [],
     [alertasLigados, niveis],
@@ -234,14 +304,49 @@ function App(): JSX.Element {
 
   // Os indicadores ligados, no formato serializavel (id + nome no registry +
   // params). O restore religa os toggles a partir disto.
-  const indicadoresState = useMemo<IndicatorState[]>(() => {
-    const lista: IndicatorState[] = [];
-    if (emaOn) lista.push({ id: 'ema20', name: 'ema', params: { period: 20 } });
-    if (bbOn) lista.push({ id: 'bb', name: 'bollinger', params: { period: 20, mult: 2 } });
-    if (rsiOn) lista.push({ id: 'rsi', name: 'rsi', params: { period: 14 } });
-    if (macdOn) lista.push({ id: 'macd', name: 'macd' });
-    return lista;
-  }, [emaOn, bbOn, rsiOn, macdOn]);
+  const indicadoresState = useMemo<IndicatorState[]>(
+    () =>
+      CATALOGO.filter((c) => ligados.has(c.id)).map((c) => ({ id: c.id, name: c.nome })),
+    [ligados],
+  );
+
+  // ── RECURSOS VISUAIS DO MOTOR ─────────────────────────────────────────────
+  //
+  // Grade vertical, marca d'agua e formatacao de preco por TICK do instrumento.
+  // Aplicados por `applyOptions` — o motor releria o tema e reagenda o quadro.
+  useEffect(() => {
+    if (engine === null) return;
+    engine.api.applyOptions({
+      grid: {
+        vertLines: { visible: gradeVertical, color: 'rgba(148,163,184,0.07)' },
+        horzLines: { visible: true, color: 'rgba(148,163,184,0.10)' },
+      },
+      watermark: marcaDagua ? { text: 'SINTÉTICO', fontSize: 64 } : { text: '', visible: false },
+      rightPriceScale: {
+        scaleMargins: { top: 0.08, bottom: 0.2 },
+        // Tick do instrumento sintetico: o eixo passa a arredondar ao tick em vez
+        // de adivinhar casas pela amplitude.
+        priceFormat: { tickSize: bundle.tickSize },
+      },
+    });
+  }, [engine, gradeVertical, marcaDagua, bundle.tickSize]);
+
+  /**
+   * Exporta o quadro corrente como PNG.
+   *
+   * ⚠️ `toDataURL` devolve `null` quando nao ha rasterizacao — nunca uma imagem
+   * vazia. Aqui isso viraria um download de arquivo quebrado, entao a ausencia e
+   * tratada explicitamente.
+   */
+  const exportarPng = (): void => {
+    if (engine === null) return;
+    const url = engine.api.toDataURL('image/png');
+    if (url === null) return;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `robustus-${Date.now()}.png`;
+    a.click();
+  };
 
   const salvarLayout = (): void => {
     const doc = capture({
@@ -276,12 +381,10 @@ function App(): JSX.Element {
             ? 'BARRAS'
             : 'VELA';
     setModo(modoDoTipo);
-    // Religa os toggles de indicador pelo nome salvo.
-    const nomes = new Set(state.indicators.map((i) => i.name));
-    setEmaOn(nomes.has('ema'));
-    setBbOn(nomes.has('bollinger'));
-    setRsiOn(nomes.has('rsi'));
-    setMacdOn(nomes.has('macd'));
+    // Religa os indicadores pelos ids salvos. Ids desconhecidos (de uma versao
+    // com outro catalogo) simplesmente nao acendem — o layout carrega o que existe.
+    const idsConhecidos = new Set(CATALOGO.map((c) => c.id));
+    setLigados(new Set(state.indicators.map((i) => i.id).filter((id) => idsConhecidos.has(id))));
     // Desenhos: carrega no controlador.
     desenho.load(state.drawings.drawings as never);
     setTick((n) => n + 1);
@@ -350,11 +453,37 @@ function App(): JSX.Element {
             {m.rotulo}
           </button>
         ))}
-        <span style={{ ...rotuloBarra(), marginLeft: 16 }}>Indicadores:</span>
-        <button type="button" onClick={() => setEmaOn((v) => !v)} style={botao(emaOn)}>EMA 20</button>
-        <button type="button" onClick={() => setBbOn((v) => !v)} style={botao(bbOn)}>Bollinger</button>
-        <button type="button" onClick={() => setRsiOn((v) => !v)} style={botao(rsiOn)}>RSI</button>
-        <button type="button" onClick={() => setMacdOn((v) => !v)} style={botao(macdOn)}>MACD</button>
+        <span style={{ ...rotuloBarra(), marginLeft: 16 }}>Motor:</span>
+        <button type="button" onClick={() => setGradeVertical((v) => !v)} style={botao(gradeVertical)}>
+          Grade
+        </button>
+        <button type="button" onClick={() => setMarcaDagua((v) => !v)} style={botao(marcaDagua)}>
+          Marca d'água
+        </button>
+        <button type="button" onClick={exportarPng} style={botao(false)}>
+          Exportar PNG
+        </button>
+      </div>
+
+      {/* Indicadores: sobre o preço e em sub-painel */}
+      <div style={barra()}>
+        <span style={rotuloBarra()}>Preço:</span>
+        {CATALOGO.filter((c) => c.grupo === 'preco').map((c) => (
+          <button key={c.id} type="button" onClick={() => alternar(c.id)} style={botao(ligados.has(c.id))}>
+            {c.rotulo}
+          </button>
+        ))}
+      </div>
+      <div style={barra()}>
+        <span style={rotuloBarra()}>Painel:</span>
+        {CATALOGO.filter((c) => c.grupo === 'painel').map((c) => (
+          <button key={c.id} type="button" onClick={() => alternar(c.id)} style={botao(ligados.has(c.id))}>
+            {c.rotulo}
+          </button>
+        ))}
+        <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>
+          arraste a divisória entre painéis para redimensionar
+        </span>
       </div>
 
       {/* Controles de replay */}
@@ -509,7 +638,7 @@ function App(): JSX.Element {
  */
 function AplicarLinhasAlerta(props: {
   engine: ReturnType<typeof useChartEngine>['engine'];
-  linhas: ReadonlyArray<{ price: number; color: string; title: string; lineStyle: number }>;
+  linhas: readonly ChartPriceLine[];
 }): null {
   const { engine, linhas } = props;
   useEffect(() => {

@@ -17,6 +17,8 @@
     "build:force": "tsc --build tsconfig.build.json --force",
     "clean": "tsc --build tsconfig.build.json --clean",
     "typecheck": "tsc --build tsconfig.build.json --force",
+    "typecheck:playground": "tsc --noEmit -p apps/playground",
+    "verify": "npm run typecheck && npm run typecheck:playground && node scripts/add-esm-extensions.mjs --check packages/*/src && npm run test",
     "test": "vitest --run",
     "test:watch": "vitest",
     "test:core": "vitest --run packages/core",

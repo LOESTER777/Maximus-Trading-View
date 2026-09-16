@@ -23,7 +23,7 @@ import {
   type IndicatorValue,
   type ParamSpec,
 } from '../contracts.js';
-import { WilderState, SmaState, RingWindow, KahanSum } from '../rolling.core.js';
+import { WilderState, SmaState, RingWindow, KahanSum, MinMaxWindow } from '../rolling.core.js';
 import { buildInstance } from './instance-base.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -42,44 +42,9 @@ const periodSpec = (name: string, label: string, def: number): ParamSpec => ({
 
 const sourceSpec: ParamSpec = { name: 'source', label: 'Fonte', type: 'source', default: 'close' };
 
-/**
- * Extremos (min e max) da janela dos ultimos `period` valores.
- *
- * O(period) por consulta via `RingWindow.forEach`. Um deque monotonico daria
- * O(1) amortizado, mas a janela e curta (5..21 tipico) e a simplicidade aqui
- * vale mais que a assintotica — e recalcular do buffer torna incremental ==
- * batch exato sem soma rolante que derive.
- */
-class MinMaxWindow {
-  private readonly win: RingWindow;
-  constructor(private readonly period: number) {
-    this.win = new RingWindow(period);
-  }
-  private extremes(extra?: number): { min: number; max: number } {
-    let min = Infinity;
-    let max = -Infinity;
-    this.win.forEach((v) => {
-      if (v < min) min = v;
-      if (v > max) max = v;
-    });
-    if (extra !== undefined) {
-      if (extra < min) min = extra;
-      if (extra > max) max = extra;
-    }
-    return { min, max };
-  }
-  push(x: number): { min: number; max: number } | null {
-    this.win.push(x);
-    return this.win.isFull() ? this.extremes() : null;
-  }
-  peek(x: number): { min: number; max: number } | null {
-    if (this.win.isFull()) return this.extremes(x);
-    return this.win.size() + 1 === this.period ? this.extremes(x) : null;
-  }
-  reset(): void {
-    this.win.reset();
-  }
-}
+// ⚠️ `MinMaxWindow` morava aqui e subiu para `rolling.core.ts` quando Donchian e
+// Ichimoku passaram a precisar do mesmo acumulador de extremos. Mesma classe,
+// mesmo comportamento — so mudou de casa, para nao existirem duas copias.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RSI

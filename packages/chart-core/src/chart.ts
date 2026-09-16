@@ -47,6 +47,7 @@ import type {
   SeriesType,
   Time,
   TimeRange,
+  WatermarkOptions,
 } from './contracts.js';
 import {
   autoScale,
@@ -91,10 +92,45 @@ import {
   type TimeScaleState,
 } from './time-scale.core.js';
 
-/** Uma pane: retangulo vertical, escala de preco propria, suas series. */
+/** Id da escala de preco PRINCIPAL. Serie sem `priceScaleId` cai nela. */
+const MAIN_SCALE_ID = 'right';
+
+/**
+ * Uma pane: retangulo vertical, escalas de preco, suas series.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⭐ POR QUE UMA PANE TEM MAIS DE UMA ESCALA DE PRECO
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Uma pane desenha grandezas de MAGNITUDE INCOMPATIVEL na mesma faixa de pixel:
+ * o preco (ex.: 130.000) e o volume (ex.: 0 a 40.000). Uma escala unica para as
+ * duas e um defeito grave, e ja foi medido em tela: a autoescala tomava o minimo
+ * e o maximo de TODAS as series juntas, a faixa virava `0..130.000`, e as velas
+ * ficavam esmagadas em poucos pixels no topo — o grafico aparecia VAZIO, com o
+ * eixo marcando 20.000/40.000/.../120.000 e nenhuma vela visivel.
+ *
+ * Por isso cada pane tem:
+ *  - `priceScale` — a escala PRINCIPAL (`'right'`), do preco;
+ *  - `overlayScales` — uma escala por `priceScaleId` de overlay (ex.: `'volume'`).
+ *
+ * Cada escala **autoescala sozinha**, sobre as series que pertencem a ela, e tem
+ * suas proprias margens. E o que permite o volume ocupar so os 15% inferiores
+ * (`scaleMargins.top = 0.85`) sem tocar na faixa do preco — o histograma se move
+ * numa escala DISTINTA da do grafico, que e o comportamento esperado.
+ */
 interface Pane {
   readonly index: number;
+  /** A escala PRINCIPAL (`'right'`): o preco. */
   priceScale: PriceScaleState;
+  /**
+   * Escalas de OVERLAY por id (ex.: `'volume'`). Criadas sob demanda quando uma
+   * serie declara `priceScaleId` diferente do principal.
+   *
+   * ⚠️ Todas compartilham a ALTURA da pane (o mesmo retangulo de pixel), e se
+   * distinguem pela faixa de preco e pelas margens. Nao sao sub-paineis: sub-painel
+   * e outra `Pane`.
+   */
+  readonly overlayScales: Map<string, PriceScaleState>;
   /** Fracao da altura total que esta pane ocupa. */
   heightFraction: number;
   readonly series: SeriesImpl<SeriesType>[];
@@ -118,6 +154,46 @@ interface Pane {
  * o eixo ocupa visualmente.
  */
 const PRICE_AXIS_WIDTH = 56;
+
+/**
+ * Meia-espessura, em pixel logico, da faixa sensivel na fronteira entre duas panes.
+ *
+ * ⚠️ 4 px para cada lado (8 px de alvo total) nao e chute: o alvo tem de ser
+ * alcancavel sem o operador "cacar" o pixel, e ao mesmo tempo estreito o bastante
+ * para nao roubar o inicio do arrasto de pan perto da borda de um sub-painel. Com
+ * 2 px o gesto falhava mais da metade das tentativas; com 10 px o pan colado na
+ * divisoria virava redimensionamento por acidente.
+ */
+const PANE_DIVIDER_GRAB_PX = 4;
+
+/**
+ * Altura MINIMA de uma pane, em pixel logico.
+ *
+ * ⚠️ Sem piso, arrastar a divisoria ate a ponta deixa uma pane com altura 0: ela
+ * some da tela E fica sem area para o cursor voltar a pegar a divisoria — o
+ * sub-painel ficaria perdido para sempre, sem desfazer nem como recuperar. 40 px
+ * e o suficiente para a pane continuar visivel e agarravel.
+ */
+const MIN_PANE_HEIGHT_PX = 40;
+
+/**
+ * Fundo usado ao EXPORTAR imagem quando o tema e `transparent`.
+ *
+ * ⚠️ Nao e cosmetico: o default do motor e fundo transparente (ele herda o da
+ * pagina). Um PNG transparente com o texto claro do eixo, colado num documento
+ * branco, fica ilegivel — o rotulo desaparece. Exportar com o cinza-escuro do
+ * painel preserva o contraste que o operador viu na tela.
+ */
+const FUNDO_EXPORTACAO = '#0f172a';
+
+/**
+ * Distancia minima, em pixel logico, para a pinca ser considerada intencao.
+ *
+ * ⚠️ Dedos praticamente juntos dao distancia perto de zero, e a razao
+ * `atual / inicial` explodiria para o teto do espacamento num unico quadro. 8 px e o
+ * limite abaixo do qual dois contatos sao ruido de toque, nao um gesto.
+ */
+const PINCH_MIN_DIST_PX = 8;
 
 const DEFAULT_OPTIONS: ChartOptions = {
   layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
@@ -172,6 +248,43 @@ export class RobustusChartCore implements IChartApi {
   private lastPointerX = 0;
   private lastPointerY = 0;
 
+  /**
+   * Ponteiros ATIVOS, por `pointerId`, em pixel logico.
+   *
+   * ⭐ E o que viabiliza a pinca: com dois dedos na tela, a variacao da DISTANCIA
+   * entre eles e o zoom. Um unico ponteiro (o estado anterior) nao tem distancia
+   * para variar.
+   *
+   * ⚠️ Limpo em `pointerup`, `pointercancel` E `pointerleave`. Ponteiro fantasma
+   * aqui e defeito permanente: o mapa ficaria com 2 entradas para sempre, todo
+   * arrasto de um dedo seria interpretado como pinca, e o pan nunca mais
+   * funcionaria — sem nenhum erro no console.
+   */
+  private readonly pointers = new Map<number, { x: number; y: number }>();
+  /**
+   * Estado do INICIO do gesto de pinca; `null` = sem pinca em curso.
+   *
+   * ⭐ Guardar o inicio, e nao o quadro anterior, e a decisao que faz o gesto ser
+   * correto — ver `aplicarPinca`.
+   */
+  private pinchInicio: { dist: number; logicalAncora: number; barSpacing: number } | null = null;
+
+  /**
+   * Indice da FRONTEIRA sendo arrastada (`k` = entre `panes[k]` e `panes[k+1]`),
+   * ou `null`. Posicao no array, nao o `index` estavel da pane: fronteira e
+   * relacao entre vizinhos na ordem de empilhamento.
+   */
+  private resizingBoundary: number | null = null;
+
+  /**
+   * O contexto 2D e REAL (nao o dublê inerte do jsdom)?
+   *
+   * ⭐ Guardado no construtor porque e a resposta de `takeScreenshot`: sem contexto
+   * real nao existe imagem, e o metodo devolve `null` em vez de um canvas em branco
+   * que o consumidor salvaria como PNG preto sem desconfiar.
+   */
+  private readonly hasRealContext: boolean;
+
   private ro: ResizeObserver | null = null;
 
   constructor(
@@ -185,6 +298,8 @@ export class RobustusChartCore implements IChartApi {
       text: this.opts.layout.textColor,
       grid: this.opts.grid.horzLines.color ?? DEFAULT_THEME.grid,
       gridVisible: this.opts.grid.horzLines.visible,
+      gridVertVisible: this.opts.grid.vertLines.visible,
+      gridVert: this.opts.grid.vertLines.color,
     };
 
     this.timeZone = this.opts.timeScale.timeZone ?? DEFAULT_TIME_ZONE;
@@ -203,6 +318,7 @@ export class RobustusChartCore implements IChartApi {
           this.opts.rightPriceScale.scaleMargins.top,
           this.opts.rightPriceScale.scaleMargins.bottom,
         ),
+        overlayScales: new Map(),
         heightFraction: 1,
         series: [],
         priceScaleManual: false,
@@ -219,8 +335,10 @@ export class RobustusChartCore implements IChartApi {
       // jsdom devolve null. O motor tolera: nao rasteriza, mas o resto do contrato
       // (conversoes, dado, eventos) continua funcionando para teste.
       this.ctx = criarContextoInerte();
+      this.hasRealContext = false;
     } else {
       this.ctx = ctx;
+      this.hasRealContext = true;
     }
 
     this.setupResize();
@@ -266,7 +384,12 @@ export class RobustusChartCore implements IChartApi {
     const util = Math.max(1, totalH - this.timeAxisHeight);
     const soma = this.panes.reduce((a, p) => a + p.heightFraction, 0) || 1;
     for (const p of this.panes) {
-      p.priceScale.height = (p.heightFraction / soma) * util;
+      const h = (p.heightFraction / soma) * util;
+      // ⚠️ TODAS as escalas da pane recebem a altura — inclusive as de overlay.
+      // Elas dividem o mesmo retangulo de pixel e se distinguem por faixa e
+      // margem; uma overlay com altura 0 converteria tudo para `null` e o volume
+      // simplesmente nao apareceria, sem erro nenhum.
+      for (const s of this.allScalesOf(p)) s.height = h;
     }
   }
 
@@ -290,11 +413,53 @@ export class RobustusChartCore implements IChartApi {
     paneIndex = 0,
   ): ISeriesApi<S> {
     const pane = this.panes.find((p) => p.index === paneIndex) ?? this.panes[0]!;
-    const serie = new SeriesImpl<S>(type, options, pane.index, () => pane.priceScale, () => this.scheduleRender());
+
+    // ⭐ Resolve a escala AGORA (criando a de overlay se preciso), e entrega a
+    // serie um getter para ELA — nao para a escala principal da pane. Era esse
+    // acoplamento que fazia o volume dividir a escala do preco e esmagar as velas.
+    const scaleId = options.priceScaleId ?? MAIN_SCALE_ID;
+    const escala = this.ensureScale(pane, scaleId);
+
+    const serie = new SeriesImpl<S>(type, options, pane.index, () => escala, () =>
+      this.scheduleRender(),
+    );
     serie.chartRef = this;
     pane.series.push(serie as unknown as SeriesImpl<SeriesType>);
     this.scheduleRender();
     return serie;
+  }
+
+  /**
+   * Devolve a escala de `scaleId` na pane, criando-a se for de overlay e ainda nao
+   * existir.
+   *
+   * A escala de overlay nasce com margens que a deixam VISIVEL mas discreta
+   * (`top: 0.8`, `bottom: 0`) — o uso dominante e volume no pe do painel. O
+   * consumidor ajusta depois via `priceScale(id).applyOptions({ scaleMargins })`.
+   * `'left'` e tratado como o principal: este motor desenha um eixo so, a direita.
+   */
+  private ensureScale(pane: Pane, scaleId: string): PriceScaleState {
+    if (scaleId === MAIN_SCALE_ID || scaleId === 'left') return pane.priceScale;
+    const existente = pane.overlayScales.get(scaleId);
+    if (existente !== undefined) return existente;
+    const nova = createPriceScaleState(0.8, 0);
+    // A escala nova precisa da altura corrente da pane; sem isso a primeira
+    // passada converteria contra altura 0 e devolveria `null` em tudo.
+    nova.height = pane.priceScale.height;
+    pane.overlayScales.set(scaleId, nova);
+    return nova;
+  }
+
+  /** A escala a que uma serie pertence, dentro da pane dela. */
+  private scaleOf(pane: Pane, serie: SeriesImpl<SeriesType>): PriceScaleState {
+    const id = serie.model.options.priceScaleId ?? MAIN_SCALE_ID;
+    if (id === MAIN_SCALE_ID || id === 'left') return pane.priceScale;
+    return pane.overlayScales.get(id) ?? pane.priceScale;
+  }
+
+  /** Todas as escalas de uma pane: a principal primeiro, depois as de overlay. */
+  private allScalesOf(pane: Pane): PriceScaleState[] {
+    return [pane.priceScale, ...pane.overlayScales.values()];
   }
 
   removeSeries(series: ISeriesApi<SeriesType>): void {
@@ -322,6 +487,7 @@ export class RobustusChartCore implements IChartApi {
     this.panes.push({
       index,
       priceScale: createPriceScaleState(0.15, 0.15),
+      overlayScales: new Map(),
       heightFraction: 0, // definido por rebalancePanes
       series: [],
       priceScaleManual: false,
@@ -415,18 +581,30 @@ export class RobustusChartCore implements IChartApi {
     };
   }
 
-  priceScale(_id: string): IPriceScaleApi {
-    // O projeto usa um eixo de preco por pane; o id nomeia escalas de overlay que
-    // aqui mapeiam para a pane principal. Superficie minima: o que o engine chama.
+  /**
+   * Acesso a uma escala de preco por id.
+   *
+   * ⚠️ **Isto ja foi um defeito grave e silencioso.** A versao anterior ignorava o
+   * `id` e devolvia sempre a escala do PRECO da pane 0. Consequencia medida: quando
+   * o consumidor empurrava o volume para o pe do painel com
+   * `priceScale('volume').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } })`,
+   * ele estava alterando a margem do PRECO — comprimindo as velas numa faixa de 15%
+   * em vez de mover o volume. Agora o id resolve a escala de verdade.
+   *
+   * A escala de overlay e criada sob demanda: o consumidor pode configurar as
+   * margens ANTES de criar a serie que a usa, e a configuracao tem de sobreviver.
+   */
+  priceScale(id: string): IPriceScaleApi {
     const self = this;
+    const pane = this.panes[0]!;
+    const alvo = this.ensureScale(pane, id);
     return {
       applyOptions: (o: Partial<PriceScaleOptions>) => {
-        const ps = self.panes[0]!.priceScale;
         if (o.scaleMargins !== undefined) {
-          ps.marginTop = o.scaleMargins.top;
-          ps.marginBottom = o.scaleMargins.bottom;
+          alvo.marginTop = o.scaleMargins.top;
+          alvo.marginBottom = o.scaleMargins.bottom;
         }
-        if (o.mode !== undefined) ps.logarithmic = o.mode === 'logarithmic';
+        if (o.mode !== undefined) alvo.logarithmic = o.mode === 'logarithmic';
         self.scheduleRender();
       },
       width: () => {
@@ -453,7 +631,13 @@ export class RobustusChartCore implements IChartApi {
       ...this.theme,
       background: this.opts.layout.background.color,
       text: this.opts.layout.textColor,
+      grid: this.opts.grid.horzLines.color ?? DEFAULT_THEME.grid,
       gridVisible: this.opts.grid.horzLines.visible,
+      // ⚠️ A grade VERTICAL tem de ser relida aqui, senao `applyOptions({ grid })`
+      // atualizava `opts` e nao chegava ao tema — a opcao existiria e nao faria
+      // nada, que era exatamente o estado anterior de `vertLines.visible`.
+      gridVertVisible: this.opts.grid.vertLines.visible,
+      gridVert: this.opts.grid.vertLines.color,
     };
     this.scheduleRender();
   }
@@ -468,6 +652,97 @@ export class RobustusChartCore implements IChartApi {
 
   subscribeCrosshairMove(handler: (p: MouseEventParams) => void): void {
     this.crosshairListeners.add(handler);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // IChartApi — exportar imagem
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Copia do quadro corrente num canvas NOVO. `null` sem rasterizacao.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * TRES DECISOES QUE IMPORTAM
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * 1. **Copia, nao a referencia interna.** O canvas do motor e limpo e redesenhado
+   *    a cada quadro; devolve-lo faria a "foto" mudar sozinha no proximo pan.
+   *
+   * 2. **Descarrega o quadro pendente antes de copiar.** O render e coalescido: um
+   *    `setData` seguido de screenshot no mesmo tick fotografaria o estado ANTERIOR
+   *    ao dado — a imagem sairia atrasada em um quadro, e de forma intermitente
+   *    (dependendo de onde o rAF caiu), que e o tipo de defeito que ninguem
+   *    reproduz.
+   *
+   * 3. **Pinta o fundo.** O default do motor e `transparent`, e canvas transparente
+   *    exportado para PNG e colado num documento branco fica ilegivel (texto claro
+   *    sobre branco). Sem cor de fundo configurada, usa o cinza-escuro do tema —
+   *    a aparencia que o operador ve na tela.
+   *
+   * ⚠️ Nunca lanca: qualquer falha de alocacao ou de contexto vira `null`.
+   */
+  takeScreenshot(): HTMLCanvasElement | null {
+    if (this.disposed || !this.hasRealContext) return null;
+    try {
+      this.flushRender();
+
+      const copia = document.createElement('canvas');
+      copia.width = this.canvas.width;
+      copia.height = this.canvas.height;
+      if (copia.width <= 0 || copia.height <= 0) return null;
+
+      const cctx = copia.getContext('2d');
+      if (cctx === null) return null;
+
+      const fundo = this.theme.background;
+      cctx.fillStyle = fundo === 'transparent' ? FUNDO_EXPORTACAO : fundo;
+      cctx.fillRect(0, 0, copia.width, copia.height);
+      cctx.drawImage(this.canvas, 0, 0);
+      return copia;
+    } catch {
+      // Ambiente sem `drawImage`/`createElement` utilizavel. `null` = "nao sei
+      // rasterizar", como manda a disciplina da camada.
+      return null;
+    }
+  }
+
+  /**
+   * O quadro corrente como data URL. `null` sem rasterizacao.
+   *
+   * ⚠️ O jsdom TEM o metodo `toDataURL` no prototipo, e ele nao lanca — devolve
+   * `undefined` (ou uma string vazia) por nao ter backend de imagem. Um `try/catch`
+   * sozinho passaria isso adiante como se fosse resultado. Por isso o retorno e
+   * VALIDADO (`data:` no comeco) antes de sair.
+   */
+  toDataURL(type = 'image/png', quality?: number): string | null {
+    const snap = this.takeScreenshot();
+    if (snap === null) return null;
+    try {
+      const url = quality === undefined ? snap.toDataURL(type) : snap.toDataURL(type, quality);
+      if (typeof url !== 'string' || !url.startsWith('data:')) return null;
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Roda AGORA o quadro que estava agendado, se havia um.
+   *
+   * O render e coalescido por `requestAnimationFrame`; quem precisa do canvas
+   * atualizado no mesmo tick (a exportacao de imagem) nao pode esperar o proximo
+   * quadro. Cancelar o agendamento antes evita desenhar duas vezes.
+   */
+  private flushRender(): void {
+    if (this.frame === null) return;
+    try {
+      cancelAnimationFrame(this.frame);
+    } catch {
+      /* ambiente sem rAF: o agendamento caiu num setTimeout, e desenhar de novo
+         e apenas redundante, nao incorreto */
+    }
+    this.frame = null;
+    this.render();
   }
 
   remove(): void {
@@ -498,6 +773,7 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerCancel);
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('dblclick', this.onDoubleClick);
@@ -507,6 +783,7 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('dblclick', this.onDoubleClick);
@@ -518,9 +795,36 @@ export class RobustusChartCore implements IChartApi {
     return (h as HandleScrollOptions).pressedMouseMove;
   }
 
+  /**
+   * Pan permitido para ESTE tipo de ponteiro.
+   *
+   * ⭐ Toque tem chave propria no contrato (`horzTouchDrag`/`vertTouchDrag`) e ela
+   * existe por um motivo pratico: numa pagina que rola, arrastar o dedo sobre o
+   * grafico costuma ser tentativa de rolar a PAGINA, nao o grafico. Quem embute o
+   * grafico num feed desliga o arrasto por toque e mantem o do mouse.
+   *
+   * `eixo`: `'horz'` e o pan no tempo; `'vert'` e o arrasto que escala o preco.
+   */
+  private touchDragEnabled(eixo: 'horz' | 'vert'): boolean {
+    const h = this.opts.handleScroll;
+    if (typeof h === 'boolean') return h;
+    return eixo === 'horz' ? h.horzTouchDrag : h.vertTouchDrag;
+  }
+
+  /** O ponteiro e um dedo (ou caneta em tela)? `undefined` conta como mouse. */
+  private isTouch(e: PointerEvent): boolean {
+    return e.pointerType === 'touch';
+  }
+
   private scaleEnabled(): boolean {
     const h = this.opts.handleScale;
     return typeof h === 'boolean' ? h : h.mouseWheel;
+  }
+
+  /** Pinca (zoom por dois dedos) habilitada? */
+  private pinchEnabled(): boolean {
+    const h = this.opts.handleScale;
+    return typeof h === 'boolean' ? h : h.pinch;
   }
 
   /** O ponto (pixel logico) cai sobre a faixa do eixo de preco, a direita? */
@@ -538,15 +842,104 @@ export class RobustusChartCore implements IChartApi {
     return null;
   }
 
+  /**
+   * A fronteira entre panes sob o Y, ou `null`.
+   *
+   * ⚠️ So conta fronteira ENTRE DUAS PANES: a base da ultima pane e a borda da
+   * tira do eixo de tempo, e arrastar ali nao redistribui nada — nao ha pane
+   * abaixo para ceder ou receber altura. Por isso o laco para em
+   * `panes.length - 1`, e com uma pane so nao existe fronteira alguma (o grafico
+   * sem sub-painel nunca muda o cursor).
+   *
+   * Devolve a POSICAO `k` no array: a fronteira separa `panes[k]` de `panes[k+1]`.
+   */
+  private paneBoundaryAt(y: number): number | null {
+    if (this.panes.length < 2) return null;
+    let acc = 0;
+    for (let k = 0; k < this.panes.length - 1; k++) {
+      acc += this.panes[k]!.priceScale.height;
+      if (Math.abs(y - acc) <= PANE_DIVIDER_GRAB_PX) return k;
+    }
+    return null;
+  }
+
+  /**
+   * Redistribui altura entre as duas panes vizinhas de uma fronteira.
+   *
+   * ⭐ Trabalha em PIXEL e converte de volta para fracao no fim, em vez de mexer
+   * direto nas fracoes: o arrasto do usuario vem em pixel, e converter no comeco
+   * (dividindo `dy` por uma altura util que muda com o redimensionamento da janela)
+   * daria um deslocamento que nao acompanha o dedo.
+   *
+   * ⚠️ A SOMA das duas fracoes e preservada. As demais panes nao se mexem — o
+   * operador arrastou UMA divisoria e espera que so as duas vizinhas mudem. E o
+   * piso de `MIN_PANE_HEIGHT_PX` corta o excesso antes da conversao, para nenhuma
+   * das duas chegar a zero (ver a constante).
+   */
+  private resizePaneBoundary(k: number, dyPx: number): void {
+    const a = this.panes[k];
+    const b = this.panes[k + 1];
+    if (a === undefined || b === undefined || !Number.isFinite(dyPx)) return;
+
+    const util = Math.max(1, this.totalHeight - this.timeAxisHeight);
+    const soma = this.panes.reduce((acc, p) => acc + p.heightFraction, 0);
+    if (!(soma > 0)) return;
+
+    const pxA = (a.heightFraction / soma) * util;
+    const pxB = (b.heightFraction / soma) * util;
+    const parAlt = pxA + pxB;
+    // Par curto demais para respeitar o piso nas duas: nao ha o que redistribuir.
+    if (parAlt < MIN_PANE_HEIGHT_PX * 2) return;
+
+    const alvoA = Math.min(parAlt - MIN_PANE_HEIGHT_PX, Math.max(MIN_PANE_HEIGHT_PX, pxA + dyPx));
+    const novoA = alvoA;
+    const novoB = parAlt - alvoA;
+
+    a.heightFraction = (novoA / util) * soma;
+    b.heightFraction = (novoB / util) * soma;
+    this.distributePaneHeights(this.totalHeight);
+    this.scheduleRender();
+  }
+
   private readonly onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
     const r = this.canvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
 
+    this.pointers.set(e.pointerId, { x, y });
+
+    // ⭐ Dois ponteiros ativos => PINCA. Cancela pan e escala de eixo em curso: o
+    // segundo dedo muda a natureza do gesto, e continuar panando com um deles
+    // faria o grafico "escorregar" durante o zoom.
+    if (this.pointers.size >= 2) {
+      this.dragging = false;
+      this.scalingPriceAxis = false;
+      this.scalingPane = null;
+      this.resizingBoundary = null;
+      this.reiniciarPinca();
+      return;
+    }
+
+    // Arrasto sobre a DIVISORIA entre panes redimensiona. Tem precedencia sobre o
+    // pan e sobre a escala de eixo: a faixa de 4 px e alvo explicito do operador.
+    const fronteira = this.paneBoundaryAt(y);
+    if (fronteira !== null && !this.isOnPriceAxis(x)) {
+      this.resizingBoundary = fronteira;
+      this.lastPointerY = e.clientY;
+      try {
+        this.canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* ambiente sem captura */
+      }
+      return;
+    }
+
     // Arrasto sobre o eixo de preco ESCALA o preco (nao faz pan). Tem precedencia
     // sobre o pan porque o cursor esta sobre a faixa do eixo, nao sobre as velas.
     if (this.scaleEnabled() && this.isOnPriceAxis(x)) {
+      // Por toque, respeita `vertTouchDrag`: e arrasto vertical.
+      if (this.isTouch(e) && !this.touchDragEnabled('vert')) return;
       const pane = this.paneAtY(y);
       if (pane !== null) {
         this.scalingPriceAxis = true;
@@ -562,6 +955,7 @@ export class RobustusChartCore implements IChartApi {
     }
 
     if (!this.scrollEnabled()) return;
+    if (this.isTouch(e) && !this.touchDragEnabled('horz')) return;
     this.dragging = true;
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
@@ -572,9 +966,148 @@ export class RobustusChartCore implements IChartApi {
     }
   };
 
+  /**
+   * Distancia euclidiana entre os DOIS primeiros ponteiros ativos, ou `null`.
+   *
+   * ⚠️ Usa a distancia completa, nao so a horizontal, embora o zoom seja so no
+   * eixo de tempo. E deliberado: a pinca diagonal e a mais natural de fazer com o
+   * polegar e o indice, e medir apenas `dx` daria zoom fraco (ou nenhum) num gesto
+   * que o usuario percebeu como amplo.
+   */
+  private distanciaEntrePonteiros(): number | null {
+    if (this.pointers.size < 2) return null;
+    const it = this.pointers.values();
+    const a = it.next().value as { x: number; y: number } | undefined;
+    const b = it.next().value as { x: number; y: number } | undefined;
+    if (a === undefined || b === undefined) return null;
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    return Number.isFinite(d) ? d : null;
+  }
+
+  /** Ponto MEDIO entre os dois ponteiros — a ancora do zoom da pinca. */
+  private pontoMedioX(): number | null {
+    if (this.pointers.size < 2) return null;
+    const it = this.pointers.values();
+    const a = it.next().value as { x: number; y: number } | undefined;
+    const b = it.next().value as { x: number; y: number } | undefined;
+    if (a === undefined || b === undefined) return null;
+    return (a.x + b.x) / 2;
+  }
+
+  /**
+   * (Re)abre o gesto de pinca a partir do estado ATUAL dos dois ponteiros.
+   *
+   * Chamado quando o segundo dedo desce e tambem quando um terceiro sobe/desce: o
+   * conjunto de dedos mudou, e continuar medindo contra a distancia de um par que
+   * nao existe mais daria um salto de zoom.
+   *
+   * ⚠️ Piso de 8 px na distancia inicial: dois dedos praticamente juntos dao
+   * distancia perto de zero, e a razao `atual/inicial` explodiria para o teto do
+   * espacamento num quadro so. Abaixo do piso, o gesto e ruido de contato e a pinca
+   * simplesmente nao abre.
+   */
+  private reiniciarPinca(): void {
+    if (!this.pinchEnabled()) {
+      this.pinchInicio = null;
+      return;
+    }
+    const dist = this.distanciaEntrePonteiros();
+    const meio = this.pontoMedioX();
+    if (dist === null || meio === null || dist < PINCH_MIN_DIST_PX || this.ts.barSpacing <= 0) {
+      this.pinchInicio = null;
+      return;
+    }
+    const ancora = coordinateToLogical(this.ts, meio);
+    if (ancora === null) {
+      this.pinchInicio = null;
+      return;
+    }
+    this.pinchInicio = { dist, logicalAncora: ancora, barSpacing: this.ts.barSpacing };
+  }
+
+  /**
+   * Aplica a pinca: espacamento proporcional a razao de distancia, com o instante
+   * do ponto medio ancorado.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ⭐ POR QUE ABSOLUTO (CONTRA O INICIO), E NAO INCREMENTAL (CONTRA O QUADRO ANTERIOR)
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * A primeira versao era incremental: `fator = distAtual / distAnterior`, zoom
+   * ancorado no ponto medio corrente. Passava no teste de "afastar aproxima" e
+   * **falhava de um jeito que o operador sentiria**, porque o navegador entrega
+   * `pointermove` de UM ponteiro por vez:
+   *
+   * Transladar os dois dedos 80 px para a direita (gesto de pan com dois dedos,
+   * comum) chega como dois eventos. No primeiro, so um dedo se moveu: a distancia
+   * medida CAI de 200 para 120 e o motor da zoom-out de 0,6 ancorado em 440. No
+   * segundo ela volta a 200 e o motor da zoom-in de 1,667 ancorado em 480. O
+   * espacamento volta ao valor certo, mas as duas ancoras eram diferentes e sobra
+   * uma translacao residual — medida em teste: 3,33 barras **na direcao contraria
+   * ao gesto**. O grafico "escorregava" para o lado errado durante a pinca.
+   *
+   * A formulacao absoluta nao tem esse estado: `logicalAncora` (o indice sob o ponto
+   * medio quando o gesto abriu) e o espacamento inicial ficam fixos, e cada quadro
+   * recalcula a posicao FINAL a partir deles. Estado intermediario nao acumula erro
+   * — a translacao pura devolve exatamente o pan de 80 px, na direcao certa, e a
+   * pinca pura mantem o instante do ponto medio imovel com igualdade exata.
+   *
+   * ⚠️ O zoom em si passa por `zoomAtCoordinate`, o MESMO nucleo do zoom por roda:
+   * e ele que aplica os limites de espacamento (`minBarSpacing` e o teto). Duplicar
+   * a conta aqui divergiria dos limites na primeira mudanca. A linha seguinte fixa a
+   * ancora de forma absoluta — o que `zoomAtCoordinate` ancorou de forma relativa e
+   * so um passo intermediario.
+   */
+  private aplicarPinca(): void {
+    const ini = this.pinchInicio;
+    const atual = this.distanciaEntrePonteiros();
+    const meio = this.pontoMedioX();
+    if (ini === null || atual === null || meio === null) return;
+    // Dedos colapsando um sobre o outro: ignora o quadro em vez de tentar zoom.
+    if (atual < PINCH_MIN_DIST_PX || this.ts.barSpacing <= 0) return;
+
+    const alvo = ini.barSpacing * (atual / ini.dist);
+    if (!Number.isFinite(alvo) || alvo <= 0) return;
+
+    zoomAtCoordinate(this.ts, meio, alvo / this.ts.barSpacing);
+    if (this.ts.barSpacing <= 0) return;
+    this.ts.leftLogical = ini.logicalAncora - meio / this.ts.barSpacing;
+  }
+
   private readonly onPointerMove = (e: PointerEvent): void => {
     const r = this.canvas.getBoundingClientRect();
-    this.crosshair = { x: e.clientX - r.left, y: e.clientY - r.top };
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    this.crosshair = { x, y };
+
+    // Atualiza a posicao SO de ponteiro que esta pressionado (esta no mapa). Um
+    // `pointermove` de mouse sem botao nao entra — senao o hover cadastraria um
+    // ponteiro que nunca sera removido por `pointerup`.
+    if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x, y });
+
+    // ⭐ PINCA tem precedencia sobre tudo: dois dedos na tela e gesto de zoom.
+    //
+    // ⚠️ Sai daqui mesmo com a pinca DESLIGADA (`pinchInicio === null`). Cair no pan
+    // com dois dedos na tela seria pior que nao fazer nada: o grafico correria atras
+    // de um dos dois dedos, aos pulos, conforme a ordem dos eventos.
+    if (this.pointers.size >= 2) {
+      this.aplicarPinca();
+      this.emitCrosshair();
+      this.scheduleRender();
+      return;
+    }
+
+    // Cursor de redimensionamento quando o ponteiro passa sobre uma divisoria. Fica
+    // ANTES do arrasto para o cursor nao "piscar" de volta durante o gesto.
+    this.atualizarCursor(x, y);
+
+    if (this.resizingBoundary !== null) {
+      const dy = e.clientY - this.lastPointerY;
+      this.lastPointerY = e.clientY;
+      this.resizePaneBoundary(this.resizingBoundary, dy);
+      this.emitCrosshair();
+      return;
+    }
 
     if (this.scalingPriceAxis && this.scalingPane !== null) {
       const dy = e.clientY - this.lastPointerY;
@@ -616,19 +1149,78 @@ export class RobustusChartCore implements IChartApi {
     pane.priceScaleManual = true;
   }
 
+  /**
+   * Cursor `ns-resize` sobre a divisoria entre panes; vazio fora dela.
+   *
+   * ⭐ E a unica affordance do recurso: sem a troca de cursor, o operador nao tem
+   * como descobrir que a divisoria e arrastavel. Nao mexe no cursor durante um
+   * arrasto ja em curso — perder o `ns-resize` no meio do gesto sugeriria que ele
+   * terminou.
+   */
+  private atualizarCursor(x: number, y: number): void {
+    if (this.resizingBoundary !== null || this.dragging || this.scalingPriceAxis) return;
+    const sobreDivisoria = !this.isOnPriceAxis(x) && this.paneBoundaryAt(y) !== null;
+    const desejado = sobreDivisoria ? 'ns-resize' : '';
+    // Le antes de escrever: atribuir `style.cursor` a cada `pointermove` invalidaria
+    // estilo do elemento dezenas de vezes por segundo sem mudar nada.
+    if (this.canvas.style.cursor !== desejado) this.canvas.style.cursor = desejado;
+  }
+
   private readonly onPointerUp = (e: PointerEvent): void => {
     const estavaEscalando = this.scalingPriceAxis;
+    const estavaRedimensionando = this.resizingBoundary !== null;
+    const estavaEmPinca = this.pointers.size >= 2;
+
+    this.esquecerPonteiro(e.pointerId);
     this.dragging = false;
     this.scalingPriceAxis = false;
     this.scalingPane = null;
+    this.resizingBoundary = null;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       /* ja solto */
     }
-    // Arrasto de escala nao e clique do grafico — nao emite.
-    if (!estavaEscalando) this.emitClick();
+    // Arrasto de escala, redimensionamento de pane e pinca nao sao clique do
+    // grafico — emiti-los faria a camada de desenho criar uma figura ao fim de cada
+    // gesto de ajuste.
+    if (!estavaEscalando && !estavaRedimensionando && !estavaEmPinca) this.emitClick();
   };
+
+  /**
+   * `pointercancel`: o sistema tirou o ponteiro da aplicacao (gesto do SO, chamada
+   * entrando, dedo saindo pela borda da tela).
+   *
+   * ⚠️ Sem tratar isto, o ponteiro cancelado NUNCA sairia do mapa — `pointerup` nao
+   * vem depois de um cancel. O mapa ficaria preso em 2 entradas e todo arrasto
+   * posterior de um dedo seria lido como pinca. Foi por isso que o evento entrou
+   * junto com a pinca, e nao "por completude".
+   */
+  private readonly onPointerCancel = (e: PointerEvent): void => {
+    this.esquecerPonteiro(e.pointerId);
+    this.dragging = false;
+    this.scalingPriceAxis = false;
+    this.scalingPane = null;
+    this.resizingBoundary = null;
+    try {
+      this.canvas.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ja solto */
+    }
+  };
+
+  /**
+   * Tira um ponteiro do mapa e ajusta a pinca.
+   *
+   * Sobrou menos de dois: a pinca encerra. Sobraram dois ou mais (era um gesto de
+   * tres dedos): REABRE contra o par que ficou — medir contra a distancia de um par
+   * que nao existe mais daria um salto de zoom no quadro seguinte.
+   */
+  private esquecerPonteiro(pointerId: number): void {
+    this.pointers.delete(pointerId);
+    if (this.pointers.size < 2) this.pinchInicio = null;
+    else this.reiniciarPinca();
+  }
 
   /**
    * Duplo-clique sobre o eixo de preco RELIGA a autoescala daquela pane.
@@ -648,7 +1240,22 @@ export class RobustusChartCore implements IChartApi {
     this.scheduleRender();
   };
 
-  private readonly onPointerLeave = (): void => {
+  /**
+   * `pointerleave`: o ponteiro saiu do canvas.
+   *
+   * ⚠️ Limpa o ponteiro do mapa pelo mesmo motivo do cancel — um dedo que sai pela
+   * borda nao gera `pointerup` no canvas, e ficaria fantasma para sempre. Limpa
+   * TODOS quando o evento nao traz `pointerId` utilizavel (o caso do mouse saindo
+   * da area, onde a lista ativa nao pode sobreviver de qualquer forma).
+   */
+  private readonly onPointerLeave = (e?: PointerEvent): void => {
+    if (e !== undefined && typeof e.pointerId === 'number') this.esquecerPonteiro(e.pointerId);
+    else {
+      this.pointers.clear();
+      this.pinchInicio = null;
+    }
+    this.resizingBoundary = null;
+    if (this.canvas.style.cursor !== '') this.canvas.style.cursor = '';
     this.crosshair = null;
     this.emitCrosshair();
     this.scheduleRender();
@@ -808,7 +1415,9 @@ export class RobustusChartCore implements IChartApi {
           this.dpr,
           this.ts,
           pane.priceScale,
-          pane.series.map((s) => s.model),
+          // ⭐ Cada serie vai com a SUA escala. A grade e o eixo usam a principal
+          // (passada acima); o volume desenha contra a escala de overlay dele.
+          pane.series.map((s) => ({ model: s.model, scale: this.scaleOf(pane, s) })),
           this.theme,
           // Crosshair so na pane sob o cursor.
           local,
@@ -816,6 +1425,10 @@ export class RobustusChartCore implements IChartApi {
           // Rotulo de preco do crosshair: so na pane efetivamente sob o cursor.
           this.priceLabelForCrosshair(pane, local),
           this.priceFormatOpts(),
+          // ⭐ Marca d'agua SO na pane principal. Repeti-la em cada sub-painel
+          // encheria a tela de texto fantasma e brigaria com o oscilador, que ocupa
+          // pouca altura.
+          pane.index === 0 ? this.watermarkOpts() : undefined,
         );
 
         this.drawPriceLines(ctx, pane);
@@ -898,6 +1511,20 @@ export class RobustusChartCore implements IChartApi {
     return { precision: pf.precision, tickSize: pf.tickSize };
   }
 
+  /**
+   * A marca d'agua a desenhar, ou `undefined` quando nao ha nada a desenhar.
+   *
+   * Filtra aqui — e nao no renderer — o caso "configurada mas vazia/desligada",
+   * para o renderer receber so o que de fato vai a tela.
+   */
+  private watermarkOpts(): WatermarkOptions | undefined {
+    const wm = this.opts.watermark;
+    if (wm === undefined) return undefined;
+    if (wm.visible === false) return undefined;
+    if (typeof wm.text !== 'string' || wm.text.length === 0) return undefined;
+    return wm;
+  }
+
   /** Data/hora formatada sob o cursor, para a caixa do eixo de tempo. */
   private formatTimeLabel(x: number): string | null {
     const t = coordinateToTime(this.ts, x);
@@ -936,15 +1563,52 @@ export class RobustusChartCore implements IChartApi {
   private autoScalePane(pane: Pane): void {
     // Escala manual: o usuario arrastou o eixo. A autoescala arrancaria a faixa
     // que ele acabou de definir, entao pula ate o duplo-clique religar.
-    if (pane.priceScaleManual) return;
     const lr = visibleLogicalRange(this.ts);
     if (lr === null) return;
+
+    // ⭐ Autoescala POR ESCALA, nunca por pane inteira.
+    //
+    // Agrupa as series pela escala a que pertencem e calcula min/max SO dentro do
+    // grupo. Sem esse agrupamento, o volume (dezenas de milhares) e o preco
+    // (~130.000) caem no mesmo min/max, a faixa vira `0..130.000` e as velas ficam
+    // esmagadas em poucos pixels no topo — o defeito que deixava o grafico visualmente
+    // vazio.
+    const grupos = new Map<PriceScaleState, SeriesImpl<SeriesType>[]>();
+    for (const s of pane.series) {
+      const escala = this.scaleOf(pane, s);
+      const g = grupos.get(escala);
+      if (g === undefined) grupos.set(escala, [s]);
+      else g.push(s);
+    }
+
+    for (const [escala, series] of grupos) {
+      // Escala manual vale por ESCALA: o arrasto congela a principal, e a autoescala
+      // do volume segue viva.
+      if (escala === pane.priceScale && pane.priceScaleManual) continue;
+      this.autoScaleGroup(escala, series, lr);
+    }
+  }
+
+  /**
+   * Autoescala UMA escala pelas series que pertencem a ela, na janela visivel.
+   *
+   * ⭐ Grupo puramente de histograma ANCORA EM ZERO. Um histograma de volume
+   * autoescalado por `min..max` desenharia a menor barra com altura zero e a
+   * maior ocupando a faixa toda — a leitura de volume relativo se perde, e a base
+   * do desenho (`priceToCoordinate(0)`) cairia fora da escala. Ancorar em zero e o
+   * que todo grafico de volume faz.
+   */
+  private autoScaleGroup(
+    escala: PriceScaleState,
+    series: readonly SeriesImpl<SeriesType>[],
+    lr: { from: number; to: number },
+  ): void {
     const de = Math.max(0, Math.floor(lr.from));
     const ate = Math.ceil(lr.to);
 
     let min = Infinity;
     let max = -Infinity;
-    for (const s of pane.series) {
+    for (const s of series) {
       const d = s.model.data;
       for (let i = de; i <= ate && i < d.length; i++) {
         const b = d[i];
@@ -968,7 +1632,20 @@ export class RobustusChartCore implements IChartApi {
         }
       }
     }
-    if (Number.isFinite(min) && Number.isFinite(max)) autoScale(pane.priceScale, min, max);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+
+    // Grupo só de histograma: ancora em zero (ver o cabeçalho).
+    const soHistograma = series.every((s) => s.model.type === 'Histogram');
+    if (soHistograma) {
+      autoScale(escala, 0, max);
+      // `autoScale` poe folga simetrica de 5%, o que deixaria a base em -0,05·max e
+      // uma faixa de volume negativo visivel. Volume nao e negativo: cola a base no
+      // zero e mantem so a folga do topo.
+      escala.bottomPrice = 0;
+      return;
+    }
+
+    autoScale(escala, min, max);
   }
 
   private crosshairInPane(pane: Pane, topo: number): CrosshairState | null {
@@ -980,8 +1657,11 @@ export class RobustusChartCore implements IChartApi {
 
   private drawPriceLines(ctx: CanvasRenderingContext2D, pane: Pane): void {
     for (const s of pane.series) {
+      // A linha de preco pertence a serie, logo vive na escala DELA: uma linha
+      // criada numa serie de volume tem de ser lida na escala do volume.
+      const escala = this.scaleOf(pane, s);
       for (const pl of s.model.priceLines.values()) {
-        const y = priceToCoordinate(pane.priceScale, pl.price);
+        const y = priceToCoordinate(escala, pl.price);
         if (y === null) continue;
         ctx.strokeStyle = pl.color;
         ctx.lineWidth = Math.max(1, (pl.lineWidth ?? 1) * this.dpr);
@@ -1033,6 +1713,7 @@ export class RobustusChartCore implements IChartApi {
    */
   private drawMarkers(ctx: CanvasRenderingContext2D, pane: Pane): void {
     for (const s of pane.series) {
+      const escala = this.scaleOf(pane, s);
       for (const m of s.model.markers) {
         const x = timeToCoordinate(this.ts, m.time);
         if (x === null) continue;
@@ -1044,7 +1725,7 @@ export class RobustusChartCore implements IChartApi {
           const c = bar as { high?: number; low?: number; value?: number };
           const preco =
             m.position === 'aboveBar' ? c.high ?? c.value : m.position === 'belowBar' ? c.low ?? c.value : c.value;
-          const y = preco !== undefined ? priceToCoordinate(pane.priceScale, preco) : null;
+          const y = preco !== undefined ? priceToCoordinate(escala, preco) : null;
           if (y !== null) yBase = y + (m.position === 'aboveBar' ? -12 : m.position === 'belowBar' ? 12 : 0);
         }
 
@@ -1170,6 +1851,11 @@ function mergeOptions(base: ChartOptions, over?: Partial<ChartOptions>): ChartOp
     handleScroll: over.handleScroll ?? base.handleScroll,
     handleScale: over.handleScale ?? base.handleScale,
     autoSize: over.autoSize ?? base.autoSize,
+    // Marca d'agua: o override VENCE por inteiro, sem mesclar campo a campo.
+    // Mesclar seria pior — `applyOptions({ watermark: { text: 'X' } })` herdaria a
+    // `fontSize` e a `color` da configuracao antiga em vez de voltar ao default, e o
+    // consumidor nao tem como "desconfigurar" um campo.
+    watermark: over.watermark ?? base.watermark,
   };
 }
 

@@ -39,8 +39,28 @@ import {
   keltnerFactory,
 } from './built-in/volatility.js';
 import { macdFactory, adxFactory, obvFactory, vwapFactory } from './built-in/trend-volume.js';
+import {
+  supertrendFactory,
+  parabolicSarFactory,
+  ichimokuFactory,
+} from './built-in/trend-following.js';
+import { donchianFactory, vwapBandsFactory } from './built-in/channels.js';
+import { mfiFactory, cmfFactory, awesomeOscillatorFactory } from './built-in/flow-oscillators.js';
+import { pivotPointsFactory } from './built-in/pivots.js';
 
 import type { IndicatorFactory } from './contracts.js';
+
+// ── Niveis de pivo como FUNCAO PURA ────────────────────────────────────────
+// ⚠️ Exportados ao lado da fabrica de proposito: quem ja tem o OHLC do dia
+// anterior (um backend que devolve barras diarias) obtem os niveis sem instanciar
+// indicador nenhum. Ver o cabecalho de `pivot-levels.core.ts`.
+export {
+  pivotLevels,
+  pivotLevelsFromBars,
+  summarizePeriod,
+  type PivotLevels,
+  type PeriodSummary,
+} from './built-in/pivot-levels.core.js';
 
 export {
   smaFactory,
@@ -63,9 +83,26 @@ export {
   adxFactory,
   obvFactory,
   vwapFactory,
+  supertrendFactory,
+  parabolicSarFactory,
+  ichimokuFactory,
+  donchianFactory,
+  vwapBandsFactory,
+  mfiFactory,
+  cmfFactory,
+  awesomeOscillatorFactory,
+  pivotPointsFactory,
 };
 
-/** Toda fabrica embutida, na ordem de categoria (media, oscilador, vol, tendencia/volume). */
+/**
+ * Toda fabrica embutida, na ordem de categoria (media, oscilador, vol,
+ * tendencia/volume, seguidores de tendencia, canais, fluxo, pivo).
+ *
+ * ⚠️ Esta lista e a ENTRADA dos testes de propriedade: `incremental-igual-batch` e
+ * `preview-nao-muta` iteram por ela. Fabrica registrada aqui ganha as duas provas
+ * de graca; fabrica esquecida aqui nao e testada por ninguem. Registrar e o passo
+ * que importa, nao exportar.
+ */
 export const builtInFactories: readonly IndicatorFactory[] = [
   smaFactory,
   emaFactory,
@@ -87,6 +124,15 @@ export const builtInFactories: readonly IndicatorFactory[] = [
   adxFactory,
   obvFactory,
   vwapFactory,
+  supertrendFactory,
+  parabolicSarFactory,
+  ichimokuFactory,
+  donchianFactory,
+  vwapBandsFactory,
+  mfiFactory,
+  cmfFactory,
+  awesomeOscillatorFactory,
+  pivotPointsFactory,
 ];
 
 /**

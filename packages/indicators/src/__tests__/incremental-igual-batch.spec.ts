@@ -74,6 +74,12 @@ describe('incremental == batch (a prova de correcao)', () => {
     // Guarda contra alguem adicionar fabrica ao registry e esquecer o teste:
     // como iteramos builtInFactories, um indicador novo entra aqui de graca.
     // Esta assercao existe so para documentar a intencao e travar a contagem.
-    expect(builtInFactories.length).toBeGreaterThanOrEqual(20);
+    //
+    // ⚠️ A contagem SUBE, nunca desce. Era 20 (as familias originais: 6 medias, 6
+    // osciladores, 4 de volatilidade, 4 de tendencia/volume). Foi para 29 com
+    // SuperTrend, SAR Parabolico, Ichimoku, Donchian, VWAP com bandas, MFI, CMF,
+    // Awesome Oscillator e Pontos de Pivo. Se este numero cair, alguma fabrica
+    // saiu do registry — e sair do registry e sair das duas provas de propriedade.
+    expect(builtInFactories.length).toBeGreaterThanOrEqual(29);
   });
 });

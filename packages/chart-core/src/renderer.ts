@@ -13,10 +13,12 @@
  * Entao o renderer proprio tambem trabalha em bitmap e multiplica a mao.
  */
 
+import type { WatermarkOptions } from './contracts.js';
 import type { SeriesModel } from './series.js';
 import {
   logicalToCoordinate,
   visibleLogicalRange,
+  visibleTickIndices,
   type TimeScaleState,
 } from './time-scale.core.js';
 import { priceToCoordinate, priceTicks, type PriceScaleState } from './price-scale.core.js';
@@ -45,7 +47,22 @@ export interface RenderTheme {
   readonly crosshairLabelBg: string;
   /** Texto das caixas de rotulo do crosshair. */
   readonly crosshairLabelText: string;
+  /** Grade HORIZONTAL (niveis de preco). */
   readonly gridVisible: boolean;
+  /**
+   * Grade VERTICAL (instantes do eixo de tempo). Default DESLIGADA.
+   *
+   * ⚠️ Opcional no tipo de proposito: `RenderTheme` e superficie publica
+   * (exportada no `index.ts`), e torna-lo obrigatorio quebraria todo tema montado
+   * como literal la fora. Ausente = `false`, o comportamento historico.
+   *
+   * A decisao de nascer desligada e antiga e continua valendo: a linha vertical
+   * cai exatamente sobre as velas e compete com o corpo delas. Quem quiser a
+   * malha completa liga em `grid.vertLines.visible`.
+   */
+  readonly gridVertVisible?: boolean;
+  /** Cor da grade vertical. Ausente = a mesma da horizontal. */
+  readonly gridVert?: string;
 }
 
 export const DEFAULT_THEME: RenderTheme = {
@@ -61,6 +78,8 @@ export const DEFAULT_THEME: RenderTheme = {
   crosshairLabelBg: '#334155',
   crosshairLabelText: '#e2e8f0',
   gridVisible: true,
+  // Vertical desligada por default — ver o comentario no tipo.
+  gridVertVisible: false,
 };
 
 /** Posicao do crosshair, ou `null` quando o cursor esta fora. */
@@ -106,8 +125,20 @@ export function renderPane(
   hpr: number,
   vpr: number,
   ts: TimeScaleState,
+  /**
+   * A escala PRINCIPAL da pane (o preco). Manda na grade, no eixo desenhado e na
+   * altura da area — mas NAO nas series: cada uma traz a sua.
+   */
   ps: PriceScaleState,
-  series: readonly SeriesModel[],
+  /**
+   * As series com A ESCALA DE CADA UMA.
+   *
+   * ⭐ Recebe pares em vez de uma escala unica porque uma pane pode desenhar
+   * grandezas de magnitude incompativel: preco (~130.000) e volume (0..40.000). Com
+   * escala unica a autoescala misturava as duas e as velas ficavam esmagadas em
+   * poucos pixels no topo — o grafico aparecia vazio.
+   */
+  series: ReadonlyArray<{ readonly model: SeriesModel; readonly scale: PriceScaleState }>,
   theme: RenderTheme,
   crosshair: CrosshairState | null,
   mostrarEixoPreco: boolean,
@@ -119,6 +150,11 @@ export function renderPane(
    * em `priceLabel` (o chamador aplica o mesmo formato la, para os dois baterem).
    */
   priceFormat?: PriceFormatOptions,
+  /**
+   * Marca d'agua desta pane. O motor passa isto SO na pane principal — repetir a
+   * marca em cada sub-painel encheria a tela de texto fantasma.
+   */
+  watermark?: WatermarkOptions,
 ): void {
   const w = ts.width;
   const h = ps.height;
@@ -129,9 +165,14 @@ export function renderPane(
     ctx.fillRect(0, 0, w * hpr, h * vpr);
   }
 
-  if (theme.gridVisible) drawGrid(ctx, hpr, vpr, ps, w, theme);
+  // ⭐ A marca d'agua vem antes de TUDO que carrega dado (grade inclusa): ela e
+  // fundo. Depois da grade ela ja competiria com as linhas de preco.
+  if (watermark !== undefined) drawWatermark(ctx, hpr, vpr, w, h, watermark);
 
-  for (const s of series) drawSeries(ctx, hpr, vpr, ts, ps, s, theme);
+  drawGrid(ctx, hpr, vpr, ts, ps, w, theme);
+
+  // Cada serie desenha contra A SUA escala, nao contra a principal.
+  for (const s of series) drawSeries(ctx, hpr, vpr, ts, s.scale, s.model, theme);
 
   if (mostrarEixoPreco) drawPriceAxis(ctx, hpr, vpr, ps, w, theme, priceFormat);
 
@@ -184,26 +225,101 @@ export function renderTimeAxis(
 // Grade e eixo
 // ═════════════════════════════════════════════════════════════════════════════
 
+/**
+ * Grade: horizontais nos niveis de preco redondos, verticais nos instantes do eixo.
+ *
+ * ⭐ As duas sao INDEPENDENTES (`gridVisible` / `gridVertVisible`), e a vertical
+ * nasce desligada — ela cai sobre o corpo das velas e compete com elas. O default
+ * historico e mantido; o que mudou e que ligar passou a funcionar (antes o
+ * contrato tinha `grid.vertLines.visible` e o renderer simplesmente nao lia).
+ *
+ * ⚠️ As verticais saem de `visibleTickIndices`, a MESMA fonte dos rotulos de
+ * tempo. Reimplementar o passo aqui faria a linha aparecer em instante sem rotulo
+ * ao primeiro ajuste de espacamento.
+ */
 function drawGrid(
   ctx: CanvasRenderingContext2D,
   hpr: number,
   vpr: number,
+  ts: TimeScaleState,
   ps: PriceScaleState,
   w: number,
   theme: RenderTheme,
 ): void {
-  // So linhas horizontais nos niveis de preco redondos — a grade vertical compete
-  // visualmente com as velas e nao acrescenta leitura.
-  ctx.strokeStyle = theme.grid;
-  ctx.lineWidth = Math.max(1, Math.min(hpr, vpr));
-  ctx.beginPath();
-  for (const p of priceTicks(ps)) {
-    const y = priceToCoordinate(ps, p);
-    if (y === null) continue;
-    ctx.moveTo(0, Math.round(y * vpr) + 0.5);
-    ctx.lineTo(w * hpr, Math.round(y * vpr) + 0.5);
+  const h = ps.height;
+
+  if (theme.gridVisible) {
+    ctx.strokeStyle = theme.grid;
+    ctx.lineWidth = Math.max(1, Math.min(hpr, vpr));
+    ctx.beginPath();
+    for (const p of priceTicks(ps)) {
+      const y = priceToCoordinate(ps, p);
+      if (y === null) continue;
+      ctx.moveTo(0, Math.round(y * vpr) + 0.5);
+      ctx.lineTo(w * hpr, Math.round(y * vpr) + 0.5);
+    }
+    ctx.stroke();
   }
-  ctx.stroke();
+
+  if (theme.gridVertVisible === true) {
+    ctx.strokeStyle = theme.gridVert ?? theme.grid;
+    ctx.lineWidth = Math.max(1, Math.min(hpr, vpr));
+    ctx.beginPath();
+    for (const i of visibleTickIndices(ts)) {
+      const x = logicalToCoordinate(ts, i);
+      if (x === null || x < 0 || x > w) continue;
+      // `+0.5` no pixel de bitmap: sem isso o traco de 1 px cai entre dois pixels
+      // e o antialias o transforma em duas linhas cinzas de meia intensidade.
+      ctx.moveTo(Math.round(x * hpr) + 0.5, 0);
+      ctx.lineTo(Math.round(x * hpr) + 0.5, h * vpr);
+    }
+    ctx.stroke();
+  }
+}
+
+/**
+ * Marca d'agua central — simbolo, mesa, aviso de ambiente.
+ *
+ * ⚠️ **Nao usa `textAlign: 'center'` de proposito.** Centralizar pelo contexto
+ * daria a mesma imagem com menos codigo, mas esconderia o unico ponto onde o
+ * ambiente sem `measureText` importa: `medirLargura` ESTIMA a largura no contexto
+ * inerte do jsdom (mesma tolerancia de `larguraDoTexto` na camada de primitives).
+ * Calculando o `x` a mao, o comportamento em ambiente inerte fica observavel e
+ * testavel — e a caixa medida serve tambem para nao vazar da pane.
+ *
+ * Alpha 0.08: medido contra fundo escuro — abaixo de ~0.05 a marca desaparece,
+ * acima de ~0.15 ela "suja" a leitura do pavio das velas que passam por cima.
+ */
+function drawWatermark(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  w: number,
+  h: number,
+  wm: WatermarkOptions,
+): void {
+  if (wm.visible === false) return;
+  const texto = wm.text;
+  if (typeof texto !== 'string' || texto.length === 0) return;
+
+  ctx.save();
+  try {
+    const fontePx = Math.round((wm.fontSize ?? 44) * vpr);
+    ctx.font = `600 ${fontePx}px ui-sans-serif, system-ui, sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.globalAlpha = 0.08;
+    ctx.fillStyle = wm.color ?? '#94a3b8';
+
+    const largura = medirLargura(ctx, texto, fontePx);
+    // Centraliza pela largura medida (ou estimada). Se o texto for mais largo que a
+    // pane, ancora em 0 em vez de sair pela esquerda — melhor cortado a direita
+    // que comecando fora da tela.
+    const x = Math.max(0, (w * hpr - largura) / 2);
+    ctx.fillText(texto, x, (h / 2) * vpr);
+  } finally {
+    ctx.restore();
+  }
 }
 
 function drawPriceAxis(
@@ -266,8 +382,8 @@ function decimalsFor(span: number): number {
  * primeira barra de um dia novo ganha a DATA, as demais a HORA — porque um eixo
  * intraday que so mostra hora nao diz de que dia ela e.
  *
- * Percorre so as barras VISIVEIS (indices inteiros dentro da janela), converte
- * cada uma em pixel, e pinta um rotulo a cada `passo` barras para nao amontoar.
+ * Percorre so as barras marcadas por `visibleTickIndices` — a MESMA fonte que a
+ * grade vertical consome, para rotulo e linha nunca cairem em instantes diferentes.
  */
 function drawTimeLabels(
   ctx: CanvasRenderingContext2D,
@@ -279,22 +395,15 @@ function drawTimeLabels(
   cfg: TimeAxisConfig,
   theme: RenderTheme,
 ): void {
-  const lr = visibleLogicalRange(ts);
-  if (lr === null) return;
-  const n = ts.times.length;
-  if (n === 0) return;
+  const indices = visibleTickIndices(ts);
+  if (indices.length === 0) return;
 
-  const de = Math.max(0, Math.floor(lr.from));
-  const ate = Math.min(n - 1, Math.ceil(lr.to));
-  if (ate < de) return;
+  const de = indices[0] as number;
+  const ate = indices[indices.length - 1] as number;
 
   // Intervalo tipico entre barras (mediana grosseira: diferenca central da janela).
   const stepSeconds = medianStepSeconds(ts, de, ate);
   const unit = chooseTickUnit(ts.barSpacing, stepSeconds);
-
-  // Passo em barras: quantas barras pular entre rotulos para o espacamento visual
-  // ficar em torno de ~80 px. Piso de 1.
-  const passo = Math.max(1, Math.round(80 / Math.max(ts.barSpacing, 0.0001)));
 
   // A tira ja foi transladada para sua origem pelo chamador: centro vertical dela.
   const yTexto = (stripHeight / 2) * vpr;
@@ -306,7 +415,7 @@ function drawTimeLabels(
     ctx.textBaseline = 'middle';
 
     let anterior: TimeParts | null = null;
-    for (let i = de; i <= ate; i += passo) {
+    for (const i of indices) {
       const t = ts.times[i];
       if (t === undefined) continue;
       const p = timePartsInZone(t, cfg.timeZone);

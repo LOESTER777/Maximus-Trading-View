@@ -161,6 +161,7 @@ import {
  * importação em tempo de execução além desta.
  */
 import { construirPaletaTermica } from '@robustus/charts-core';
+import { TEXT_BOX_PAD_PX, desenharCaixaDeTexto, larguraDoTexto } from './text-box.js';
 import type {
   AggregatedCell,
   AggregatedCells,
@@ -226,6 +227,51 @@ export interface BookmapLayerOptions {
    * mostrar a mesma informação fora do canvas.
    */
   readonly mostrarLegenda?: boolean;
+  /**
+   * Desenhar o texto de DIAGNÓSTICO sobre a área de plotagem.
+   *
+   * ⭐ **Ausente ⇒ `false`.** É o único padrão desta camada que NÃO reproduz a
+   * origem, e a inversão é deliberada.
+   *
+   * ── O DEFEITO QUE MOTIVOU ────────────────────────────────────────────────
+   *
+   * No cockpit de origem a camada escrevia, sempre, os percentis da escala
+   * (`p50 481 ct · p99 1.131 ct · escala da janela visível`), a declaração de
+   * escala colapsada (`A janela visível não apresenta variação de magnitude.`) e
+   * o rodapé de cobertura (`Cobertura não verificada · fila não informado ·
+   * execução não informado`). Numa mesa, com o operador treinado e o dado
+   * completo, isso é instrumentação útil.
+   *
+   * Numa biblioteca, não: no playground, com dado sintético e sem livro, essas
+   * três linhas somam a maior parte do texto na tela, aparecem SOBRE as velas e
+   * quase todas dizem "não informado" — o usuário fotografou a tela e descreveu
+   * como poluição ilegível, com razão. Informação de desenvolvimento passa a ser
+   * pedida, não imposta.
+   *
+   * ── O QUE ENTRA NESTE CANAL, E O QUE NÃO ENTRA ───────────────────────────
+   *
+   * | texto | canal |
+   * |---|---|
+   * | percentis da escala, `escala da janela visível` | diagnóstico |
+   * | `A janela visível não apresenta variação de magnitude.` | diagnóstico |
+   * | rodapé de cobertura com os horários | diagnóstico |
+   * | identidade da camada (`Livro · fila em repouso`) | legenda |
+   * | `Verde: … · Vermelho: …`, `Bolha: raio = volume…` | legenda |
+   * | aviso de zoom apertado, aviso de autodesativação | legenda (ressalva) |
+   *
+   * ⚠️ **Compromisso assumido, declarado:** com o diagnóstico desligado o
+   * operador vê a mancha de calor sem os números que a calibram, e sem a ressalva
+   * de escala colapsada. Uma escala relativa sem número é menos informativa — era
+   * o argumento do requisito 2.7 da origem. A troca é consciente: quem opera de
+   * verdade liga `mostrarDiagnostico: true` e recupera tudo, byte a byte, na mesma
+   * redação; quem só está vendo o gráfico não paga por instrumentação que não
+   * pediu.
+   *
+   * ⚠️ Subordinado a `mostrarLegenda`: com ela em `false` a camada fica MUDA, e
+   * ligar o diagnóstico não a faz falar. É uma porta só — quem cala a camada não
+   * quer texto nenhum sobre o gráfico.
+   */
+  readonly mostrarDiagnostico?: boolean;
   /**
    * Como a cor codifica a informação.
    *
@@ -352,6 +398,13 @@ const TEXT_LINE_PX = 14;
 const TEXT_STYLE = 'rgba(226, 232, 240, 0.92)';
 const TEXT_SHADOW_STYLE = 'rgba(0, 0, 0, 0.65)';
 const TEXT_AMBAR_STYLE = 'rgba(245, 158, 11, 0.95)';
+
+/**
+ * ⭐ A caixa de contraste do texto vive em `./text-box.js`, compartilhada com o
+ * footprint: as duas camadas tinham o mesmo defeito de legibilidade e resolvê-lo
+ * duas vezes garantiria duas aparências diferentes para a mesma coisa. O módulo
+ * também explica por que a caixa **não** pode usar `fillRect`.
+ */
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Aviso de autodesativação (requisitos 10.6 e 10.7)
@@ -611,6 +664,8 @@ function rotuloGrandeza(metrica: MetricaBookmap): string {
 function incluiExecucao(metrica: MetricaBookmap): boolean {
   return metrica === 'EXECUCAO' || metrica === 'AMBAS';
 }
+
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // O plano de desenho
@@ -1151,9 +1206,10 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
       // ── 5: hachura de cobertura ausente ──
       this.fillHatch(ctx, plan.hatch, scope.bitmapSize.height, hpr, vpr);
 
-      // ── 6: legenda e rodapé ──
+      // ── 6: legenda e rodapé, cada um em caixa opaca ──
       // A supressão acontece no PLANO (listas vazias), não aqui: o renderizador
-      // não decide nada por contrato. Ver `mostrarLegenda`.
+      // não decide nada por contrato. Ver `mostrarLegenda` e `mostrarDiagnostico`
+      // — é em `buildLegend` que se decide o que cada canal escreve.
       this.drawText(ctx, plan, scope.bitmapSize.width, scope.bitmapSize.height, hpr, vpr);
     });
   }
@@ -1365,12 +1421,23 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
   }
 
   /**
-   * Legenda no canto superior esquerdo e rodapé de cobertura no inferior.
+   * Legenda no canto superior esquerdo e rodapé de cobertura no inferior, cada
+   * um dentro de uma caixa opaca.
    *
-   * O texto é desenhado duas vezes, deslocado de um pixel: o gráfico tem fundo
-   * variável e a camada é semitransparente, então sem a sombra a legenda fica
-   * ilegível sobre região densa — e uma legenda ilegível é o mesmo que uma
-   * escala relativa sem números.
+   * O texto continua sendo desenhado duas vezes, deslocado de um pixel: o gráfico
+   * tem fundo variável e a camada é semitransparente. ⭐ **Mas a sombra sozinha
+   * não bastava** — sobre a mancha de calor saturada ou sobre o corpo de uma vela
+   * clara o texto seguia ilegível, e foi o que o usuário fotografou no playground
+   * em 04/09/2026. A caixa de `TEXT_BOX_STYLE` dá fundo próprio ao texto, e a
+   * sombra passa a ser o acabamento que ela era para ser.
+   *
+   * ⚠️ A caixa é desenhada por CAMINHO (`beginPath`/`rect`/`fill`), nunca por
+   * `fillRect` nem `strokeRect`. Não é estilo: as bancadas herdadas contam
+   * `fillRect` como "célula desenhada" e `strokeRect` como "contorno de estouro
+   * de escala", e afirmam **zero** dos dois no estado autodesativado — que é
+   * justamente um estado que desenha texto. Uma caixa por `fillRect` faria a
+   * caixa ser contada como célula e quebraria a asserção sem que nada estivesse
+   * errado na camada.
    */
   private drawText(
     ctx: CanvasRenderingContext2D,
@@ -1388,37 +1455,69 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
     ctx.textAlign = 'left';
 
     const margemX = TEXT_MARGIN_PX * hpr;
+    const margemY = TEXT_MARGIN_PX * vpr;
     const linha = TEXT_LINE_PX * vpr;
+    const padX = TEXT_BOX_PAD_PX * hpr;
+    const padY = TEXT_BOX_PAD_PX * vpr;
+
+    // Painel de largura degenerada: nem caixa nem texto. A guarda já existia
+    // para o rodapé; agora vale para os dois blocos, porque uma caixa mais larga
+    // que o painel cobriria a escala de preço.
+    const cabeTexto = bitmapWidth > margemX + padX;
 
     // Âmbar quando a legenda carrega o aviso de autodesativação: com a cor
     // neutra, o aviso do requisito 10.6 seria lido como mais uma linha de
     // legenda, que é a forma prática de ele não ser lido.
     const estiloLegenda = plan.legendAlerta ? TEXT_AMBAR_STYLE : TEXT_STYLE;
 
-    let y = TEXT_MARGIN_PX * vpr;
-    for (let i = 0; i < plan.legend.length; i++) {
-      const texto = plan.legend[i];
-      if (texto === undefined) continue;
-      ctx.fillStyle = TEXT_SHADOW_STYLE;
-      ctx.fillText(texto, margemX + 1, y + 1);
-      ctx.fillStyle = estiloLegenda;
-      ctx.fillText(texto, margemX, y);
-      y += linha;
-    }
+    if (plan.legend.length > 0 && cabeTexto) {
+      let larguraMax = 0;
+      for (const texto of plan.legend) {
+        if (texto === undefined) continue;
+        const w = larguraDoTexto(ctx, texto, fontPx);
+        if (w > larguraMax) larguraMax = w;
+      }
+      desenharCaixaDeTexto(
+        ctx,
+        margemX - padX,
+        margemY - padY,
+        larguraMax + 2 * padX,
+        plan.legend.length * linha + 2 * padY,
+        bitmapWidth,
+        bitmapHeight,
+      );
 
-    if (plan.footer !== null) {
-      ctx.textBaseline = 'bottom';
-      const yBase = bitmapHeight - TEXT_MARGIN_PX * vpr;
-      // O rodapé encosta na borda inferior; a largura entra só para o texto não
-      // ser desenhado num painel de largura degenerada.
-      if (bitmapWidth > margemX) {
+      let y = margemY;
+      for (let i = 0; i < plan.legend.length; i++) {
+        const texto = plan.legend[i];
+        if (texto === undefined) continue;
         ctx.fillStyle = TEXT_SHADOW_STYLE;
-        ctx.fillText(plan.footer, margemX + 1, yBase + 1);
-        ctx.fillStyle = plan.footerAlerta ? TEXT_AMBAR_STYLE : TEXT_STYLE;
-        ctx.fillText(plan.footer, margemX, yBase);
+        ctx.fillText(texto, margemX + 1, y + 1);
+        ctx.fillStyle = estiloLegenda;
+        ctx.fillText(texto, margemX, y);
+        y += linha;
       }
     }
+
+    if (plan.footer !== null && cabeTexto) {
+      ctx.textBaseline = 'bottom';
+      const yBase = bitmapHeight - margemY;
+      desenharCaixaDeTexto(
+        ctx,
+        margemX - padX,
+        yBase - fontPx - padY,
+        larguraDoTexto(ctx, plan.footer, fontPx) + 2 * padX,
+        fontPx + 2 * padY,
+        bitmapWidth,
+        bitmapHeight,
+      );
+      ctx.fillStyle = TEXT_SHADOW_STYLE;
+      ctx.fillText(plan.footer, margemX + 1, yBase + 1);
+      ctx.fillStyle = plan.footerAlerta ? TEXT_AMBAR_STYLE : TEXT_STYLE;
+      ctx.fillText(plan.footer, margemX, yBase);
+    }
   }
+
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -2590,15 +2689,30 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
   /**
    * Legenda da escala e rodapé de cobertura.
    *
-   * Os números absolutos são obrigatórios (requisito 2.7): uma escala relativa
-   * sem `p50` e `p99` em contratos é uma mancha bonita e inútil — o operador não
-   * consegue dizer se a faixa mais quente é uma parede de 2.400 contratos ou de
-   * 240.
+   * ⭐ **Dois canais, não um.** A origem tratava tudo como "legenda" e escrevia
+   * sempre; aqui o texto é repartido por NATUREZA:
    *
-   * O rodapé sai sempre, independentemente do recorte visível e da métrica
-   * selecionada (requisitos 7.7 e 7.8): a hachura é condicional, a informação
-   * textual não. E a classe vem exclusivamente do campo da resposta, nunca
-   * inferida das células desenhadas.
+   * - **legenda** — o que a tela significa: qual camada é, o que cada cor quer
+   *   dizer, e as ressalvas que mudam a leitura (zoom apertado, autodesativação).
+   *   Ligada por omissão, e desligável por `mostrarLegenda: false`.
+   * - **diagnóstico** — instrumentação: os percentis da escala, a declaração de
+   *   escala colapsada e o rodapé de cobertura com horários. **Desligado por
+   *   omissão**, ligável por `mostrarDiagnostico: true`.
+   *
+   * O motivo está em `mostrarDiagnostico`: no playground essas três linhas
+   * ocupavam a maior parte do texto na tela, quase todas dizendo "não informado",
+   * sobre as velas. O requisito 2.7 da origem — números absolutos obrigatórios —
+   * continua atendido **quando o diagnóstico está ligado**, na mesma redação.
+   *
+   * ⚠️ A primeira linha é PARTIDA em vez de suprimida: `Livro · fila em repouso`
+   * é identidade da camada (legenda) e os percentis são instrumentação
+   * (diagnóstico). Suprimir a linha inteira deixaria a mancha de calor sem dizer
+   * de quem ela é, que é o oposto do que se quer.
+   *
+   * O rodapé sai independentemente do recorte visível e da métrica selecionada
+   * (requisitos 7.7 e 7.8) — o que passou a condicioná-lo é só o canal. E a
+   * classe vem exclusivamente do campo da resposta, nunca inferida das células
+   * desenhadas.
    */
   private buildLegend(
     coverage: CoverageView,
@@ -2609,15 +2723,28 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
   ): void {
     const linhas: string[] = [];
 
+    // ⚠️ Ausência ⇒ diagnóstico DESLIGADO. É a única omissão desta camada que não
+    // reproduz a origem, e a justificativa está em `mostrarDiagnostico`.
+    const diagnostico = this.options.mostrarDiagnostico === true;
+
     const grandeza = baseIsExec ? 'execução' : rotuloGrandeza(metrica);
+    const identidade = `Livro · ${grandeza}`;
     linhas.push(
-      `Livro · ${grandeza} · p50 ${formatContratos(scaleBase.p50)} ct · ` +
-        `p99 ${formatContratos(scaleBase.p99)} ct · escala da janela visível`,
+      diagnostico
+        ? `${identidade} · p50 ${formatContratos(scaleBase.p50)} ct · ` +
+            `p99 ${formatContratos(scaleBase.p99)} ct · escala da janela visível`
+        : identidade,
     );
 
-    if (!hasMagnitudeVariation(scaleBase)) {
+    if (diagnostico && !hasMagnitudeVariation(scaleBase)) {
       // Requisito 2.10: escala colapsada é declarada, não escondida. Sem esta
       // linha o operador leria uma tela saturada como distribuição normal.
+      //
+      // ⚠️ Passou a depender do diagnóstico, e o compromisso é real: com ele
+      // desligado, uma escala colapsada fica muda. Foi a troca escolhida porque a
+      // frase é longa, aparece justamente quando NÃO há dado — o caso do
+      // playground, em que ela era das linhas mais visíveis da tela — e quem
+      // precisa dela é quem já está instrumentando a camada.
       linhas.push('A janela visível não apresenta variação de magnitude.');
     }
 
@@ -2628,10 +2755,16 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
       // tem como saber pela tela se está vendo bolha ou barra — e foi exatamente
       // essa dúvida ("não aparece as bolhas") que custou uma rodada de
       // diagnóstico em 03/09/2026. A legenda passa a responder sozinha.
+      //
+      // ⭐ Por isso a FORMA fica na legenda e só os percentis vão para o
+      // diagnóstico: a pergunta que custou a rodada continua respondida na tela
+      // por omissão.
       const forma = this.options.marcaExec === 'BOLHA' ? 'Bolha' : 'Marca interna';
       linhas.push(
-        `${forma} · execução · p50 ${formatContratos(scaleExec.p50)} ct · ` +
-          `p99 ${formatContratos(scaleExec.p99)} ct`,
+        diagnostico
+          ? `${forma} · execução · p50 ${formatContratos(scaleExec.p50)} ct · ` +
+              `p99 ${formatContratos(scaleExec.p99)} ct`
+          : `${forma} · execução`,
       );
       if (this.options.marcaExec === 'BOLHA') {
         linhas.push('Bolha: raio = volume executado · cor = lado do agressor');
@@ -2691,9 +2824,14 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     }
 
     this.plan.legend = linhas;
-    this.plan.footer = coverage.rotulos.resumo;
+    // ⚠️ O rodapé é DIAGNÓSTICO: `Cobertura não verificada · fila não informado ·
+    // execução não informado` é o texto que o usuário fotografou no playground,
+    // escrito no pé da área de plotagem, sobre o eixo de tempo, dizendo três vezes
+    // que não há informação. Quem instrumenta liga a opção e o recupera inteiro.
+    this.plan.footer = diagnostico ? coverage.rotulos.resumo : null;
     // Cobertura completa é a única sem ressalva; qualquer outra classe, e a
     // ausência de verificação, merecem destaque em vez de texto neutro.
-    this.plan.footerAlerta = coverage.aviso !== null || !coverage.verificada;
+    this.plan.footerAlerta =
+      diagnostico && (coverage.aviso !== null || !coverage.verificada);
   }
 }

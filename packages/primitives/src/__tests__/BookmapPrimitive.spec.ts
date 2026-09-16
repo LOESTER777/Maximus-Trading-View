@@ -752,7 +752,15 @@ describe('BookmapPrimitive — autodesativação por exceção no desenho (taref
     });
 
     it('não mantém o rodapé de cobertura, que fala de outro assunto', () => {
-      const saudavel = montarBancada();
+      // ⚠️ `mostrarDiagnostico: true` é o ÚNICO ajuste feito nesta suíte herdada,
+      // e é na guarda de vacuidade, não na asserção que o caso mede. O rodapé de
+      // cobertura passou a ser canal de DIAGNÓSTICO, desligado por omissão — ele
+      // era um dos textos que poluíam a tela do playground. Sem a opção aqui, a
+      // guarda abaixo passaria a falhar por ausência do rodapé em vez de provar
+      // que ele existe na passada normal, e o caso perderia o poder de
+      // distinguir. A asserção do caso — o estado autodesativado NÃO repete o
+      // rodapé — segue medida com as opções de omissão.
+      const saudavel = montarBancada({ mostrarDiagnostico: true });
       saudavel.desenharUmaPassada();
       const rodapeSaudavel = textoJunto(saudavel.ctx);
       // Confirma que o rodapé existe na passada normal, senão a asserção abaixo

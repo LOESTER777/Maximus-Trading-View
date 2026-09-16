@@ -129,11 +129,27 @@ export function autoScale(s: PriceScaleState, minPrice: number, maxPrice: number
  * Escolhe um passo agradavel (1, 2, 2.5, 5 x potencia de 10) proximo do passo
  * bruto que caberia em ~`target` divisoes. Rotulo em valor quebrado (137,43) e
  * ruido; em valor redondo (137,50) o olho ancora.
+ *
+ * ⭐ Em escala LOGARITMICA o passo linear e o defeito, nao a solucao: os niveis
+ * saem amontoados numa ponta e vazios na outra. Ver `logTicks`.
  */
 export function priceTicks(s: PriceScaleState, target = 6): number[] {
   const span = s.topPrice - s.bottomPrice;
   if (span <= 0 || !Number.isFinite(span)) return [];
 
+  if (s.logarithmic) {
+    const log = logTicks(s, target);
+    // Faixa curta em log (menos de uma decada) rende poucos niveis 1/2/5; ai o
+    // passo linear le melhor, e a diferenca visual e desprezivel — ver `logTicks`.
+    if (log.length >= 3) return log;
+  }
+
+  return linearTicks(s, target);
+}
+
+/** O passo linear "bonito" — o comportamento historico, preservado intacto. */
+function linearTicks(s: PriceScaleState, target: number): number[] {
+  const span = s.topPrice - s.bottomPrice;
   const passoBruto = span / target;
   const magnitude = Math.pow(10, Math.floor(Math.log10(passoBruto)));
   const norm = passoBruto / magnitude;
@@ -146,4 +162,67 @@ export function priceTicks(s: PriceScaleState, target = 6): number[] {
     ticks.push(p);
   }
   return ticks;
+}
+
+/**
+ * Niveis de rotulo para escala LOGARITMICA: potencias de 10 e as subdivisoes
+ * 1 / 2 / 5.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O DEFEITO QUE ISTO CORRIGE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `priceTicks` gerava passo LINEAR mesmo com `logarithmic: true`. Numa faixa de
+ * 10 a 1.000 com 6 divisoes, o passo linear e ~165: os rotulos saem em 165, 330,
+ * 495, 660, 825, 990 — e em log **os quatro ultimos ficam amontoados no terco
+ * superior** enquanto a metade de baixo da tela (10 a 100, uma decada inteira, que
+ * em log ocupa 1/3 da altura) recebe ZERO rotulo. O eixo passa a mentir sobre
+ * onde estao os niveis.
+ *
+ * ⭐ A escada 1/2/5 e a certa aqui porque ela e **uniforme em log**: os saltos
+ * 1→2→5→10 valem 0,30 / 0,40 / 0,30 decada, quase equidistantes na tela. Uma
+ * escada 1/3 ou 1/2,5 daria espacamento visivelmente irregular.
+ *
+ * ⚠️ Base <= 0 cai fora: log de nao-positivo nao existe, e a faixa em log seria
+ * degenerada (o piso de `toScale` distorceria em ordens de magnitude). Devolve
+ * vazio e o chamador usa o passo linear — melhor um eixo linear correto que um
+ * log inventado.
+ */
+function logTicks(s: PriceScaleState, target: number): number[] {
+  const lo = s.bottomPrice;
+  const hi = s.topPrice;
+  if (!(lo > 0) || !(hi > lo) || !Number.isFinite(hi)) return [];
+
+  const kMin = Math.floor(Math.log10(lo));
+  const kMax = Math.ceil(Math.log10(hi));
+  const decadas = kMax - kMin;
+  if (!Number.isFinite(decadas) || decadas <= 0 || decadas > 320) return [];
+
+  // Quantas subdivisoes por decada, e de quantas em quantas decadas rotular.
+  //
+  // Ate 2 decadas cabem as tres mantissas (3 rotulos/decada = ate 6, o `target`).
+  // Ate 4 decadas fica 1/5 (2 por decada). Alem disso so a potencia de 10, e se
+  // ainda forem muitas, pula decadas — em 12 decadas rotular cada uma amontoaria.
+  let mantissas: readonly number[];
+  let passoDecada = 1;
+  if (decadas <= 2) mantissas = [1, 2, 5];
+  else if (decadas <= 4) mantissas = [1, 5];
+  else {
+    mantissas = [1];
+    passoDecada = Math.max(1, Math.ceil(decadas / Math.max(1, target)));
+  }
+
+  const ticks: number[] = [];
+  for (let k = kMin; k <= kMax; k += passoDecada) {
+    const potencia = Math.pow(10, k);
+    for (const m of mantissas) {
+      const p = m * potencia;
+      // Tolerancia relativa: `5 * 1e-7` nao e exatamente representavel, e um `>=`
+      // cru descartaria o nivel que coincide com a borda da faixa.
+      if (p >= lo * (1 - 1e-9) && p <= hi * (1 + 1e-9)) ticks.push(p);
+    }
+  }
+  // As mantissas saem em ordem dentro de cada decada e as decadas crescem, entao a
+  // lista ja e crescente; o sort e barato e blinda contra mudanca na escada.
+  return ticks.sort((a, b) => a - b);
 }

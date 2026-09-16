@@ -371,3 +371,66 @@ export class TrueRangeState {
     this.prevClose = null;
   }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Extremos rolantes (min e max da janela)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Extremos (min e max) dos ultimos `period` valores.
+ *
+ * O(period) por consulta via `RingWindow.forEach`. Um deque monotonico daria
+ * O(1) amortizado, mas a janela e curta (5..52 tipico) e a simplicidade aqui
+ * vale mais que a assintotica — e recalcular do buffer torna incremental ==
+ * batch exato sem soma rolante que derive.
+ *
+ * ⚠️ Morava dentro de `oscillators.ts` (Stochastic e Williams %R). Subiu para ca
+ * quando Donchian e Ichimoku passaram a precisar do MESMO acumulador: duas copias
+ * da mesma janela divergiriam na primeira correcao aplicada a so uma delas. E uma
+ * primitiva rolante, e este arquivo e a casa das primitivas rolantes.
+ */
+export class MinMaxWindow {
+  private readonly win: RingWindow;
+
+  constructor(private readonly period: number) {
+    this.win = new RingWindow(period);
+  }
+
+  private extremes(extra?: number): { min: number; max: number } {
+    let min = Infinity;
+    let max = -Infinity;
+    this.win.forEach((v) => {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    });
+    if (extra !== undefined) {
+      if (extra < min) min = extra;
+      if (extra > max) max = extra;
+    }
+    return { min, max };
+  }
+
+  /** Consome um valor. `null` enquanto a janela nao encheu. */
+  push(x: number): { min: number; max: number } | null {
+    this.win.push(x);
+    return this.win.isFull() ? this.extremes() : null;
+  }
+
+  /**
+   * Os extremos COMO SE `x` entrasse, sem mutar.
+   *
+   * ⚠️ Com a janela cheia, o mais antigo sairia — e este `peek` NAO o remove do
+   * calculo. E uma aproximacao deliberada e herdada do Stochastic original: o
+   * extremo da barra em formacao raramente e o mais antigo da janela, e remover
+   * exigiria varrer sabendo qual e o indice de saida. Mantido identico ao
+   * comportamento anterior para nao mudar valor de indicador ja em uso.
+   */
+  peek(x: number): { min: number; max: number } | null {
+    if (this.win.isFull()) return this.extremes(x);
+    return this.win.size() + 1 === this.period ? this.extremes(x) : null;
+  }
+
+  reset(): void {
+    this.win.reset();
+  }
+}

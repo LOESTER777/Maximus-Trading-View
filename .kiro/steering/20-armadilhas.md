@@ -217,6 +217,64 @@ metadado precisa declarar `volume_kind: real | tick`.
 
 ---
 
+## Motor próprio — ponteiro e gesto
+
+### ⚠️ Gesto de dois dedos precisa ser ABSOLUTO contra o início, não incremental
+
+O navegador entrega `pointermove` de **um ponteiro por vez**. Uma implementação
+incremental — comparar a distância atual com a do evento anterior — vê cada metade do
+movimento como se fosse o movimento todo, e o erro não se cancela.
+
+**Consequência medida:** translação residual de **3,33 barras na direção contrária**
+ao gesto. A pinça "funciona", o zoom até acontece, mas o gráfico escorrega para o lado
+errado enquanto o usuário aproxima os dedos.
+
+**Correto:** guardar a distância e o centro do **INÍCIO** do gesto e calcular zoom e
+âncora absolutos contra esse estado inicial, não contra o quadro anterior.
+
+### ⚠️ jsdom não tem `PointerEvent`
+
+Não existe construtor, então teste de pinça, de arrasto de divisória ou de qualquer
+gesto não pode simplesmente instanciar um.
+
+**Correto:** o motor lê apenas `button`, `clientX`, `clientY`, `pointerId` e
+`pointerType` — todos definíveis num `MouseEvent` com `type` de ponteiro
+(`'pointerdown'`, `'pointermove'`, `'pointerup'`). Manter essa lista curta é
+requisito, não acidente: ler um campo exclusivo de `PointerEvent` tornaria o gesto não
+testável neste ambiente.
+
+---
+
+## TypeScript e ferramenta
+
+### ⚠️ Interface NOMEADA não é atribuível a `Record<string, unknown>`
+
+Falta assinatura de índice. Tipo objeto **literal** passa (o compilador o trata como
+fresco); interface ou união discriminada nomeada **não**.
+
+**Consequência real:** tipar o `condition` de alerta como `Record<string, unknown>`
+compilava no pacote e **quebrava o consumidor**, que passa `AlertCondition` — uma união
+discriminada. O erro aparece longe de onde a decisão foi tomada.
+
+**Correto:** exigir só o que se usa. `{ kind: string }` aceita a união e continua
+verificando o que importa.
+
+### ⚠️ Vite/esbuild NÃO faz type check
+
+O esbuild remove tipo, não o verifica. **App sem `tsconfig` é código não verificado** —
+e o erro só aparece em tempo de execução, no navegador, sem pista de origem.
+
+**Consequência real:** `apps/playground` rodou sem type check até ganhar um
+`tsconfig.json` (`noEmit`), e na **primeira** execução apareceram dois defeitos reais
+que estavam ali havia rodadas.
+
+**Correto:** todo app do workspace tem `tsconfig` com `noEmit` e entra no `npm run
+verify`. ⚠️ O tsconfig do app usa `moduleResolution: Bundler` — o **oposto** dos
+pacotes — porque ele é consumido por bundler e os alias apontam para `packages/*/src`
+sem extensão. A regra de `.js` explícito vale para biblioteca, não para app.
+
+---
+
 ## Medições de referência
 
 Guardadas para comparação, não como alvo.

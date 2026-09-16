@@ -1,0 +1,55 @@
+{
+  // ═════════════════════════════════════════════════════════════════════════
+  // Type check do PLAYGROUND — antes disto o app nao era verificado
+  // ═════════════════════════════════════════════════════════════════════════
+  //
+  // ⚠️ O playground rodava so pelo Vite, e o Vite (esbuild) NAO faz verificacao
+  // de tipo: ele apaga os tipos e transpila. Consequencia medida: erro de tipo
+  // no app passava em silencio, e a primeira noticia dele era comportamento
+  // errado no navegador — ou nada, quando o campo simplesmente nao existia.
+  //
+  // ⭐ NAO entra no `tsconfig.build.json` da raiz de proposito: aquele compila os
+  // PACOTES para `dist/`, e o playground nao e publicado. Aqui e `noEmit` — o
+  // objetivo e so a verificacao. Rode com:
+  //
+  //     npx tsc --noEmit -p apps/playground
+  //
+  // ⚠️ `moduleResolution: "Bundler"` aqui, e NAO `NodeNext` como nos pacotes.
+  // E o oposto da regra da biblioteca, e de proposito: este app E consumido por
+  // bundler (Vite), e os alias do Vite apontam para `packages/*/src`, sem
+  // extensao `.js`. Exigir a extensao aqui brigaria com a resolucao real do Vite.
+  // A regra do `.js` vale para o que vai para `dist/`; o app nao vai.
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"],
+    // Os alias espelham os do `vite.config.ts`: apontam para o FONTE dos pacotes,
+    // nao para `dist`. Divergir daqui faria o type check verificar um artefato
+    // diferente do que o navegador carrega.
+    "baseUrl": ".",
+    "paths": {
+      "@robustus/charts-core": ["../../packages/core/src/index.ts"],
+      "@robustus/chart-core": ["../../packages/chart-core/src/index.ts"],
+      "@robustus/charts-primitives": ["../../packages/primitives/src/index.ts"],
+      "@robustus/charts-datafeed": ["../../packages/datafeed/src/index.ts"],
+      "@robustus/charts-drawings": ["../../packages/drawings/src/index.ts"],
+      "@robustus/charts-indicators": ["../../packages/indicators/src/index.ts"],
+      "@robustus/charts-engine": ["../../packages/engine/src/index.ts"],
+      "@robustus/charts-alerts": ["../../packages/alerts/src/index.ts"],
+      "@robustus/charts-replay": ["../../packages/replay/src/index.ts"],
+      "@robustus/charts-react": ["../../packages/react/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+}

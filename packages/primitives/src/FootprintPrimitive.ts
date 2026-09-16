@@ -52,6 +52,8 @@ import {
 } from '@robustus/charts-core';
 import type { VelaFootprint } from '@robustus/charts-core';
 
+import { TEXT_BOX_PAD_PX, desenharCaixaDeTexto, larguraDoTexto } from './text-box.js';
+
 /** O que a camada precisa para desenhar. */
 export interface FootprintLayerOptions {
   /** Velas já agregadas por `agregarFootprint`. Vazio ⇒ nada é desenhado. */
@@ -71,11 +73,44 @@ export interface FootprintLayerOptions {
    * `false` serve ao caso de haver mais de uma camada densa ativa, em que as
    * legendas somadas escondem o gráfico. Ver `mostrarLegenda` em
    * `BookmapLayerOptions`, que tem a mesma semântica.
+   *
+   * ⭐ **Passou a valer também para o aviso de "Footprint oculto"** (04/09/2026).
+   * Antes o aviso era escrito mesmo com a opção em `false`, o que fazia a camada
+   * ignorar exatamente o pedido que a opção existe para atender: quem cala a
+   * camada não quer texto nenhum sobre o gráfico. Era o caso mais visível do
+   * defeito, porque o aviso dispara com a vela estreita — o estado NORMAL de um
+   * gráfico com dois pregões na tela.
    */
   readonly mostrarLegenda?: boolean;
+  /**
+   * ⚠️ **Não existe canal de diagnóstico separado nesta camada, de propósito.**
+   *
+   * O `BookmapLayerOptions` tem `mostrarDiagnostico` porque lá a instrumentação
+   * (percentis da escala, rodapé de cobertura) é *linha própria* e dá para
+   * suprimir sem tocar no resto. Aqui não dá: o texto da legenda é montado
+   * ATOMICAMENTE pelo núcleo puro `textoDaLegendaFootprint`, que devolve razão de
+   * velas, modo, limiar, largura de vela e poda numa única cadeia. Repartir por
+   * natureza exigiria mudar aquele núcleo — que vive em `@robustus/charts-core`,
+   * fora do alcance desta mudança, e cuja assinatura é coberta por testes
+   * herdados.
+   *
+   * Consequência prática, declarada: a camada tem UMA chave de texto
+   * (`mostrarLegenda`) em vez de duas. Se um dia a repartição valer o custo, o
+   * lugar é o núcleo, e a opção nasce aqui espelhando o nome do livro.
+   */
 }
 
 const MAX_FORMAS_DEFAULT = 6000;
+
+/**
+ * Distância do bloco de texto da camada até o pé do painel, em pixels lógicos.
+ *
+ * ⚠️ Eram 8 px, e 8 não cabem mais: com a caixa de contraste o texto passou a
+ * ocupar meia altura de fonte mais a folga da caixa **abaixo** da linha de base
+ * (o alinhamento vertical é `middle`), e a caixa saía recortada pela borda
+ * inferior. 14 px deixam a caixa inteira dentro do painel com a fonte de 9 px.
+ */
+const RODAPE_TEXTO_PX = 14;
 
 /** Emite as formas. Nenhuma decisão de geometria aqui — só canvas. */
 class FootprintRenderer implements IPrimitivePaneRenderer {
@@ -118,8 +153,40 @@ class FootprintRenderer implements IPrimitivePaneRenderer {
       if (temTexto) {
         // Fonte em px de BITMAP: usar px lógico deixa o texto borrado em tela
         // de alta densidade, que é exatamente a queixa de "sem resolução".
-        ctx.font = `${Math.round(9 * vpr)}px ui-monospace, monospace`;
+        const fontPx = Math.round(9 * vpr);
+        ctx.font = `${fontPx}px ui-monospace, monospace`;
         ctx.textBaseline = 'middle';
+
+        // ── caixa de contraste, SÓ para as marcações de legenda ──────────────
+        //
+        // ⭐ Os números do footprint são desenhados DENTRO da vela e devem se
+        // misturar a ela; caixa ali apagaria a vela. A legenda e o aviso, ao
+        // contrário, são texto sobre a área de plotagem: sem fundo próprio, ficam
+        // ilegíveis sobre a mancha do bookmap e sobre o eixo de tempo — foi o que
+        // o usuário fotografou no playground em 04/09/2026. O `papel` é
+        // exatamente o campo que distingue os dois casos.
+        const padX = TEXT_BOX_PAD_PX * hpr;
+        const padY = TEXT_BOX_PAD_PX * vpr;
+        for (const f of formas) {
+          if (f.tipo !== 'texto' || !f.texto || f.papel !== 'legenda') continue;
+          const w = larguraDoTexto(ctx, f.texto, fontPx);
+          const x = Math.round(f.x * hpr);
+          const y = Math.round(f.y * vpr);
+          // O início depende do alinhamento; a legenda usa `left`, e os outros
+          // dois entram por robustez — caixa deslocada é pior que caixa nenhuma.
+          const inicio =
+            f.alinhamento === 'right' ? x - w : f.alinhamento === 'center' ? x - w / 2 : x;
+          desenharCaixaDeTexto(
+            ctx,
+            inicio - padX,
+            y - fontPx / 2 - padY,
+            w + 2 * padX,
+            fontPx + 2 * padY,
+            scope.bitmapSize.width,
+            scope.bitmapSize.height,
+          );
+        }
+
         for (const f of formas) {
           if (f.tipo !== 'texto' || !f.texto) continue;
           ctx.fillStyle = f.cor;
@@ -253,16 +320,35 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
       // Traço é PIOR que nada: polui a leitura das velas e faz parecer defeito.
       // Aqui a camada se cala e escreve o motivo, com o número que resolve.
       if (!velaAdmiteFootprint(conv.larguraVelaPx)) {
-        const larguraPainel = chart.paneSize().width;
+        this.velasDesenhadas = 0;
+        this.podadas = 0;
+
+        // ⚠️ Respeita `mostrarLegenda: false`. Antes o aviso saía de qualquer
+        // forma, e como ele dispara com a vela estreita — o estado normal de um
+        // gráfico com dois pregões na tela — era o texto que MAIS aparecia
+        // justamente para quem pediu silêncio.
+        if (this.options.mostrarLegenda === false) {
+          this.formas = [];
+          return;
+        }
+
+        const pane = chart.paneSize();
+        const larguraPainel = pane.width;
         const cabem = Math.max(
           1,
           Math.floor((Number.isFinite(larguraPainel) && larguraPainel > 0 ? larguraPainel : 900) / 46),
         );
+        // ⚠️ Foi do topo (`y: 18`) para o PÉ do painel. No topo à esquerda ele
+        // caía exatamente sobre a legenda do `BookmapPrimitive`, e com as duas
+        // camadas ligadas — a combinação normal — os dois textos se sobrepunham,
+        // que é o defeito que o usuário fotografou. O pé é o bloco que esta camada
+        // já reserva para si, e só um dos dois textos existe por passada.
+        const alturaPainel = Number.isFinite(pane.height) && pane.height > 0 ? pane.height : 0;
         this.formas = [
           {
             tipo: 'texto',
             x: 12,
-            y: 18,
+            y: alturaPainel > 2 * RODAPE_TEXTO_PX ? alturaPainel - RODAPE_TEXTO_PX : RODAPE_TEXTO_PX,
             largura: 0,
             altura: 0,
             texto:
@@ -270,10 +356,10 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
               `para ler nível — dê zoom até ~${cabem} velas, ou use o Perfil de volume.`,
             cor: 'rgba(245, 158, 11, 0.95)',
             alinhamento: 'left',
+            // Ganha caixa de contraste no renderizador, como a legenda.
+            papel: 'legenda',
           },
         ];
-        this.velasDesenhadas = 0;
-        this.podadas = 0;
         return;
       }
 
@@ -355,10 +441,13 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
     return {
       tipo: 'texto',
       x: 12,
-      y: alturaPainel - 8,
+      y: alturaPainel - RODAPE_TEXTO_PX,
       largura: 0,
       altura: 0,
       texto: legenda.texto,
+      // ⚠️ Cinza-azulado a 0,85 sobre a caixa opaca. Antes esta mesma cor caía
+      // direto sobre o gráfico e sobre o eixo de tempo, onde não tinha contraste
+      // nenhum — a caixa é o que a torna legível.
       cor: legenda.alerta ? 'rgba(245, 158, 11, 0.95)' : 'rgba(148, 163, 184, 0.85)',
       alinhamento: 'left',
       papel: 'legenda',

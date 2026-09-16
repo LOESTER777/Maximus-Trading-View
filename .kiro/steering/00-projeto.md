@@ -33,7 +33,7 @@ cosmética.
 | `@robustus/charts-primitives` | `BookmapPrimitive` (2.669 linhas), `FootprintPrimitive` | herdados |
 | `@robustus/chart-core` | motor de renderização próprio em canvas (eixo, escala, panes, interação) | herdados |
 | `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador | ~120 |
-| `@robustus/charts-indicators` | 20 indicadores incrementais (warmup+update+preview O(1)), registry | 45 |
+| `@robustus/charts-indicators` | 29 indicadores incrementais (warmup+update+preview O(1)), registry | 79 |
 | `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 |
 | `@robustus/charts-engine` | motor sem framework | 18 novos |
 | `@robustus/charts-react` | `useChartEngine`, `useDrawings`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, `<RobustusChart />` | 12 novos |
@@ -42,9 +42,15 @@ cosmética.
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test          # 988 testes, 51 arquivos
+npm test          # 1110 testes, 59 arquivos
 npm run build     # todos os pacotes
+npm run verify    # ⭐ typecheck + typecheck:playground + check ESM + testes
 ```
+
+⭐ **Use `npm run verify`, não só `npm test`.** Ele encadeia o type check dos
+pacotes, o type check do playground, o `--check` de extensão ESM e a suíte. Cada
+etapa existe porque a ausência dela já deixou passar defeito real: sem o type check
+do playground o Vite compilava tipo errado em silêncio (ver *Playground local*).
 
 ## Indicadores — o contrato incremental
 
@@ -64,6 +70,29 @@ motor não importa o pacote de indicadores. O descritor `OutputSpec.pane` decide
 
 ⭐ Dívida FECHADA: `removePane` existe no motor. Alternar osciladores não deixa
 mais pane órfã — a pane é removida junto com sua série ao desligar o indicador.
+
+### Os 29 — e as decisões dos nove últimos
+
+Entraram nesta rodada: **SuperTrend** (ATR de Wilder, travagem pelo fechamento
+anterior), **Parabolic SAR**, **Ichimoku** (5 saídas), **Donchian**, **VWAP com
+bandas**, **MFI**, **CMF** (Chaikin Money Flow), **Awesome Oscillator** e
+**Pivot Points** (clássico).
+
+- ⚠️ **Ichimoku emite SEM deslocar** e publica `displacement` no meta. Deslocar por
+  dentro mentiria em silêncio: quem consome a saída não teria como saber que o tempo
+  da amostra não é o tempo da barra. Quem quiser a nuvem projetada aplica o
+  deslocamento na plotagem, sabendo o que faz.
+- ⚠️ **VWAP com bandas é fábrica NOVA (`vwap_bands`), não opção do `vwap`.** Alterar
+  o `vwap` existente mudaria o layout já salvo por quem persistiu estado — o
+  `OutputSpec` dele ganharia saídas que o estado antigo não conhece.
+- **Pivot Points** detecta virada de dia por `floor(time / 86400)`. Os níveis são
+  núcleos puros exportados (`pivotLevels`, `pivotLevelsFromBars`), utilizáveis fora
+  do contrato incremental.
+- `MinMaxWindow` foi extraído para `rolling.core.ts` — Donchian e Ichimoku precisavam
+  do mesmo acumulador de mínimo/máximo rolante, e duas cópias divergiriam.
+
+A guarda de contagem dos property tests subiu para **>= 29**: indicador novo que não
+respeite *incremental == batch* reprova, e indicador esquecido no registry também.
 
 ## Grafo de dependência — não viole
 
@@ -116,6 +145,36 @@ A costura com o `serialize` real do pacote de desenho vive na camada React, em
 
 18 testes novos em `engine/__tests__/chart-state.core.spec.ts`.
 
+## ⭐ Escalas de preço múltiplas — o defeito que deixava o gráfico VAZIO
+
+O conhecimento mais caro desta rodada. **Sintoma:** o usuário fotografou o
+playground e não havia **nenhuma vela na tela**; o eixo de preço marcava
+20.000..120.000 enquanto os alertas disparavam em 130.100.
+
+**Causa:** o motor tinha **UMA escala de preço por pane**, e o `priceScaleId` das
+séries era **IGNORADO**. Dois efeitos somados:
+
+- `autoScalePane` tomava min/max de **TODAS** as séries juntas. O histograma de
+  volume (0..40.000) entrava no mesmo cálculo do preço (~130.000), a faixa virava
+  0..130.000 e as velas ficavam esmagadas em poucos pixels no topo — visualmente
+  ausentes.
+- `priceScale(id)` ignorava o id e devolvia sempre a escala do preço. Mandar o volume
+  para o pé do painel com `scaleMargins { top: 0.85 }` comprimia o **PREÇO**.
+
+**Correção:** cada `Pane` tem agora `priceScale` (a principal, id `'right'`) mais
+`overlayScales: Map<string, PriceScaleState>`. A autoescala passou a ser **POR
+ESCALA** (`autoScaleGroup`), não por pane. `renderPane` recebe
+`series: ReadonlyArray<{ model, scale }>` — cada série carrega a escala à qual
+pertence.
+
+⚠️ **Grupo só de histograma ANCORA EM ZERO.** Sem isso a menor barra teria altura
+zero e a base do desenho cairia fora da escala: o piso do histograma é o zero, não o
+mínimo observado.
+
+10 testes em `packages/chart-core/src/__tests__/escalas-de-overlay.spec.ts`, e um
+deles documenta o **MECANISMO**: série sem `priceScaleId` contamina a faixa de novo.
+É o teste que reprova se alguém "simplificar" a autoescala de volta.
+
 ## Motor de renderização — PRÓPRIO, zero terceiros
 
 ⚠️ **Atualizado.** O projeto começou sobre `lightweight-charts` (Apache 2.0), mas
@@ -142,17 +201,35 @@ Acréscimos recentes ao motor (feitos aqui, nunca de terceiro):
 - **OHLC no crosshair.** `MouseEventParams.seriesData` traz O/H/L/C (ou `value`) da
   barra sob o cursor — é a base da legenda.
 - **Rótulos de data no eixo** já existem (era pendência do v1).
+- **Exportar imagem.** `takeScreenshot()` devolve um canvas **NOVO**, `toDataURL()` a
+  string; ambos `null` quando não há rasterização. ⚠️ O jsdom tem `toDataURL` que
+  **não lança** e devolve `undefined` — então o retorno é validado por prefixo
+  `data:`, nunca por "não lançou".
+- **PINÇA em touch.** Rastreio de múltiplos ponteiros com zoom **absoluto contra o
+  INÍCIO do gesto**. ⚠️ A versão incremental deixava translação residual de 3,33
+  barras **na direção contrária**, porque o navegador entrega `pointermove` de um
+  ponteiro por vez: cada evento via a distância mudar por metade do movimento real.
+- **Divisória de pane arrastável.** Faixa de acerto de ±4 px, cursor `ns-resize`,
+  piso de 40 px por pane (abaixo disso a pane não caberia nem no eixo).
+- **Grade vertical opcional.** Antes a opção existia e **não fazia nada**. Agora sai
+  de `visibleTickIndices`, a **fonte ÚNICA** compartilhada com os rótulos de tempo —
+  duas fontes divergiriam e a linha apareceria fora do rótulo.
+- **Watermark central**, desenhada atrás das séries.
+- **Ticks logarítmicos.** Potências de 10 com subdivisões 1/2/5, quase uniformes em
+  log. ⚠️ O passo linear aplicado em escala log deixava **uma década inteira sem
+  rótulo**.
 
 A troca foi possível porque o contrato de `chart-core` foi desenhado **compatível**
 com o do terceiro: bookmap, footprint e desenho consumiam aquele contrato por tipo,
 e trocar o motor foi trocar o import (`'lightweight-charts'` → `'@robustus/chart-core'`),
 sem uma linha de lógica alterada. Os 703 testes provam isso.
 
-⚠️ O motor v1 é mais simples que o `lightweight-charts` maduro. Ainda faltam: pinça
-em touch, animação de transição, escala log plenamente exercitada. São acréscimos
-**aqui**, nunca volta a terceiro. Se algo faltar, implemente no `chart-core`.
-(Rótulos de data no eixo, marcadores com forma, banda preenchida e formatação de
-preço já foram feitos — ver acima.)
+⚠️ O motor v1 é mais simples que o `lightweight-charts` maduro. Do que faltava,
+sobrou **animação de transição**. São acréscimos **aqui**, nunca volta a terceiro. Se
+algo faltar, implemente no `chart-core`. (Rótulos de data no eixo, marcadores com
+forma, banda preenchida, formatação de preço, **pinça em touch**, **ticks
+logarítmicos**, **exportar imagem**, divisória arrastável, grade vertical e watermark
+já foram feitos — ver acima. E escalas de preço múltiplas, ver a seção anterior.)
 
 Verificação de que não há terceiro:
 ```
@@ -173,6 +250,22 @@ Duas naturezas distintas, não confundir:
   no renderer. É tipo de série, não transformação: os mesmos dados OHLC, outra
   rasterização.
 
+## Bookmap — diagnóstico DESLIGADO por padrão
+
+O texto de diagnóstico que o bookmap escrevia sobre o gráfico ("p50 0 ct · p99 0 ct ·
+escala da janela visível", "Cobertura não verificada · fila não informado") era a
+poluição visível na foto do usuário. É informação de desenvolvimento, não de mesa.
+
+Nova opção `mostrarDiagnostico?: boolean`, default **`false`**. A **legenda**
+continua ligada — identidade do ativo e significado da cor são leitura necessária — e
+ganhou **caixa opaca** de contraste (`packages/primitives/src/text-box.ts`), porque
+texto claro sobre célula clara ficava ilegível.
+
+⚠️ **A caixa é desenhada por CAMINHO** (`beginPath` / `rect` / `fill`), **nunca**
+`fillRect`. As bancadas herdadas contam chamada de `fillRect` como "célula
+desenhada" — usar `fillRect` na caixa inflaria a contagem e quebraria medição que não
+tem nada a ver com legenda.
+
 ## Playground local
 
 `apps/playground` — superfície para ver a biblioteca funcionando sem backend, com
@@ -192,3 +285,18 @@ verifica o que um consumidor de verdade importa.
 
 O dado vem de `apps/playground/src/synthetic.ts` — caminhada aleatória com semente
 fixa. **Não é formato de provedor real**; dado real entra pela camada `datafeed`.
+
+### ⭐ O playground tem TYPE CHECK — e ele pegou defeito real
+
+Antes só o Vite rodava aqui, e o **Vite (esbuild) não verifica tipo**: erro de tipo
+passava silencioso até virar defeito em tempo de execução. `apps/playground` agora tem
+`tsconfig.json` próprio (`noEmit`), e na **primeira execução ele pegou dois defeitos
+reais**.
+
+⚠️ Esse tsconfig usa **`moduleResolution: Bundler`**, o **oposto** dos pacotes
+(`NodeNext`) — e é de propósito. O app **é** consumido por bundler, e os alias do Vite
+apontam para `packages/*/src` sem extensão. A regra de extensão `.js` explícita das
+convenções vale para os **pacotes**, que precisam rodar em Node ESM; não para o app.
+
+Scripts na raiz: `typecheck:playground` e `verify` (typecheck + typecheck:playground +
+check de extensão ESM + testes).

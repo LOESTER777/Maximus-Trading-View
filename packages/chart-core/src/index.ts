@@ -41,10 +41,21 @@
  * (`rightPriceScale.priceFormat`), via o nucleo puro `price-format.core.ts`, com
  * fallback na heuristica de amplitude quando nao configurada.
  *
- * AINDA NAO: escala logaritmica plenamente exercitada, animacao de transicao,
- * pinca em touch. Sao refinamentos — o grafico opera sem eles, e foram deixados
- * para depois de proposito, para o motor nascer usavel em vez de nascer perfeito
- * e tarde.
+ * FAZ TAMBEM (ultima rodada): EXPORTAR IMAGEM (`takeScreenshot` devolve um canvas
+ * novo, `toDataURL` a string — `null` em ambiente sem rasterizacao, nunca uma
+ * imagem em branco); PINCA em touch (dois ponteiros, zoom pela variacao da
+ * distancia ancorado no ponto medio, honrando `handleScale.pinch` e as flags de
+ * arrasto por toque); DIVISORIA DE PANE ARRASTAVEL (cursor `ns-resize` na fronteira,
+ * com piso de 40 px por pane); GRADE VERTICAL opcional (`grid.vertLines`, nos mesmos
+ * instantes dos rotulos de tempo — antes a opcao existia e nao fazia nada); MARCA
+ * D'AGUA central atras das series (`watermark`); e TICKS LOGARITMICOS de verdade no
+ * eixo de preco (potencias de 10 com subdivisoes 1/2/5 — o passo linear em escala
+ * log amontoava os rotulos num terco da tela e deixava uma decada inteira sem
+ * nenhum).
+ *
+ * AINDA NAO: animacao de transicao. E refinamento — o grafico opera sem ela, e foi
+ * deixada para depois de proposito, para o motor nascer usavel em vez de nascer
+ * perfeito e tarde.
  *
  * ⚠️ Este motor v1 e mais simples que o lightweight-charts, que teve anos de
  * ajuste. Priorizamos o que o projeto USA. Se algo faltar, e acrescimo aqui, nao
@@ -93,6 +104,7 @@ export type {
   SeriesType,
   Time,
   TimeRange,
+  WatermarkOptions,
 } from './contracts.js';
 
 export { DEFAULT_THEME, TIME_AXIS_HEIGHT } from './renderer.js';
@@ -112,6 +124,10 @@ export type { PriceFormatOptions } from './price-format.core.js';
 // derivado (plotado como 'Candlestick'); barras OHLC sao o SeriesType 'Bar' no
 // motor. `brickSizeAutomatico` deriva um tamanho de tijolo do proprio dado.
 export { heikinAshi, renko, brickSizeAutomatico } from './candle-transforms.core.js';
+
+// Os INDICES de barra marcados no eixo — fonte UNICA do rotulo de tempo e da grade
+// vertical. Puro; exportado para quem quiser alinhar uma camada propria a mesma malha.
+export { visibleTickIndices } from './time-scale.core.js';
 
 export {
   DEFAULT_TIME_ZONE,

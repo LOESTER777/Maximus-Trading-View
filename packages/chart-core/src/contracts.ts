@@ -315,6 +315,24 @@ export interface HandleScaleOptions {
   readonly pinch: boolean;
 }
 
+/**
+ * Marca d'agua central: simbolo, nome da mesa, aviso de ambiente.
+ *
+ * ⭐ Desenhada ATRAS das series, com alpha baixo. A ordem importa e nao e
+ * cosmetica: uma marca por cima das velas rouba a leitura do preco exatamente na
+ * regiao central, que e onde o operador olha. Atras, ela identifica o painel sem
+ * disputar pixel com o dado.
+ *
+ * `visible` ausente conta como `true` quando ha `text` — quem configurou o texto
+ * quis ve-lo; o campo existe para desligar sem apagar a configuracao.
+ */
+export interface WatermarkOptions {
+  readonly text: string;
+  readonly color?: string;
+  readonly fontSize?: number;
+  readonly visible?: boolean;
+}
+
 /** Opcoes do grafico. */
 export interface ChartOptions {
   readonly layout: {
@@ -356,6 +374,12 @@ export interface ChartOptions {
   readonly handleScroll: HandleScrollOptions | boolean;
   readonly handleScale: HandleScaleOptions | boolean;
   readonly autoSize: boolean;
+  /**
+   * Marca d'agua central (simbolo/branding). Ausente = nao desenha nada.
+   *
+   * Opcional de proposito: quem nao configura nao paga nem a medicao de texto.
+   */
+  readonly watermark?: WatermarkOptions;
 }
 
 /**
@@ -388,6 +412,27 @@ export interface IChartApi extends IChartApiBase {
   removePane(index: number): void;
   subscribeClick(handler: (param: MouseEventParams) => void): void;
   subscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
+  /**
+   * Copia do quadro corrente num canvas NOVO, ou `null` quando nao ha rasterizacao.
+   *
+   * ⭐ Devolve um canvas, e nao o canvas interno, porque o interno e reciclado a
+   * cada quadro: quem guardasse a referencia veria a "foto" mudar sozinha no
+   * proximo pan. A copia e imutavel por construcao.
+   *
+   * ⚠️ `null` e um resultado LEGITIMO, nao um erro: em jsdom (e em qualquer
+   * ambiente sem contexto 2D) nao existe imagem para devolver. A disciplina do
+   * projeto e falha como valor de retorno — `null` aqui significa "nao sei
+   * rasterizar", nunca um canvas vazio, que o consumidor salvaria como PNG preto
+   * sem perceber.
+   */
+  takeScreenshot(): HTMLCanvasElement | null;
+  /**
+   * O mesmo quadro como data URL, pronto para `<a download>` ou `<img src>`.
+   *
+   * `type` default `'image/png'`; `quality` (0..1) so vale para formato com perda
+   * (`image/jpeg`, `image/webp`). `null` pelo mesmo motivo de `takeScreenshot`.
+   */
+  toDataURL(type?: string, quality?: number): string | null;
   remove(): void;
 }
 

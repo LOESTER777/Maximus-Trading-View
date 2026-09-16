@@ -217,6 +217,35 @@ export function visibleLogicalRange(s: TimeScaleState): LogicalRange | null {
   return { from: s.leftLogical, to: s.leftLogical + s.width / s.barSpacing };
 }
 
+/**
+ * Os INDICES de barra que merecem marcacao no eixo — rotulo de tempo e, se ligada,
+ * linha vertical da grade.
+ *
+ * ⭐ Existe como funcao PURA, e num lugar so, porque duas camadas de desenho
+ * precisam do MESMO conjunto: `drawTimeLabels` (o rotulo) e `drawGrid` (a linha
+ * vertical). Duas implementacoes do passo divergiriam no primeiro ajuste de
+ * `targetPx`, e a grade apareceria em instantes SEM rotulo — o pior dos dois
+ * mundos, porque a linha vertical existe justamente para ancorar o rotulo.
+ *
+ * O passo em barras sai de `targetPx / barSpacing`: quanto mais afastado o zoom,
+ * mais barras entre marcacoes, mantendo o espacamento visual em torno de 80 px.
+ * Piso de 1 barra — nao ha como marcar meia barra.
+ */
+export function visibleTickIndices(s: TimeScaleState, targetPx = 80): number[] {
+  const lr = visibleLogicalRange(s);
+  const n = s.times.length;
+  if (lr === null || n === 0) return [];
+
+  const de = Math.max(0, Math.floor(lr.from));
+  const ate = Math.min(n - 1, Math.ceil(lr.to));
+  if (ate < de) return [];
+
+  const passo = Math.max(1, Math.round(targetPx / Math.max(s.barSpacing, 0.0001)));
+  const indices: number[] = [];
+  for (let i = de; i <= ate; i += passo) indices.push(i);
+  return indices;
+}
+
 /** A faixa de tempo visivel. */
 export function visibleTimeRange(s: TimeScaleState): TimeRange | null {
   const lr = visibleLogicalRange(s);

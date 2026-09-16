@@ -94,8 +94,25 @@ export interface IndicatorState {
  */
 export interface AlertState {
   readonly key: string;
-  /** A condicao, como objeto serializavel (ex.: `{kind:'CROSS_ABOVE', level:130000}`). */
-  readonly condition: Readonly<Record<string, unknown>>;
+  /**
+   * A condicao, como objeto serializavel (ex.: `{kind:'CROSS_ABOVE', level:130000}`).
+   *
+   * ⚠️ **O tipo exige apenas `kind`, de proposito, e isto NAO e frouxidao.**
+   *
+   * A tentativa natural — `Readonly<Record<string, unknown>>` — parece mais
+   * precisa e na verdade **quebra o consumidor**: a `AlertCondition` do pacote de
+   * alertas e uma uniao discriminada de interfaces NOMEADAS, e o TypeScript recusa
+   * atribuir interface nomeada a um tipo com assinatura de indice (falta a
+   * `[k: string]` nela). O type check do playground pegou exatamente isso —
+   * `CrossAboveCondition is not assignable to Readonly<Record<string, unknown>>`.
+   *
+   * Exigir so `kind` aceita qualquer condicao do pacote de alertas sem cast no
+   * consumidor, e e coerente com o papel deste nucleo: ele NAO interpreta a
+   * condicao, so a carrega. Os demais campos (`level`, `min`, `max`, `percent`)
+   * sobrevivem em runtime — o clone e por spread — e quem revalida o formato e o
+   * pacote de alertas ao reconstruir o alerta.
+   */
+  readonly condition: { readonly kind: string };
   readonly mode?: 'once' | 'recurring';
 }
 
@@ -416,9 +433,14 @@ function parseAlert(bruto: unknown, indice: number, motivos: string[]): AlertSta
   const mode =
     typeof v.mode === 'string' && ALERT_MODES.has(v.mode) ? (v.mode as 'once' | 'recurring') : undefined;
 
+  // O `kind` acabou de ser validado como string nao vazia; os demais campos vao
+  // como vieram (dado opaco — este nucleo nao interpreta condicao). O cast expressa
+  // essa validacao ja feita, e nao um "confie em mim".
+  const condicao = { ...(cond as Record<string, unknown>), kind } as { readonly kind: string };
+
   return {
     key,
-    condition: { ...(cond as Record<string, unknown>) },
+    condition: condicao,
     ...(mode === undefined ? {} : { mode }),
   };
 }
