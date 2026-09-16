@@ -7,8 +7,10 @@
 import { StrictMode, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { decodeColumnar } from '@robustus/charts-core';
-import { useChartEngine, useDrawings } from '@robustus/charts-react';
+import { useChartEngine, useDrawings, useIndicators } from '@robustus/charts-react';
 import type { ActiveTool, SnapBar } from '@robustus/charts-drawings';
+import type { IndicatorPlot } from '@robustus/charts-engine';
+import { emaFactory, bollingerFactory, rsiFactory, macdFactory } from '@robustus/charts-indicators';
 import { makeSyntheticBundle } from './synthetic.js';
 
 const FERRAMENTAS: ReadonlyArray<{ id: ActiveTool; rotulo: string }> = [
@@ -31,6 +33,12 @@ function App(): JSX.Element {
   const [mostrarBookmap, setMostrarBookmap] = useState(true);
   const [imaLigado, setImaLigado] = useState(false);
   const [tick, setTick] = useState(0);
+
+  // Indicadores ligados/desligados por toggle.
+  const [emaOn, setEmaOn] = useState(true);
+  const [bbOn, setBbOn] = useState(false);
+  const [rsiOn, setRsiOn] = useState(true);
+  const [macdOn, setMacdOn] = useState(false);
 
   // Barras para o ima, no formato que o pacote de desenho espera.
   const barsRef = useRef<SnapBar[]>(
@@ -59,6 +67,21 @@ function App(): JSX.Element {
     snapEnabled: () => imaLigado,
     onChange: () => setTick((n) => n + 1),
   });
+
+  // Monta a lista de indicadores a plotar conforme os toggles. A instancia e
+  // criada aqui; o hook a alimenta com as barras. `useMemo` estabiliza a
+  // identidade para o hook nao recriar series a cada render — recria so quando
+  // um toggle muda.
+  const plots: IndicatorPlot[] = useMemo(() => {
+    const lista: IndicatorPlot[] = [];
+    if (emaOn) lista.push({ id: 'ema20', instance: emaFactory.create({ period: 20 }), colors: { value: '#e9c46a' } });
+    if (bbOn) lista.push({ id: 'bb', instance: bollingerFactory.create({ period: 20, mult: 2 }) });
+    if (rsiOn) lista.push({ id: 'rsi', instance: rsiFactory.create({ period: 14 }) });
+    if (macdOn) lista.push({ id: 'macd', instance: macdFactory.create() });
+    return lista;
+  }, [emaOn, bbOn, rsiOn, macdOn]);
+
+  useIndicators({ engine, plots, bars: bundle.candles });
 
   void tick; // forca re-render quando a colecao muda, para os contadores atualizarem
 
@@ -111,6 +134,25 @@ function App(): JSX.Element {
           </button>
         </div>
       </header>
+
+      <div
+        style={{
+          display: 'flex',
+          gap: 4,
+          padding: '6px 16px',
+          borderBottom: '1px solid rgba(148,163,184,0.1)',
+          alignItems: 'center',
+        }}
+      >
+        <span style={{ fontSize: 11, color: '#64748b', marginRight: 6 }}>Indicadores:</span>
+        <button type="button" onClick={() => setEmaOn((v) => !v)} style={botao(emaOn)}>EMA 20</button>
+        <button type="button" onClick={() => setBbOn((v) => !v)} style={botao(bbOn)}>Bollinger</button>
+        <button type="button" onClick={() => setRsiOn((v) => !v)} style={botao(rsiOn)}>RSI</button>
+        <button type="button" onClick={() => setMacdOn((v) => !v)} style={botao(macdOn)}>MACD</button>
+        <span style={{ fontSize: 11, color: '#64748b', marginLeft: 8 }}>
+          EMA/Bollinger sobre o preço · RSI/MACD em sub-painel
+        </span>
+      </div>
 
       <div ref={containerRef} style={{ flex: 1, minHeight: 0 }} />
 

@@ -63,6 +63,15 @@
 export { ChartEngine } from './chart-engine.js';
 export type { ChartEngineOptions } from './chart-engine.js';
 
+export { IndicatorPlotter } from './indicator-plotter.js';
+export type {
+  IndicatorPlot,
+  PlottableIndicator,
+  PlottableOutput,
+  PlottableBar,
+  PlottablePoint,
+} from './indicator-plotter.js';
+
 export {
   isValidCandle,
   BOOKMAP_MAX_CELLS_DEFAULT,
