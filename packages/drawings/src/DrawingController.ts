@@ -46,7 +46,7 @@
  * descartadas menos a ultima.
  */
 
-import type { IChartApi, ISeriesApi, SeriesType } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi, SeriesType } from '@robustus/chart-core';
 import { xToTime, yToPrice } from './chart-converters.js';
 import { hitTest } from './hit-test.core.js';
 import {

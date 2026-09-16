@@ -133,7 +133,7 @@
  * o comportamento da origem.
  */
 
-import type { CanvasRenderingTarget2D } from 'fancy-canvas';
+import type { CanvasRenderingTarget2D } from '@robustus/chart-core';
 import type {
   IChartApiBase,
   IPrimitivePaneRenderer,
@@ -143,7 +143,7 @@ import type {
   SeriesAttachedParameter,
   SeriesType,
   Time,
-} from 'lightweight-charts';
+} from '@robustus/chart-core';
 
 import {
   BOOKMAP_ALPHA_MAX_DEFAULT,

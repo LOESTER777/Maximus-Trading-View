@@ -50,7 +50,7 @@
  * seria a borda esquerda do grafico, e a linha apareceria num lugar onde nao esta.
  */
 
-import type { IChartApi, ISeriesApi, SeriesType, Time } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi, SeriesType, Time } from '@robustus/chart-core';
 import type { LogicalToScreen, ViewportEpoch } from './render-plan.core.js';
 
 /**

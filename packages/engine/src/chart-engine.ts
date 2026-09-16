@@ -5,9 +5,9 @@
  * O QUE ESTE ARQUIVO E
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * A unica peca da biblioteca que importa `lightweight-charts` em RUNTIME. Ele
- * traduz o vocabulario proprio (`ChartPriceLine`, `ChartMarker`, ...) para a API
- * do substrato, e anexa as camadas de canvas.
+ * A peca que traduz o vocabulario proprio (`ChartPriceLine`, `ChartMarker`, ...)
+ * para a API do motor `@robustus/chart-core` — o motor PROPRIO, em canvas, sem
+ * nenhum terceiro. Anexa as camadas de bookmap, footprint e desenho.
  *
  * Nao ha React, Vue nem DOM alem do container que chega por parametro. A ligacao
  * com framework e outro pacote, e ela e fina de proposito: tudo que e dificil
@@ -37,19 +37,15 @@
  */
 
 import {
-  CandlestickSeries,
-  HistogramSeries,
-  LineSeries,
   createChart,
-  createSeriesMarkers,
   type CandlestickData,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
-  type ISeriesMarkersPluginApi,
+  type SeriesData,
   type SeriesMarker,
   type Time,
-} from 'lightweight-charts';
+} from '@robustus/chart-core';
 import { BookmapPrimitive, FootprintPrimitive } from '@robustus/charts-primitives';
 import {
   BOOKMAP_MAX_CELLS_DEFAULT,
@@ -108,7 +104,6 @@ export class ChartEngine {
   private readonly host: HTMLElement;
   private readonly candleSeries: ISeriesApi<'Candlestick'>;
   private readonly volumeSeries: ISeriesApi<'Histogram'> | null;
-  private readonly markersPlugin: ISeriesMarkersPluginApi<Time>;
 
   /** Linhas de preco vivas, para remover antes de aplicar o proximo conjunto. */
   private priceLines: IPriceLine[] = [];
@@ -128,7 +123,9 @@ export class ChartEngine {
     this.chart = chart;
     this.host = host;
 
-    this.candleSeries = chart.addSeries(CandlestickSeries, {
+    // API do motor proprio: o tipo de serie e uma STRING, nao uma factory. Foi
+    // decisao do contrato — string nao tem dialeto entre versoes, factory sim.
+    this.candleSeries = chart.addSeries('Candlestick', {
       upColor: opts.colors?.upColor ?? '#16c784',
       downColor: opts.colors?.downColor ?? '#ea3943',
       borderVisible: false,
@@ -137,7 +134,7 @@ export class ChartEngine {
     });
 
     if (opts.withVolume === true) {
-      this.volumeSeries = chart.addSeries(HistogramSeries, {
+      this.volumeSeries = chart.addSeries('Histogram', {
         priceFormat: { type: 'volume' },
         priceScaleId: VOLUME_SCALE_ID,
       });
@@ -149,7 +146,8 @@ export class ChartEngine {
       this.volumeSeries = null;
     }
 
-    this.markersPlugin = createSeriesMarkers(this.candleSeries, []);
+    // No motor proprio o marcador vive na propria serie (setMarkers), nao num
+    // plugin separado — o plugin era um detalhe da API v5 de terceiro.
 
     // Emitir o mapeador a cada mudanca de janela visivel, coalescido por quadro:
     // pan continuo dispara o evento dezenas de vezes por segundo, e reposicionar
@@ -176,7 +174,7 @@ export class ChartEngine {
         // Só linha horizontal: a vertical compete visualmente com as velas e não
         // acrescenta leitura num gráfico de preço.
         vertLines: { visible: false },
-        horzLines: { color: opts.colors?.gridColor ?? 'rgba(148,163,184,0.10)' },
+        horzLines: { visible: true, color: opts.colors?.gridColor ?? 'rgba(148,163,184,0.10)' },
       },
       crosshair: { mode: 0 },
       timeScale: {
@@ -210,7 +208,7 @@ export class ChartEngine {
   setCandles(candles: readonly unknown[]): void {
     if (this.disposed) return;
     const validas = candles.filter(isValidCandle);
-    this.candleSeries.setData(validas as unknown as CandlestickData<Time>[]);
+    this.candleSeries.setData(validas as unknown as CandlestickData[]);
     this.scheduleEmit();
   }
 
@@ -269,10 +267,9 @@ export class ChartEngine {
       }
     }
     this.lineSeries = series.map((cfg) => {
-      const s = this.chart.addSeries(LineSeries, {
+      const s = this.chart.addSeries('Line', {
         color: cfg.color,
         lineWidth: cfg.lineWidth ?? 1,
-        title: cfg.title ?? '',
         priceScaleId: cfg.priceScaleId ?? 'right',
         lastValueVisible: false,
         priceLineVisible: false,
@@ -280,7 +277,7 @@ export class ChartEngine {
       s.setData(
         cfg.data.filter(
           (p) => Number.isFinite(p.time) && Number.isFinite(p.value),
-        ) as never,
+        ) as unknown as SeriesData[],
       );
       // Escala de overlay pedida pelo consumidor: dar margem para nao colar nas
       // bordas. Sem isto a linha encosta no topo e na base do painel.
@@ -301,7 +298,8 @@ export class ChartEngine {
   /** Substitui o conjunto de marcadores. */
   setMarkers(markers: readonly ChartMarker[]): void {
     if (this.disposed) return;
-    this.markersPlugin.setMarkers(
+    // No motor proprio o marcador vive na serie, nao num plugin.
+    this.candleSeries.setMarkers(
       markers
         .filter((m) => Number.isFinite(m.time))
         .map((m) => ({

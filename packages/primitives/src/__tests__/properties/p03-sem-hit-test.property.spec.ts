@@ -155,7 +155,7 @@ import * as fc from 'fast-check';
 import { BookmapPrimitive, resetBookmapSessionWarnings } from '@robustus/charts-primitives';
 import type { BookmapLayerOptions } from '@robustus/charts-primitives';
 import type { BookmapGrid, FonteBookmap, MetricaBookmap } from '@robustus/charts-core';
-import type { SeriesAttachedParameter, SeriesType, Time } from 'lightweight-charts';
+import type { SeriesAttachedParameter, SeriesType, Time } from '@robustus/chart-core';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Orçamento de execução

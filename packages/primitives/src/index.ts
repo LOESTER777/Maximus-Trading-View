@@ -19,14 +19,14 @@
  * A DEPENDENCIA DO SUBSTRATO E SO POR TIPO
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * `lightweight-charts` entra aqui exclusivamente por `import type`. Nenhum valor
- * e importado: nao ha `createChart`, nao ha construtor de serie, nao ha
- * `LineStyle`. Confira com `grep -n "from 'lightweight-charts'"` — as duas
- * ocorrencias sao `import type`.
+ * O motor `@robustus/chart-core` (PROPRIO, sem terceiros) entra aqui
+ * exclusivamente por `import type`. Nenhum valor e importado: nao ha
+ * `createChart`, nao ha construtor de serie. Confira com
+ * `grep -n "from '@robustus/chart-core'"` — as ocorrencias sao `import type`.
  *
  * Isso NAO e detalhe de estilo. Sao tres consequencias praticas:
  *
- *  1. O pacote nao contribui um byte de `lightweight-charts` para o bundle.
+ *  1. O pacote nao contribui um byte do motor para o proprio bundle.
  *  2. As camadas podem ser testadas com dubles, sem instanciar grafico — e o que
  *     torna a bancada de desempenho possivel em jsdom, que nao tem contexto 2D.
  *  3. Se o substrato for trocado um dia, o que precisa mudar e o pacote `engine`,

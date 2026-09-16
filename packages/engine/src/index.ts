@@ -5,7 +5,7 @@
  * O UNICO PACOTE QUE IMPORTA O SUBSTRATO EM RUNTIME
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * `core` e puro. `primitives` importa `lightweight-charts` so por tipo. `datafeed`
+ * `core` e puro. `primitives` importa o motor proprio so por tipo. `datafeed`
  * nao o conhece. Este pacote e a fronteira: e aqui que `createChart` e chamado.
  *
  * A consequencia pratica e que uma eventual troca de substrato mexe neste

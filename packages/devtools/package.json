@@ -21,10 +21,8 @@
     "clean": "tsc --build --clean"
   },
   "dependencies": {
+    "@robustus/chart-core": "0.1.0",
     "@robustus/charts-core": "0.1.0",
     "@robustus/charts-primitives": "0.1.0"
-  },
-  "peerDependencies": {
-    "lightweight-charts": "^5.1.0"
   }
 }

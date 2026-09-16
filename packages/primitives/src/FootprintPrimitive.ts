@@ -26,7 +26,7 @@
  * A geometria e a escolha de cor vivem em `footprint-render.core.ts` (puro e
  * testado); este arquivo só emite formas no canvas.
  */
-import type { CanvasRenderingTarget2D } from 'fancy-canvas';
+import type { CanvasRenderingTarget2D } from '@robustus/chart-core';
 import type {
   IChartApiBase,
   IPrimitivePaneRenderer,
@@ -36,7 +36,7 @@ import type {
   SeriesAttachedParameter,
   SeriesType,
   Time,
-} from 'lightweight-charts';
+} from '@robustus/chart-core';
 
 import {
   formasVisiveis,

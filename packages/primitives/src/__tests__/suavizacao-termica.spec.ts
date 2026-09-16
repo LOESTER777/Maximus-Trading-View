@@ -21,8 +21,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { CanvasRenderingTarget2D } from 'fancy-canvas';
-import type { SeriesAttachedParameter, SeriesType, Time } from 'lightweight-charts';
+import type { CanvasRenderingTarget2D } from '@robustus/chart-core';
+import type { SeriesAttachedParameter, SeriesType, Time } from '@robustus/chart-core';
 import { BookmapPrimitive } from '@robustus/charts-primitives';
 import type { BookmapLayerOptions } from '@robustus/charts-primitives';
 import type { BookmapGrid, CoberturaHeatmap } from '@robustus/charts-core';

@@ -36,6 +36,7 @@ export default defineConfig({
     // roda sem precisar de build previo e o stack trace cai no arquivo real.
     alias: {
       '@robustus/charts-core': path.resolve(__dirname, 'packages/core/src'),
+      '@robustus/chart-core': path.resolve(__dirname, 'packages/chart-core/src'),
       '@robustus/charts-primitives': path.resolve(__dirname, 'packages/primitives/src'),
       '@robustus/charts-datafeed': path.resolve(__dirname, 'packages/datafeed/src'),
       '@robustus/charts-drawings': path.resolve(__dirname, 'packages/drawings/src'),

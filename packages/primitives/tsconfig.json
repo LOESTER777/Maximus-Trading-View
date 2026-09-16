@@ -7,5 +7,5 @@
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "src/**/__bench__/**"],
-  "references": [{ "path": "../core" }]
+  "references": [{ "path": "../core" }, { "path": "../chart-core" }]
 }

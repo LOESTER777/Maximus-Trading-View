@@ -44,7 +44,7 @@
  * das camadas irmas.
  */
 
-import type { CanvasRenderingTarget2D } from 'fancy-canvas';
+import type { CanvasRenderingTarget2D } from '@robustus/chart-core';
 import type {
   IPrimitivePaneRenderer,
   IPrimitivePaneView,
@@ -53,7 +53,7 @@ import type {
   SeriesAttachedParameter,
   SeriesType,
   Time,
-} from 'lightweight-charts';
+} from '@robustus/chart-core';
 import {
   HANDLE_RADIUS_PX,
   HIT_TOLERANCE_PX,

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // O motor DESENHA, entao precisa de DOM (canvas, container, pointer events).
+    // Mas nao importa terceiro nenhum: a barreira aqui nao e "sem DOM" como no
+    // core puro, e "sem dependencia externa" — verificado no dist.
+    "lib": ["ES2020", "DOM"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
+}

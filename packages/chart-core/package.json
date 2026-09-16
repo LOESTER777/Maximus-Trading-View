@@ -1,7 +1,7 @@
 {
-  "name": "@robustus/charts-drawings",
+  "name": "@robustus/chart-core",
   "version": "0.1.0",
-  "description": "Ferramentas de desenho do usuario: linha de tendencia, raio, retangulo, Fibonacci, regua. Ancoradas em (tempo, preco), com hit-test e edicao por alcas.",
+  "description": "Motor de grafico proprio em canvas: eixo de tempo com sessao irregular, escala de preco, laco de render, interacao e contrato de primitive. Zero terceiros em runtime.",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./dist/index.js",
@@ -19,9 +19,5 @@
   "scripts": {
     "build": "tsc --build",
     "clean": "tsc --build --clean"
-  },
-  "dependencies": {
-    "@robustus/chart-core": "0.1.0",
-    "@robustus/charts-core": "0.1.0"
   }
 }

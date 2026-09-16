@@ -1,7 +1,7 @@
 {
   "name": "@robustus/charts-primitives",
   "version": "0.1.0",
-  "description": "Camadas de canvas (bookmap heatmap, footprint) desenhadas sobre o substrato de grafico. Dependem de lightweight-charts APENAS por tipo.",
+  "description": "Camadas de canvas (bookmap heatmap, footprint) sobre o motor proprio. Zero terceiros.",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,18 +21,7 @@
     "clean": "tsc --build --clean"
   },
   "dependencies": {
+    "@robustus/chart-core": "0.1.0",
     "@robustus/charts-core": "0.1.0"
-  },
-  "peerDependencies": {
-    "fancy-canvas": "^2.1.0",
-    "lightweight-charts": "^5.1.0"
-  },
-  "peerDependenciesMeta": {
-    "fancy-canvas": {
-      "optional": false
-    },
-    "lightweight-charts": {
-      "optional": false
-    }
   }
 }

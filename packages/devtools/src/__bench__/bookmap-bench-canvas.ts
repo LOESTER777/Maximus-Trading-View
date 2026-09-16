@@ -70,8 +70,8 @@
  * Convenções: identificadores em inglês, comentários em pt-BR.
  */
 
-import type { CanvasRenderingTarget2D } from 'fancy-canvas';
-import type { SeriesAttachedParameter, SeriesType, Time } from 'lightweight-charts';
+import type { CanvasRenderingTarget2D } from '@robustus/chart-core';
+import type { SeriesAttachedParameter, SeriesType, Time } from '@robustus/chart-core';
 
 import { BookmapPrimitive, type BookmapLayerOptions } from '@robustus/charts-primitives';
 import type { BookmapGrid, VisibleWindow } from '@robustus/charts-core';

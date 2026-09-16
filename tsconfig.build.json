@@ -4,6 +4,7 @@
   "files": [],
   "references": [
     { "path": "./packages/core" },
+    { "path": "./packages/chart-core" },
     { "path": "./packages/primitives" },
     { "path": "./packages/datafeed" },
     { "path": "./packages/drawings" },

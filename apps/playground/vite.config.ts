@@ -19,6 +19,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@robustus/charts-core': path.join(raizPacotes, 'core/src/index.ts'),
+      '@robustus/chart-core': path.join(raizPacotes, 'chart-core/src/index.ts'),
       '@robustus/charts-primitives': path.join(raizPacotes, 'primitives/src/index.ts'),
       '@robustus/charts-datafeed': path.join(raizPacotes, 'datafeed/src/index.ts'),
       '@robustus/charts-drawings': path.join(raizPacotes, 'drawings/src/index.ts'),
