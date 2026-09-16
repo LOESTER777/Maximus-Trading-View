@@ -27,16 +27,37 @@ cosmética.
 |---|---|---|
 | `@robustus/charts-core` | 14 núcleos puros, compila **sem DOM** | herdados |
 | `@robustus/charts-primitives` | `BookmapPrimitive` (2.669 linhas), `FootprintPrimitive` | herdados |
-| `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + adaptador HTTP | 45 novos |
-| `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 novos |
+| `@robustus/chart-core` | motor de renderização próprio em canvas (eixo, escala, panes, interação) | herdados |
+| `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador | ~120 |
+| `@robustus/charts-indicators` | 20 indicadores incrementais (warmup+update+preview O(1)), registry | 45 |
+| `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 |
 | `@robustus/charts-engine` | motor sem framework | 18 novos |
 | `@robustus/charts-react` | `useChartEngine`, `useDrawings`, `<RobustusChart />` | 12 novos |
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test          # 703 testes, 31 arquivos
+npm test          # 843 testes, 39 arquivos
 npm run build     # todos os pacotes
 ```
+
+## Indicadores — o contrato incremental
+
+`charts-indicators` é INCREMENTAL, não batch (a origem era batch). Contrato:
+`warmup(history)` alimenta o histórico, `update(bar)` consome uma barra fechada
+O(1) com estado rolante, `preview(bar)` calcula a barra em formação SEM mutar.
+
+A propriedade central — **incremental == batch** — é garantida por construção:
+`warmup` roda os mesmos `update`. Há property test que reprova se um indicador
+novo violar. Estado rolante usa soma de Kahan (não deriva em janela longa) e
+Wilder distinto de EMA (RSI/ATR/ADX batem com a referência).
+
+Plotar liga `indicators` ao `engine` pelo `IndicatorPlotter`, por ESTRUTURA — o
+motor não importa o pacote de indicadores. O descritor `OutputSpec.pane` decide:
+`'price'` sobre as velas, `'separate'` em sub-painel nativo (`addPane`). No React,
+`useIndicators` faz a costura.
+
+⚠️ Falta `removePane` no motor: alternar osciladores deixa a pane vazia. Próximo
+passo no `chart-core`.
 
 ## Grafo de dependência — não viole
 
