@@ -210,6 +210,23 @@ function hitOne(item: ScreenDrawing, x: number, y: number, tolerance: number): H
     if (d < menor) menor = d;
   }
 
+  // ── Rotulos: a caixa do texto e acertavel por DENTRO ──
+  //
+  // ⭐ E a excecao deliberada a regra "regiao sem preenchimento nao pega por dentro". A caixa de
+  // um rotulo tem algumas dezenas de pixels e e OPACA: ela cobre a vela que esta atras, entao o
+  // clique nela nao pertence mais ao grafico. Deixa-la passar tornaria a NOTA praticamente
+  // inacertavel — o unico alvo dela seria a alca de 9 px de raio, ao lado do texto.
+  //
+  // ⚠️ Reportado como `STROKE` e nao como `REGION`: numa nota o texto E o corpo do desenho, e em
+  // qualquer outra ferramenta clicar no rotulo deve selecionar o desenho que ele nomeia — as
+  // duas leituras querem a prioridade do corpo, nao a de fundo.
+  for (const t of item.texts) {
+    if (isInsideBox(t.box, x, y)) {
+      menor = 0;
+      break;
+    }
+  }
+
   // Linha infinita: a distancia e puramente no eixo perpendicular. Ja coberto
   // pelos `strokes`, que a projecao emitiu de borda a borda — mas o calculo
   // explicito evita depender de o traco cobrir exatamente a largura corrente.

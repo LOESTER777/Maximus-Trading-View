@@ -160,7 +160,83 @@ export type DrawingKind =
    * Difere das outras por ser EFEMERA por natureza — normalmente se apaga ao
    * soltar. O modelo nao impede persistir; quem decide e a aplicacao.
    */
-  | 'MEASURE';
+  | 'MEASURE'
+  /**
+   * ⭐⭐ CANAL PARALELO: a reta de base e uma copia paralela dela.
+   *
+   * ⚠️ **Duas ancoras, e a terceira e um NUMERO** (`channelWidthRatio`). A implementacao
+   * consagrada usa tres cliques — base em dois pontos, largura no terceiro — e ela foi
+   * rejeitada pelo mesmo motivo que rejeitou as tres ancoras da posicao: o gesto desta
+   * biblioteca conhece uma ou duas ancoras, e uma terceira exigiria um estado de "meio
+   * criado" que sobrevive a soltar o botao, com todos os cancelamentos que vem com isso
+   * (trocar de ferramenta, Esc, pointercancel, desmontar no meio).
+   *
+   * ⭐ E o numero e uma escolha melhor que o terceiro clique: `channelWidthRatio` e a largura
+   * em MULTIPLOS do proprio deslocamento da base. Sendo uma RAZAO, ela e adimensional —
+   * sobrevive a troca de periodo, de escala e de instrumento, o que um terceiro ponto ancorado
+   * em preco absoluto nao faz.
+   *
+   * ⚠️ **Canal de base HORIZONTAL e degenerado, e isso e declarado, nao consertado.** Com
+   * `priceB == priceA` o deslocamento e zero e a razao nao tem de que multiplicar; a projecao
+   * desenha so a reta de base. Derivar uma largura de outro lugar exigiria inventar escala a
+   * partir do NIVEL do preco — que e exatamente o erro que fez o Renko mostrar duas barras
+   * (o nivel do preco nao diz nada sobre o quanto ele se move). Para faixa horizontal existem
+   * o retangulo e as zonas.
+   */
+  | 'PARALLEL_CHANNEL'
+  /**
+   * ⭐ ELIPSE inscrita no retangulo das duas ancoras.
+   *
+   * ⚠️ Emitida como POLILINHA pelo plano de desenho — pelo mesmo motivo que a ponta da seta
+   * e feita de tracos: herda cor, espessura, tracejado, acerto de ponteiro e recorte de
+   * viewport sem uma forma nova no renderizador.
+   *
+   * ⚠️ **So contorno, sem preenchimento.** Preencher exigiria caminho de elipse no
+   * renderizador, e `region` (o unico canal de preenchimento) e uma caixa alinhada aos eixos —
+   * usa-la pintaria um RETANGULO onde o operador ve uma elipse. Contorno vazio tambem herda a
+   * regra de acerto ja documentada: regiao sem preenchimento nao e acertavel por dentro, e
+   * assim a elipse nao captura o pan de quem clica no meio dela.
+   */
+  | 'ELLIPSE'
+  /**
+   * ⭐⭐ NOTA de texto: uma ancora, e o conteudo e `style.label`.
+   *
+   * ⚠️ O campo nao e novo. `DrawingStyle.label` existia desde o inicio, era resolvido em
+   * `resolveStyle`, e **nunca era pintado** — texto nenhum saia no canvas. Esta ferramenta
+   * fechou esse buraco, e o ganho passou de uma ferramenta para TODAS: qualquer desenho com
+   * `label` agora aparece rotulado. A nota e o caso em que o rotulo e o desenho INTEIRO.
+   */
+  | 'TEXT_NOTE'
+  /**
+   * ⭐⭐ ZONA DE OFERTA: a faixa de preco onde apareceu vendedor, valida DAQUI PARA A FRENTE.
+   *
+   * Duas diferencas em relacao ao retangulo, e as duas sao de leitura, nao de forma:
+   *
+   *  1. **Estende-se para a direita** ate a borda, como o raio horizontal. Uma zona de oferta
+   *     nao termina onde o operador parou de arrastar — ela vale ate o preco a consumir.
+   *  2. **A cor e FIXA e semantica** (vermelha), pela mesma regra das zonas de risco e
+   *     retorno da posicao: por `style.fill` as duas zonas ficariam da mesma cor e a
+   *     informacao central — de que lado esta a pressao — desapareceria.
+   */
+  | 'ZONE_SUPPLY'
+  /** ⭐⭐ ZONA DE DEMANDA. Espelho da oferta: a faixa onde apareceu comprador, em verde. */
+  | 'ZONE_DEMAND'
+  /**
+   * ⭐ LEQUE de Fibonacci: raios que saem da primeira ancora nas proporcoes de Fib.
+   *
+   * Onde a retracao responde "em que PRECO a correcao para", o leque responde "em que preco
+   * ela para A CADA INSTANTE" — os niveis sao inclinados, entao acompanham o tempo. Mesmos
+   * niveis, geometria diferente.
+   */
+  | 'FIB_FAN'
+  /**
+   * ⭐ ZONAS DE TEMPO de Fibonacci: verticais nos multiplos de Fibonacci do intervalo A→B.
+   *
+   * ⚠️ A unica ferramenta de Fibonacci que mede TEMPO e nao preco, e por isso os niveis dela
+   * nao sao razoes (0,618) mas os proprios numeros da sequencia (1, 2, 3, 5, 8, 13, 21). Ver
+   * `FIB_TIME_LEVELS_DEFAULT`.
+   */
+  | 'FIB_TIME_ZONES';
 
 /** Quantas ancoras cada ferramenta exige para estar completa. */
 export const ANCHORS_REQUIRED: Readonly<Record<DrawingKind, 1 | 2>> = Object.freeze({
@@ -179,6 +255,16 @@ export const ANCHORS_REQUIRED: Readonly<Record<DrawingKind, 1 | 2>> = Object.fre
   // `POSITION_LONG` para por que tres ancoras foram rejeitadas.
   POSITION_LONG: 2,
   POSITION_SHORT: 2,
+  // ⚠️ DUAS, e a largura e `channelWidthRatio`. O terceiro clique do canal classico nao existe
+  // aqui de proposito — ver `PARALLEL_CHANNEL`.
+  PARALLEL_CHANNEL: 2,
+  ELLIPSE: 2,
+  // UMA: a nota nasce completa no clique, e o conteudo vem de `style.label`.
+  TEXT_NOTE: 1,
+  ZONE_SUPPLY: 2,
+  ZONE_DEMAND: 2,
+  FIB_FAN: 2,
+  FIB_TIME_ZONES: 2,
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -242,6 +328,55 @@ export const FIB_EXTENSION_LEVELS_DEFAULT: readonly number[] = Object.freeze([
  */
 export const R_MULTIPLE_DEFAULT = 2;
 
+/**
+ * ⭐ Niveis default das ZONAS DE TEMPO de Fibonacci: a propria sequencia.
+ *
+ * ⚠️ Numeros inteiros, e nao razoes. As outras ferramentas de Fibonacci interpolam entre dois
+ * PRECOS, e ali `0,618` significa "61,8% do caminho". Aqui o insumo e um INTERVALO, e o que se
+ * projeta e "um intervalo adiante, dois adiante, tres, cinco". Usar 0,236..0,786 poria todas as
+ * verticais DENTRO do trecho medido — a ferramenta nao projetaria nada.
+ *
+ * O `1` abre a lista porque e a vertical no fim do intervalo medido: sem ela o operador nao ve
+ * de onde a contagem parte. `21` fecha porque a 34 intervalos adiante a projecao ja saiu de
+ * qualquer tela util.
+ */
+export const FIB_TIME_LEVELS_DEFAULT: readonly number[] = Object.freeze([1, 2, 3, 5, 8, 13, 21]);
+
+/**
+ * ⭐ Largura default do canal paralelo: UMA vez o deslocamento da base.
+ *
+ * Por que 1 e nao 0,5 ou 2: com 1 o canal nasce com a mesma "altura" do movimento que o
+ * gerou, e essa e a leitura que o operador espera de um canal — a reta de baixo e a de cima
+ * distantes na medida do proprio impulso. Nascer em 0,5 daria um canal apertado que parece
+ * defeito de arrasto; em 2, um canal que engloba a tela e nao delimita nada.
+ */
+export const CHANNEL_WIDTH_RATIO_DEFAULT = 1;
+
+/**
+ * ⭐ As cores das zonas de oferta e demanda, e por que sao FIXAS.
+ *
+ * Verde e comprador e vermelho e vendedor em toda mesa. Uma zona de demanda pintada de roxo
+ * porque o operador mexeu em `style.fill` deixaria de ser lida de longe, que e como zona se
+ * le. Mesma decisao das zonas de risco e retorno da posicao.
+ *
+ * ⚠️ Alpha baixo porque a zona e FUNDO: ela existe para explicar a vela, nao para cobri-la.
+ * Levemente mais opaca que a zona de posicao (0,16) porque a de posicao tem tres tracos por
+ * cima que dizem o preco, e a zona nao tem — aqui a mancha e a unica informacao.
+ */
+export const ZONE_SUPPLY_COLOR = 'rgba(234, 57, 67, 0.18)';
+/** Ver `ZONE_SUPPLY_COLOR`. */
+export const ZONE_DEMAND_COLOR = 'rgba(22, 199, 132, 0.18)';
+
+/**
+ * ⭐ Texto que a NOTA mostra quando esta sem conteudo.
+ *
+ * ⚠️ Nao e enfeite: nota sem texto seria um desenho de largura ZERO — invisivel na tela e sem
+ * area de acerto. O operador clicaria, nada apareceria, e ele concluiria que a ferramenta esta
+ * quebrada; pior, o desenho vazio continuaria na colecao capturando nada pelo resto da sessao.
+ * Com o texto de partida a nota aparece, e acertavel, e da para digitar em cima.
+ */
+export const TEXT_NOTE_PLACEHOLDER = 'Nota';
+
 // ═════════════════════════════════════════════════════════════════════════════
 // O desenho
 // ═════════════════════════════════════════════════════════════════════════════
@@ -286,7 +421,18 @@ export interface Drawing {
    * digitacao.
    */
   readonly rMultiple?: number;
-  /** Niveis de `FIB_RETRACEMENT` e `FIB_EXTENSION`. Ausente usa o default do tipo. */
+  /**
+   * ⭐ Largura do `PARALLEL_CHANNEL`, em MULTIPLOS do deslocamento de preco da base.
+   *
+   * Ausente usa `CHANNEL_WIDTH_RATIO_DEFAULT` (1). E a "terceira ancora" do canal, virada
+   * numero — ver `PARALLEL_CHANNEL` e `channelWidthRatioOf`.
+   *
+   * ⚠️ **Razao, e nunca preco absoluto.** Um deslocamento em pontos ficaria errado ao trocar
+   * de instrumento (300 pontos e um canal do WIN e uma tela inteira do PETR4) e ao trocar de
+   * periodo. A razao e adimensional e continua significando a mesma coisa em qualquer um.
+   */
+  readonly channelWidthRatio?: number;
+  /** Niveis de `FIB_RETRACEMENT`, `FIB_EXTENSION`, `FIB_FAN` e `FIB_TIME_ZONES`. Ausente usa o default do tipo. */
   readonly fibLevels?: readonly number[];
   /**
    * Sentido do prolongamento de `RAY`.
@@ -361,6 +507,8 @@ export interface CreateDrawingParams {
   readonly rayDirection?: 'FORWARD' | 'BACKWARD';
   /** Múltiplo de risco das ferramentas de posição. Ver `rMultipleOf`. */
   readonly rMultiple?: number;
+  /** Largura do canal paralelo, em múltiplos do deslocamento da base. Ver `channelWidthRatioOf`. */
+  readonly channelWidthRatio?: number;
   readonly id?: string;
 }
 
@@ -380,6 +528,10 @@ export function createDrawing(p: CreateDrawingParams, ids: IdFactory): Drawing {
     // EM SILÊNCIO. O sintoma era uma posição criada com `rMultiple: 3` desenhando 2R, sem
     // erro nenhum. Ao acrescentar campo ao `Drawing`, acrescente aqui também.
     ...(p.rMultiple === undefined ? {} : { rMultiple: p.rMultiple }),
+    // ⚠️ Mesma armadilha do `rMultiple`, e por isso este campo entrou junto com o teste que o
+    // prova: sem esta linha um canal criado com `channelWidthRatio: 2` nasceria com 1, sem
+    // erro nenhum, e o operador concluiria que o controle de largura nao funciona.
+    ...(p.channelWidthRatio === undefined ? {} : { channelWidthRatio: p.channelWidthRatio }),
   };
 }
 
@@ -445,8 +597,15 @@ export function withHidden(d: Drawing, hidden: boolean): Drawing {
  * faria a extensao nascer mostrando retracao — a ferramenta errada com o nome certo.
  */
 export function fibLevelsOf(d: Drawing): readonly number[] {
+  // ⚠️ TRES defaults, e a escolha e por `kind`: a extensao projeta alem (1..2,618), as zonas de
+  // TEMPO contam intervalos inteiros (1,2,3,5,8...) e a retracao e o leque ficam entre 0 e 1.
+  // Um default unico faria duas das quatro ferramentas nascerem mostrando a conta da outra.
   const padrao =
-    d.kind === 'FIB_EXTENSION' ? FIB_EXTENSION_LEVELS_DEFAULT : FIB_LEVELS_DEFAULT;
+    d.kind === 'FIB_EXTENSION'
+      ? FIB_EXTENSION_LEVELS_DEFAULT
+      : d.kind === 'FIB_TIME_ZONES'
+        ? FIB_TIME_LEVELS_DEFAULT
+        : FIB_LEVELS_DEFAULT;
   const n = d.fibLevels;
   if (n === undefined || n.length === 0) return padrao;
   // Descarta nivel nao-finito em vez de propagar `NaN` para a geometria, onde ele
@@ -467,4 +626,45 @@ export function rMultipleOf(d: Drawing): number {
   const r = d.rMultiple;
   if (r === undefined || !Number.isFinite(r)) return R_MULTIPLE_DEFAULT;
   return Math.min(20, Math.max(0.1, r));
+}
+
+/**
+ * A largura efetiva do canal paralelo, em multiplos do deslocamento da base.
+ *
+ * ⚠️ Recorta em `[0,05 .. 10]`, e o PISO nao e zero por um motivo diferente do da posicao:
+ * aqui zero e uma escolha legitima do operador ("quero so a reta"), mas ele ja tem a linha de
+ * tendencia para isso — e um canal de largura zero seria indistinguivel dela na tela, com o
+ * agravante de responder ao hit-test como canal. Recusar o zero mantem cada ferramenta
+ * reconhecivel pelo que ela desenha.
+ *
+ * ⭐ Negativo NAO e recortado para positivo: ele e valido e significa o canal do lado
+ * OPOSTO. Espelhar em vez de recusar seria opinar sobre onde o operador quer o canal —
+ * `Math.abs` aqui faria a razao `-1` desenhar em cima da `+1` e o controle pareceria travado.
+ */
+export function channelWidthRatioOf(d: Drawing): number {
+  const r = d.channelWidthRatio;
+  if (r === undefined || !Number.isFinite(r) || r === 0) return CHANNEL_WIDTH_RATIO_DEFAULT;
+  const magnitude = Math.min(10, Math.max(0.05, Math.abs(r)));
+  return r < 0 ? -magnitude : magnitude;
+}
+
+/**
+ * O texto que um desenho deve mostrar, ou `null` quando nao mostra nada.
+ *
+ * ⭐ Ponto UNICO da decisao, e ele resolve duas perguntas de uma vez:
+ *
+ *  - **a nota nunca fica vazia** — sem `label` ela cai em `TEXT_NOTE_PLACEHOLDER`, senao seria
+ *    um desenho invisivel e sem area de acerto (ver a constante);
+ *  - **qualquer OUTRO desenho com `label` tambem e rotulado** — o rotulo existia no modelo e
+ *    nao era pintado; agora que a camada pinta texto, deixar isso valendo so para a nota
+ *    desperdicaria o campo em treze ferramentas.
+ *
+ * ⚠️ Espaco em branco conta como vazio (`trim`): um rotulo de espacos pintaria uma caixa de
+ * fundo sem letra nenhuma, que le como artefato de renderizacao.
+ */
+export function labelOf(d: Drawing): string | null {
+  const bruto = d.style?.label;
+  const limpo = typeof bruto === 'string' ? bruto.trim() : '';
+  if (limpo !== '') return limpo;
+  return d.kind === 'TEXT_NOTE' ? TEXT_NOTE_PLACEHOLDER : null;
 }

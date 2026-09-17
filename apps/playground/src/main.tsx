@@ -87,6 +87,7 @@ import {
   useVisibleTimeRange,
   CorrelationInset,
   ToolHelpStrip,
+  DrawingLabelEditor,
   PaneChrome,
 } from '@robustus/charts-react';
 // ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
@@ -1061,6 +1062,13 @@ export function App(): JSX.Element {
       MEASURE: 'Régua',
       POSITION_LONG: 'Posição de compra',
       POSITION_SHORT: 'Posição de venda',
+      PARALLEL_CHANNEL: 'Canal paralelo',
+      ELLIPSE: 'Elipse',
+      TEXT_NOTE: 'Nota',
+      ZONE_SUPPLY: 'Zona de oferta',
+      ZONE_DEMAND: 'Zona de demanda',
+      FIB_FAN: 'Leque de Fib.',
+      FIB_TIME_ZONES: 'Zonas de tempo de Fib.',
     };
     return [
       // ⚠️ NÃO há grupo de indicadores aqui, e a ausência é a correção. Ver o cabeçalho.
@@ -1070,10 +1078,24 @@ export function App(): JSX.Element {
         emptyHint: 'Nenhum desenho. Escolha uma ferramenta na barra à esquerda.',
         items: desenho.drawings.map((d) => {
           const preco = d.anchors[0]?.price;
+          // ⭐ O RÓTULO do operador vence o nome do tipo. Quem escreveu "topo do leilão de
+          // 12/09" numa linha o fez justamente para localizá-la depois; a lista mostrar
+          // "Linha de tendência" pela quinta vez desperdiça o trabalho dele. O tipo não se
+          // perde — ele desce para o detalhe, junto do preço.
+          const rotuloProprio = d.style?.label?.trim() ?? '';
+          const tipo = rotuloDeDesenho[d.kind] ?? d.kind;
+          const detalhe =
+            rotuloProprio === ''
+              ? preco === undefined
+                ? undefined
+                : preco.toFixed(1)
+              : preco === undefined
+                ? tipo
+                : `${tipo} · ${preco.toFixed(1)}`;
           return {
             id: d.id,
-            label: rotuloDeDesenho[d.kind] ?? d.kind,
-            ...(preco === undefined ? {} : { detail: preco.toFixed(1) }),
+            label: rotuloProprio === '' ? tipo : rotuloProprio,
+            ...(detalhe === undefined ? {} : { detail: detalhe }),
             selected: desenho.selectedIds.includes(d.id),
             onRemove: () => desenho.load(desenho.drawings.filter((x) => x.id !== d.id)),
           };
@@ -1836,6 +1858,23 @@ export function App(): JSX.Element {
                 de ser escolhida). Ver `ToolHelpStrip.tsx` e `tool-help.core.ts`.
               */}
               <ToolHelpStrip tool={desenho.tool} />
+              {/*
+                ⭐⭐ O texto do desenho selecionado.
+
+                A ferramenta de NOTA trouxe o assunto, mas o campo `style.label` existia desde o
+                começo e nunca era editável nem pintado — então isto vale para qualquer desenho:
+                uma linha de tendência marcada "topo do leilão de 12/09" custou zero a mais.
+
+                ⚠️ `setStyle` e NÃO `load`: `load` zera o histórico de desfazer, e escrever um
+                rótulo apagaria o desfazer de tudo o que foi desenhado antes. `endStyleEdit`
+                fecha o passo, senão quinze teclas seriam quinze passos de `Ctrl+Z`.
+              */}
+              <DrawingLabelEditor
+                drawings={desenho.drawings}
+                selectedIds={desenho.selectedIds}
+                onChangeStyle={desenho.setStyle}
+                onCommit={desenho.endStyleEdit}
+              />
               {/*
                 ⭐⭐ O CROMO dos sub-painéis: nome, cor, esconder, remover, propriedades — e a
                 ALÇA que reordena com o mouse.

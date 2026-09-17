@@ -64,6 +64,8 @@ import { cursorFor, hitTest, type Hit } from './hit-test.core.js';
 import type { Drawing } from './model.js';
 import {
   MAX_DRAWINGS_DEFAULT,
+  TEXT_FONT_SIZE_PX,
+  TEXT_PADDING_PX,
   buildRenderPlan,
   sameEpoch,
   type RenderPlan,
@@ -101,6 +103,14 @@ export interface DrawingsLayerOptions {
 const SELECTION_COLOR = '#38bdf8';
 /** Preenchimento da alca. */
 const HANDLE_FILL = '#0f1724';
+/**
+ * Fundo da caixa de rotulo.
+ *
+ * ⚠️ Quase opaco (0,88) e nao opaco de todo: um pouco da vela por baixo continua aparecendo, o
+ * que ancora o rotulo no lugar do grafico a que ele pertence. Totalmente opaco, uma nota sobre
+ * uma regiao densa parece um adesivo colado na tela.
+ */
+const TEXT_BOX_FILL = 'rgba(15, 23, 36, 0.88)';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Renderer
@@ -139,7 +149,73 @@ class DrawingsRenderer implements IPrimitivePaneRenderer {
       this.strokeAll(ctx, this.draftPlan.items, hpr, vpr, true);
     }
     if (this.plan !== null) {
+      // ⭐ Os rotulos vao DEPOIS dos tracos e ANTES das alcas. Depois dos tracos porque a caixa
+      // opaca precisa cobrir o que estiver atras para o texto ser legivel sobre heatmap; antes
+      // das alcas porque a alca e o alvo do gesto e nao pode ficar escondida sob uma caixa.
+      this.drawTexts(ctx, this.plan.items, hpr, vpr);
       this.drawHandles(ctx, this.plan.items, hpr, vpr);
+    }
+  }
+
+  /**
+   * ⭐⭐ Os rotulos — e este metodo fecha um buraco que existia desde o inicio.
+   *
+   * `DrawingStyle.label` estava no modelo, era resolvido em `resolveStyle`, e **nunca chegava ao
+   * canvas**: quem punha rotulo num desenho nao via nada e nao recebia erro. O que trouxe o
+   * assunto a tona foi a ferramenta de NOTA, cujo desenho inteiro e o texto — mas a correcao
+   * vale para as vinte ferramentas.
+   *
+   * ⚠️ A caixa de fundo NAO e enfeite. Desenho vive sobre velas e sobre o heatmap de livro, que
+   * pode estar em qualquer cor: texto claro sobre celula clara fica ilegivel. E a mesma decisao
+   * (e o mesmo incidente) que deu caixa opaca a legenda do bookmap.
+   *
+   * ⚠️ A LARGURA da caixa vem do plano, que a ESTIMOU sem medir — ver `ScreenText`. Medir aqui
+   * com `measureText` daria caixa mais justa e desalinharia a area de ACERTO, que e calculada no
+   * nucleo puro: o rotulo apareceria num lugar e pegaria clique noutro.
+   */
+  private drawTexts(
+    ctx: CanvasRenderingContext2D,
+    items: readonly ScreenDrawing[],
+    hpr: number,
+    vpr: number,
+  ): void {
+    const comTexto = items.filter((it) => it.texts.length > 0);
+    if (comTexto.length === 0) return;
+
+    ctx.save();
+    try {
+      // A escala do bitmap entra no CORPO da fonte, e nao numa transformacao: transformar o
+      // contexto escalaria tambem a espessura do traco de qualquer camada que esquecesse de
+      // restaurar, e o `save`/`restore` deste bloco nao protege quem vem depois de um `throw`
+      // fora dele.
+      const corpo = TEXT_FONT_SIZE_PX * Math.min(hpr, vpr);
+      ctx.font = `${corpo}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+
+      for (const it of comTexto) {
+        const realce = this.selected.has(it.id) || this.hoveredId === it.id;
+        for (const t of it.texts) {
+          const x = t.box.minX * hpr;
+          const y = t.box.minY * vpr;
+          const w = (t.box.maxX - t.box.minX) * hpr;
+          const h = (t.box.maxY - t.box.minY) * vpr;
+
+          ctx.fillStyle = TEXT_BOX_FILL;
+          ctx.fillRect(x, y, w, h);
+
+          // Borda na cor do desenho: e o que amarra o rotulo ao traco que ele nomeia quando ha
+          // varios desenhos proximos. Sem ela, dez rotulos identicos nao dizem de quem sao.
+          ctx.strokeStyle = realce ? SELECTION_COLOR : it.style.color;
+          ctx.lineWidth = Math.max(1, Math.min(hpr, vpr));
+          ctx.strokeRect(x, y, w, h);
+
+          ctx.fillStyle = realce ? SELECTION_COLOR : it.style.color;
+          ctx.fillText(t.texto, x + TEXT_PADDING_PX * hpr, y + h / 2);
+        }
+      }
+    } finally {
+      ctx.restore();
     }
   }
 

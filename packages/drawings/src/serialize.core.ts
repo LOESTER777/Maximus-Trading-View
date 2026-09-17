@@ -108,6 +108,20 @@ function cloneDrawing(d: Drawing): Drawing {
     ...(d.hidden === undefined ? {} : { hidden: d.hidden }),
     ...(d.fibLevels === undefined ? {} : { fibLevels: d.fibLevels.slice() }),
     ...(d.rayDirection === undefined ? {} : { rayDirection: d.rayDirection }),
+    // ⚠️⚠️ **DEFEITO REAL, e ele estava em produção.** `rMultiple` faltava aqui e em
+    // `parseDrawing`. A copia e campo por campo (e nao por spread) de proposito — para nao
+    // gravar propriedade desconhecida num documento versionado — e o preco dessa disciplina e
+    // que campo novo esquecido e DESCARTADO EM SILENCIO.
+    //
+    // O sintoma: o operador ajustava a posicao para 3R, salvava o layout, recarregava, e a
+    // posicao voltava com 2R. Nenhum erro, nenhum aviso — o alvo simplesmente estava no lugar
+    // errado, o que numa ferramenta de risco-retorno e o pior defeito possivel.
+    //
+    // ⚠️ `createDrawing` no modelo tem um comentario avisando exatamente disto, e a persistencia
+    // repetiu o erro de qualquer modo. Sao TRES lugares para cada campo novo: o tipo, a fabrica
+    // e este par escrita/leitura. Ha teste de ida-e-volta por campo agora.
+    ...(d.rMultiple === undefined ? {} : { rMultiple: d.rMultiple }),
+    ...(d.channelWidthRatio === undefined ? {} : { channelWidthRatio: d.channelWidthRatio }),
   };
 }
 
@@ -263,7 +277,24 @@ function parseDrawing(bruto: unknown, indice: number, motivos: string[]): Drawin
     ...(typeof v.rayDirection === 'string' && RAY_DIRECTIONS.has(v.rayDirection)
       ? { rayDirection: v.rayDirection as 'FORWARD' | 'BACKWARD' }
       : {}),
+    // ⚠️ O outro lado do defeito documentado em `cloneDrawing`. Numero nao-finito e OMITIDO em
+    // vez de rejeitar o desenho: cair no default (2R / 1x) e recuperavel com um ajuste; perder
+    // a posicao inteira nao e. Mesma regra do estilo.
+    ...numeroOpcional(v.rMultiple, 'rMultiple'),
+    ...numeroOpcional(v.channelWidthRatio, 'channelWidthRatio'),
   };
+}
+
+/**
+ * Um campo numerico opcional, validado.
+ *
+ * ⚠️ Sem recorte de faixa aqui de proposito. O recorte vive em `rMultipleOf` e
+ * `channelWidthRatioOf`, que sao a fonte unica da regra; recortar tambem na leitura daria duas
+ * verdades, e a divergencia apareceria como "o valor salvo nao e o valor lido".
+ */
+function numeroOpcional(bruto: unknown, campo: 'rMultiple' | 'channelWidthRatio'): Record<string, number> {
+  if (typeof bruto !== 'number' || !Number.isFinite(bruto)) return {};
+  return { [campo]: bruto };
 }
 
 /**

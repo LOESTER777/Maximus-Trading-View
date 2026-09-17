@@ -72,6 +72,15 @@ export interface UseDrawingsResult {
   readonly deleteSelected: () => void;
   /** Substitui tudo, zerando o historico. Para carregar documento salvo. */
   readonly load: (drawings: readonly Drawing[]) => void;
+  /**
+   * ⭐ Muda o estilo de UM desenho (cor, espessura, tracejado, rótulo), agrupando o histórico.
+   *
+   * ⚠️ Use isto, e não `load`, para editar propriedade: `load` **zera o desfazer**. Ver
+   * `DrawingController.setStyle`.
+   */
+  readonly setStyle: (id: string, style: DrawingStyle) => void;
+  /** Fecha o passo de desfazer da edição de estilo. Chame no `blur` ou no `Enter`. */
+  readonly endStyleEdit: () => void;
 }
 
 /**
@@ -189,5 +198,7 @@ export function useDrawings(params: UseDrawingsParams): UseDrawingsResult {
     redo: () => controller?.redo(),
     deleteSelected: () => controller?.deleteSelected(),
     load: (ds) => controller?.load(ds),
+    setStyle: (id, style) => controller?.setStyle(id, style),
+    endStyleEdit: () => controller?.endStyleEdit(),
   };
 }

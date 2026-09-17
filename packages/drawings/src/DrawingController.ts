@@ -54,6 +54,7 @@ import {
   createDefaultIdFactory,
   createDrawing,
   withAnchor,
+  withStyle,
   withTranslation,
   type Anchor,
   type Drawing,
@@ -260,6 +261,42 @@ export class DrawingController {
     const s = this.store.state();
     if (s.selectedIds.length === 0) return;
     this.store.commit(removeDrawings(s, s.selectedIds));
+    this.push();
+  }
+
+  /**
+   * ⭐⭐ Altera o ESTILO de um desenho existente, agrupando no historico.
+   *
+   * Existe por causa da nota de texto, e serve a qualquer propriedade: cor, espessura,
+   * tracejado, rotulo.
+   *
+   * ⚠️⚠️ **O agrupamento e a razao de este metodo existir em vez de a aplicacao chamar `load`.**
+   * Digitar "suporte do dia" sao quinze teclas. Sem chave de agrupamento seriam QUINZE passos de
+   * desfazer, e `Ctrl+Z` apagaria uma letra por vez — o operador aperta tres vezes esperando
+   * voltar ao estado anterior e recebe "suporte do d". Pior seria `load`, que **zera o
+   * historico**: escrever um rotulo destruiria o desfazer de tudo o que ele desenhou antes.
+   *
+   * A chave e `style:<id>`, entao o burst de teclas colapsa num passo, e mexer noutro desenho
+   * comeca passo novo. Quem fecha o passo e `endStyleEdit`, no `blur` ou no `Enter`.
+   *
+   * ⚠️ Mescla em vez de substituir (usa `withStyle`): informar so `label` nao pode apagar a cor
+   * que o operador escolheu.
+   */
+  setStyle(id: string, style: DrawingStyle): void {
+    const atual = this.store.byId(id);
+    if (atual === undefined) return;
+    this.store.commit(replaceDrawing(this.store.state(), withStyle(atual, style)), `style:${id}`);
+    this.push();
+  }
+
+  /**
+   * Fecha o passo de desfazer da edicao de estilo.
+   *
+   * Idempotente: `endMerge` com chave nula nao faz nada. Chamar a mais e inofensivo, e chamar a
+   * menos so funde duas edicoes que o operador veria como uma — o lado errado seguro.
+   */
+  endStyleEdit(): void {
+    this.store.endMerge();
     this.push();
   }
 

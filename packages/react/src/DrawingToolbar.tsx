@@ -289,35 +289,132 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
             hint: 'Um instante fixo: abertura, notícia ou o horário de um evento.',
             shortcut: 'V',
           },
+          {
+            id: 'parallelChannel',
+            kind: 'TOOL',
+            tool: 'PARALLEL_CHANNEL',
+            icon: 'parallelChannel',
+            label: 'Canal paralelo',
+            hint: 'Traça a reta de base e a paralela dela sai do outro lado. Não há terceiro clique: a largura é um múltiplo do próprio movimento.',
+            shortcut: 'C',
+          },
         ],
       },
     ],
   },
   {
-    // ⚠️ Seta e retângulo ficam SOLTOS, sem família: são duas formas visualmente distintas a
-    // 14 px, e agrupá-las esconderia uma atrás de um menu para economizar um alvo. Família se
-    // justifica quando os ícones se confundem — que é o caso das seis linhas, não deste.
+    // ⚠️⚠️ **ESTA DECISÃO FOI REVISADA, e a nota antiga fica registrada porque a revisão tem
+    // motivo.** Antes seta e retângulo ficavam SOLTOS, sob o argumento de que a família só se
+    // justifica quando os ícones se confundem a 14 px — o que era verdade para dois itens.
+    //
+    // Com a elipse, as zonas e a nota o argumento deixou de valer, e não por causa do ícone: o
+    // agrupamento agora é por ATO. Retângulo e elipse DELIMITAM uma área; oferta e demanda
+    // AFIRMAM de que lado está a pressão; seta e nota DIZEM alguma coisa. Três atos, três
+    // famílias — e o operador procura pelo que quer fazer, não pelo desenho que sairá.
+    //
+    // ⭐ O saldo de alvos é o que fecha a conta: seis ferramentas entraram no lugar de dois
+    // botões e a barra ganhou UM alvo, não seis. A variante mostrada é sempre a ativa, então
+    // retângulo e seta continuam a um clique de distância.
     id: 'shapes',
-    label: 'Formas',
+    label: 'Formas e zonas',
     cor: '#a78bfa',
     items: [
       {
-        id: 'arrow',
-        kind: 'TOOL',
-        tool: 'ARROW',
-        icon: 'arrow',
-        label: 'Seta',
-        hint: 'Aponta para o que importa na tela. Para anotar leitura, não para medir.',
-        shortcut: 'N',
+        id: 'family-shapes',
+        kind: 'FAMILY',
+        icon: 'rectangle',
+        label: 'Formas',
+        hint: 'Retângulo e elipse: delimitam uma área de preço e tempo. Clique direito (ou Alt+↓) para trocar.',
+        variantes: [
+          {
+            id: 'rectangle',
+            kind: 'TOOL',
+            tool: 'RECTANGLE',
+            icon: 'rectangle',
+            label: 'Retângulo',
+            hint: 'Delimita uma região de preço e tempo: congestão, canal ou zona de valor.',
+            shortcut: 'B',
+          },
+          {
+            id: 'ellipse',
+            kind: 'TOOL',
+            tool: 'ELLIPSE',
+            icon: 'ellipse',
+            label: 'Elipse',
+            hint: 'Circunda uma região sem afirmar limites retos. Só contorno — o miolo continua livre para dar pan.',
+            shortcut: 'L',
+          },
+        ],
       },
       {
-        id: 'rectangle',
-        kind: 'TOOL',
-        tool: 'RECTANGLE',
-        icon: 'rectangle',
-        label: 'Retângulo',
-        hint: 'Delimita uma região de preço e tempo: congestão, canal ou zona de valor.',
-        shortcut: 'B',
+        id: 'family-zones',
+        kind: 'FAMILY',
+        icon: 'zoneDemand',
+        label: 'Zonas',
+        hint: 'Oferta e demanda: a faixa onde apareceu vendedor ou comprador, valendo daí para a DIREITA. Clique direito (ou Alt+↓) para trocar o lado.',
+        variantes: [
+          {
+            id: 'zoneDemand',
+            kind: 'TOOL',
+            tool: 'ZONE_DEMAND',
+            icon: 'zoneDemand',
+            label: 'Zona de demanda',
+            hint: 'Faixa onde apareceu comprador. Estende-se para a direita até a borda, em verde — a cor é fixa de propósito.',
+            shortcut: 'D',
+          },
+          {
+            id: 'zoneSupply',
+            kind: 'TOOL',
+            tool: 'ZONE_SUPPLY',
+            icon: 'zoneSupply',
+            label: 'Zona de oferta',
+            hint: 'Faixa onde apareceu vendedor. Espelho da demanda, em vermelho.',
+            // ⚠️ `U` de *sUpply*, e não `O` de "oferta": `O` já é a posição de venda. Ver a nota
+            // de atalhos no cabeçalho.
+            shortcut: 'U',
+          },
+        ],
+      },
+    ],
+  },
+  {
+    // ⭐ Grupo próprio para o que ANOTA. A separação de "Formas e zonas" é a mesma lógica que
+    // deu grupo próprio à posição: uma forma delimita o gráfico, uma anotação fala com quem
+    // olha depois. Misturá-las esconderia a nota — a ferramenta que responde "por que eu marquei
+    // isto" três semanas atrás.
+    id: 'annotate',
+    label: 'Anotação',
+    cor: '#818cf8',
+    items: [
+      {
+        id: 'family-annotate',
+        kind: 'FAMILY',
+        icon: 'arrow',
+        label: 'Anotação',
+        hint: 'Seta e nota de texto: dizem algo a quem olha a tela. Clique direito (ou Alt+↓) para trocar.',
+        variantes: [
+          {
+            id: 'arrow',
+            kind: 'TOOL',
+            tool: 'ARROW',
+            icon: 'arrow',
+            label: 'Seta',
+            hint: 'Aponta para o que importa na tela. Para anotar leitura, não para medir.',
+            shortcut: 'N',
+          },
+          {
+            id: 'textNote',
+            kind: 'TOOL',
+            tool: 'TEXT_NOTE',
+            icon: 'textNote',
+            label: 'Nota de texto',
+            hint: 'Escreve no gráfico. O mesmo rótulo pode ser posto em QUALQUER desenho — a nota é o caso em que ele é o desenho inteiro.',
+            // ⚠️ `W` de *write*: `T` (texto) e `N` (nota) já estavam tomadas, e nenhuma letra
+            // livre casa com a palavra em português. O atalho aparece no tooltip, que é onde ele
+            // é descoberto.
+            shortcut: 'W',
+          },
+        ],
       },
     ],
   },
@@ -359,6 +456,28 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
             label: 'Régua',
             hint: 'Mede variação em preço, em % e em barras entre dois pontos.',
             shortcut: 'M',
+          },
+          {
+            id: 'fibFan',
+            kind: 'TOOL',
+            tool: 'FIB_FAN',
+            icon: 'fibFan',
+            label: 'Leque de Fibonacci',
+            hint: 'Os mesmos níveis da retração, mas INCLINADOS: responde onde o suporte está em cada instante, e não num preço só.',
+            // `Q` de *leQue*.
+            shortcut: 'Q',
+          },
+          {
+            id: 'fibTimeZones',
+            kind: 'TOOL',
+            tool: 'FIB_TIME_ZONES',
+            icon: 'fibTimeZones',
+            label: 'Zonas de tempo de Fib.',
+            hint: 'Verticais em 1, 2, 3, 5, 8, 13 e 21 intervalos. A única ferramenta de Fibonacci que mede TEMPO, e não preço.',
+            // ⚠️ `G` é arbitrário: nenhuma letra livre casa com "tempo" nem com "zona". A
+            // ferramenta é rara o bastante para ser achada no menu da família, e o atalho existe
+            // para quem usa teclado não ficar sem ela.
+            shortcut: 'G',
           },
         ],
       },

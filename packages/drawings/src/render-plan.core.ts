@@ -36,7 +36,11 @@
 
 import {
   ANCHORS_REQUIRED,
+  ZONE_DEMAND_COLOR,
+  ZONE_SUPPLY_COLOR,
+  channelWidthRatioOf,
   fibLevelsOf,
+  labelOf,
   rMultipleOf,
   isComplete,
   isVisible,
@@ -175,6 +179,46 @@ export interface FibLine {
 const COR_ZONA_LUCRO = 'rgba(22, 199, 132, 0.16)';
 const COR_ZONA_RISCO = 'rgba(234, 57, 67, 0.16)';
 
+/**
+ * ⭐ Um texto a pintar, com a caixa de fundo JA calculada.
+ *
+ * ⚠️⚠️ **A largura e ESTIMADA, e a estimativa e consequencia direta de este arquivo ser
+ * `.core`.** Medir texto exige `ctx.measureText`, ou seja um contexto 2D — que um nucleo puro
+ * nao tem e nao deve ter. A alternativa seria devolver o texto cru e deixar o renderizador
+ * medir, mas ai a CAIXA DE ACERTO passaria a existir so em tempo de pintura: o hit-test, que
+ * le o plano, nao saberia onde o rotulo esta, e clicar num rotulo nao selecionaria nada.
+ *
+ * ⚠️ A estimativa erra para CIMA de proposito — ver `LARGURA_MEDIA_DE_CARACTERE_PX`. Caixa
+ * larga demais custa alguns pixels de fundo; caixa estreita demais deixa a letra vazando para
+ * fora do fundo, que le como defeito de renderizacao.
+ */
+export interface ScreenText {
+  readonly texto: string;
+  /** Caixa de fundo, ja posicionada em pixel. Tambem e a area de acerto do rotulo. */
+  readonly box: Box;
+}
+
+/**
+ * Largura media de caractere a `TEXT_FONT_SIZE_PX`, em pixel.
+ *
+ * ⚠️ **6,1 e nao 5,5.** Medido no `ui-sans-serif` do tema a 11 px: minuscula de largura media
+ * fica em ~5,6, maiuscula em ~7,2, digito em ~6,3. Rotulo de mesa e cheio de digito e de
+ * maiuscula ("WINV26 · 138.420"), entao a media de texto corrido subestimaria justamente o
+ * caso comum. Errar para cima e o lado seguro — ver `ScreenText`.
+ */
+export const LARGURA_MEDIA_DE_CARACTERE_PX = 6.1;
+/** Corpo da fonte dos rotulos, em pixel CSS. */
+export const TEXT_FONT_SIZE_PX = 11;
+/** Folga interna da caixa de fundo, em pixel. */
+export const TEXT_PADDING_PX = 4;
+/** Altura da caixa de fundo: corpo mais folga em cima e embaixo. */
+export const TEXT_BOX_HEIGHT_PX = TEXT_FONT_SIZE_PX + TEXT_PADDING_PX * 2;
+
+/** Largura estimada da caixa de um texto. Ver `LARGURA_MEDIA_DE_CARACTERE_PX`. */
+export function larguraDeTextoEstimada(texto: string): number {
+  return texto.length * LARGURA_MEDIA_DE_CARACTERE_PX + TEXT_PADDING_PX * 2;
+}
+
 export interface ScreenDrawing {
   readonly id: string;
   readonly kind: DrawingKind;
@@ -197,7 +241,20 @@ export interface ScreenDrawing {
    * Vazio para todo desenho que nao seja posicao.
    */
   readonly zonas: readonly { readonly box: Box; readonly cor: string }[];
-  /** Caixa envolvente COM a folga de tolerancia, para o prefiltro. */
+  /**
+   * ⭐ Textos a pintar. Vazio quando o desenho nao tem rotulo.
+   *
+   * Vale para TODA ferramenta, e nao so para a nota: `style.label` existia no modelo desde o
+   * inicio e nunca era pintado. Ver `labelOf` no modelo.
+   */
+  readonly texts: readonly ScreenText[];
+  /**
+   * Caixa envolvente COM a folga de tolerancia, para o prefiltro.
+   *
+   * ⚠️ Inclui a caixa dos TEXTOS. Sem isso o prefiltro rejeitaria o ponteiro antes de a
+   * distancia exata ser calculada e clicar num rotulo que esta na tela nao selecionaria nada —
+   * a mesma classe de defeito que a folga de tolerancia do `hitTest` ja documentou.
+   */
   readonly box: Box;
   /** Bloqueado: pinta, mas nao participa do hit-test. */
   readonly locked: boolean;
@@ -272,7 +329,17 @@ export function buildRenderPlan(
   return { epoch, items, culled, dropped };
 }
 
-/** Projeta um desenho. `null` = nao projetavel ou fora da area visivel. */
+/**
+ * A forma antes do rotulo.
+ *
+ * ⭐ O rotulo e anexado FORA do `switch`, por `projectOne`. Poe-lo dentro obrigaria as vinte
+ * ferramentas a repetir a mesma colocacao de caixa de texto, e a vigesima primeira nasceria sem
+ * rotulo em silencio — exatamente o defeito que `createDrawing` documenta sobre campo novo
+ * esquecido numa copia campo-a-campo.
+ */
+type FormaSemTexto = Omit<ScreenDrawing, 'texts'>;
+
+/** Projeta um desenho, forma e rotulo. `null` = nao projetavel ou fora da area visivel. */
 function projectOne(
   d: Drawing,
   conv: LogicalToScreen,
@@ -280,6 +347,67 @@ function projectOne(
   largura: number,
   altura: number,
 ): ScreenDrawing | null {
+  const forma = projectShape(d, conv, recorte, largura, altura);
+  if (forma === null) return null;
+
+  const texts = textosDe(d, forma, largura);
+  if (texts.length === 0) return { ...forma, texts };
+
+  // A caixa cresce para cobrir o rotulo — ver a nota em `ScreenDrawing.box`.
+  let { minX, maxX, minY, maxY } = forma.box;
+  for (const t of texts) {
+    if (t.box.minX < minX) minX = t.box.minX;
+    if (t.box.maxX > maxX) maxX = t.box.maxX;
+    if (t.box.minY < minY) minY = t.box.minY;
+    if (t.box.maxY > maxY) maxY = t.box.maxY;
+  }
+  return { ...forma, texts, box: { minX, maxX, minY, maxY } };
+}
+
+/**
+ * Onde o rotulo de cada ferramenta fica.
+ *
+ * ⭐ Duas colocacoes, e a diferenca e de natureza:
+ *
+ *  - na **nota**, o texto E o desenho: a caixa nasce ao LADO da ancora, para a alca continuar
+ *    visivel e arrastavel (caixa centrada na ancora cobriria a propria alca, e o operador nao
+ *    teria como mover a nota);
+ *  - em **qualquer outra**, o texto e legenda: fica ACIMA da primeira ancora, deslocado o
+ *    bastante para nao cobrir o traco que ele nomeia.
+ *
+ * ⚠️ A caixa e empurrada para DENTRO da area visivel quando estoura a borda direita. Rotulo
+ * cortado pela metade e pior que rotulo deslocado: o operador le "WINV" e nao sabe se o resto
+ * existe.
+ */
+function textosDe(d: Drawing, forma: FormaSemTexto, largura: number): readonly ScreenText[] {
+  const texto = labelOf(d);
+  if (texto === null) return [];
+
+  const p0 = forma.points[0];
+  if (p0 === undefined) return [];
+
+  const w = larguraDeTextoEstimada(texto);
+  const h = TEXT_BOX_HEIGHT_PX;
+
+  const ehNota = d.kind === 'TEXT_NOTE';
+  const xBruto = ehNota ? p0.x + 10 : p0.x;
+  const minY = ehNota ? p0.y - h / 2 : p0.y - h - 6;
+
+  // Recorta so na direita: na esquerda o desenho pode estar legitimamente fora da tela, e
+  // grudar o rotulo em x=0 o mostraria a quilometros do que ele nomeia.
+  const minX = largura > w ? Math.min(xBruto, largura - w) : xBruto;
+
+  return [{ texto, box: { minX, maxX: minX + w, minY, maxY: minY + h } }];
+}
+
+/** A forma pura, sem rotulo. Ver `FormaSemTexto`. */
+function projectShape(
+  d: Drawing,
+  conv: LogicalToScreen,
+  recorte: Box,
+  largura: number,
+  altura: number,
+): FormaSemTexto | null {
   const exigidas = ANCHORS_REQUIRED[d.kind];
   const pontos: Point[] = [];
 
@@ -656,9 +784,303 @@ function projectOne(
         style,
       };
     }
+    case 'PARALLEL_CHANNEL': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+
+      // ⭐⭐ O deslocamento e calculado em PIXEL, a partir do proprio deslocamento da base.
+      //
+      // ⚠️ Poderia ser em PRECO (razao x (precoB - precoA), depois convertido). Foi rejeitado:
+      // em escala LOGARITMICA um deslocamento constante de preco NAO e constante em pixel, e as
+      // duas retas sairiam convergindo. A ferramenta chama-se "paralelo" — o paralelismo e o
+      // contrato visual, e so o espaco de pixel o garante nas duas escalas.
+      //
+      // ⭐ E o SINAL cai certo de graca: em alta (`p1.y < p0.y`, porque y cresce para baixo) o
+      // deslocamento e negativo e a segunda reta nasce ACIMA da base — que e onde se quer o
+      // teto de um canal tracado pelos fundos. Em queda, abaixo. Nenhum caso especial.
+      const deslocamento = (p1.y - p0.y) * channelWidthRatioOf(d);
+
+      // ⚠️ Base horizontal e DEGENERADA, e degrada para a reta de base em vez de inventar
+      // largura — ver `PARALLEL_CHANNEL` no modelo. O piso e 1 px porque abaixo disso as duas
+      // retas caem no mesmo pixel e o canal fica indistinguivel de uma linha de tendencia.
+      const degenerado = Math.abs(deslocamento) < 1;
+
+      const q0: Point = { x: p0.x, y: p0.y + deslocamento };
+      const q1: Point = { x: p1.x, y: p1.y + deslocamento };
+
+      const strokes: Stroke[] = degenerado
+        ? [{ a: p0, b: p1 }]
+        : [
+            { a: p0, b: p1 },
+            { a: q0, b: q1 },
+          ];
+
+      const caixa = boxOfPoints(degenerado ? [p0, p1] : [p0, p1, q0, q1], HIT_TOLERANCE_PX);
+      if (caixa === null) return null;
+      if (!boxesIntersect(caixa, recorte)) return null;
+
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes,
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: caixa,
+        locked,
+        style,
+      };
+    }
+
+    case 'ELLIPSE': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+
+      const cx = (p0.x + p1.x) / 2;
+      const cy = (p0.y + p1.y) / 2;
+      const rx = Math.abs(p1.x - p0.x) / 2;
+      const ry = Math.abs(p1.y - p0.y) / 2;
+
+      const caixa: Box = {
+        minX: cx - rx - HIT_TOLERANCE_PX,
+        maxX: cx + rx + HIT_TOLERANCE_PX,
+        minY: cy - ry - HIT_TOLERANCE_PX,
+        maxY: cy + ry + HIT_TOLERANCE_PX,
+      };
+      if (!boxesIntersect(caixa, recorte)) return null;
+
+      // ⚠️ Elipse de raio nulo num dos eixos nao e elipse: a polilinha viraria um vai-e-vem
+      // sobre o mesmo segmento, com o dobro dos tracos e nada a mais na tela. Degrada para a
+      // diagonal, que e informacao verdadeira (o operador ainda esta arrastando).
+      if (rx < 1 || ry < 1) {
+        return {
+          id: d.id,
+          kind: d.kind,
+          points: pontos,
+          strokes: [{ a: p0, b: p1 }],
+          region: null,
+          fibLines: [],
+          zonas: [],
+          box: caixa,
+          locked,
+          style,
+        };
+      }
+
+      const n = segmentosDeElipse(rx, ry);
+      const strokes: Stroke[] = [];
+      let anterior: Point = { x: cx + rx, y: cy };
+      for (let i = 1; i <= n; i++) {
+        const ang = (i / n) * Math.PI * 2;
+        const atual: Point = { x: cx + rx * Math.cos(ang), y: cy + ry * Math.sin(ang) };
+        strokes.push({ a: anterior, b: atual });
+        anterior = atual;
+      }
+
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes,
+        // ⚠️ `region` fica NULA mesmo havendo caixa: `region` e o canal de preenchimento, e
+        // preencher a caixa pintaria um RETANGULO onde o operador ve uma elipse.
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: caixa,
+        locked,
+        style,
+      };
+    }
+
+    case 'TEXT_NOTE': {
+      // ⚠️ Sem traco e sem regiao: a forma da nota e o TEXTO, e ele e anexado por `projectOne`
+      // (que tambem cresce a caixa para cobri-lo). Aqui a caixa e so a da alca — se ficasse
+      // vazia, o prefiltro do hit-test rejeitaria a nota antes de olhar o rotulo.
+      if (!isInsideBoxComFolga(recorte, p0, HIT_TOLERANCE_PX)) return null;
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes: [],
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: {
+          minX: p0.x - HANDLE_BOX_PX,
+          maxX: p0.x + HANDLE_BOX_PX,
+          minY: p0.y - HANDLE_BOX_PX,
+          maxY: p0.y + HANDLE_BOX_PX,
+        },
+        locked,
+        style,
+      };
+    }
+
+    case 'ZONE_SUPPLY':
+    case 'ZONE_DEMAND': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+
+      // ⭐ Estende-se para a DIREITA ate a borda, como o raio horizontal: uma zona nao termina
+      // onde o operador parou de arrastar, ela vale ate o preco voltar e consumi-la. O que o
+      // arrasto define e a FAIXA DE PRECO e o instante em que ela nasceu.
+      const minX = Math.min(p0.x, p1.x);
+      const zona: Box = {
+        minX,
+        maxX: largura,
+        minY: Math.min(p0.y, p1.y),
+        maxY: Math.max(p0.y, p1.y),
+      };
+
+      const envolvente: Box = {
+        minX: minX - HIT_TOLERANCE_PX,
+        maxX: largura,
+        minY: zona.minY - HIT_TOLERANCE_PX,
+        maxY: zona.maxY + HIT_TOLERANCE_PX,
+      };
+      if (!boxesIntersect(envolvente, recorte)) return null;
+
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        // ⚠️ Duas bordas, e o INTERIOR nao e acertavel de proposito (nao ha `region`). Uma zona
+        // de oferta cobre metade da tela com frequencia; capturar o clique dentro dela mataria
+        // o pan justamente na regiao que o operador mais quer examinar. Mesma decisao do
+        // retangulo sem preenchimento.
+        strokes: [
+          { a: { x: minX, y: zona.minY }, b: { x: largura, y: zona.minY } },
+          { a: { x: minX, y: zona.maxY }, b: { x: largura, y: zona.maxY } },
+        ],
+        region: null,
+        fibLines: [],
+        zonas: [{ box: zona, cor: d.kind === 'ZONE_SUPPLY' ? ZONE_SUPPLY_COLOR : ZONE_DEMAND_COLOR }],
+        box: envolvente,
+        locked,
+        style,
+      };
+    }
+
+    case 'FIB_FAN': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+
+      // ⭐ Cada nivel e um RAIO que sai da primeira ancora e passa pelo nivel de retracao
+      // medido na coluna da segunda. E o que diferencia o leque da retracao: ali os niveis sao
+      // horizontais (um preco), aqui sao inclinados (um preco que anda com o tempo).
+      const strokes: Stroke[] = [];
+      const pontasParaCaixa: Point[] = [p0, p1];
+      for (const level of fibLevelsOf(d)) {
+        const alvo: Point = { x: p1.x, y: lerp(p0.y, p1.y, level) };
+        // Recorte na borda em vez de coordenada gigante — mesma razao do `RAY`.
+        const recortado = extendLineToBox(p0.x, p0.y, alvo.x, alvo.y, recorte, 'RAY_FORWARD');
+        if (recortado === null) continue;
+        strokes.push({ a: recortado[0], b: recortado[1] });
+        pontasParaCaixa.push(recortado[0], recortado[1]);
+      }
+      // ⚠️ Nenhum raio cruza a area visivel: nada a desenhar. Devolver o desenho com `strokes`
+      // vazio o deixaria acertavel por uma caixa sem nada dentro.
+      if (strokes.length === 0) return null;
+
+      const caixa = boxOfPoints(pontasParaCaixa, HIT_TOLERANCE_PX);
+      if (caixa === null) return null;
+
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes,
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: caixa,
+        locked,
+        style,
+      };
+    }
+
+    case 'FIB_TIME_ZONES': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+
+      // ⭐⭐ A extrapolacao e em PIXEL (`x0 + n * (x1 - x0)`), e nao em segundos.
+      //
+      // ⚠️ Duas razoes, e as duas sao defeito evitado. Primeira: o eixo desta biblioteca e
+      // LOGICO — as barras sao equidistantes e o fim de semana nao ocupa espaco. "Tres
+      // intervalos adiante" em segundos cairia dentro do sabado e sairia na tela onde nao ha
+      // barra. Segunda: `timeToX` resolve por barra MAIS PROXIMA, e um instante depois da
+      // ultima barra projeta na ultima barra — todas as verticais futuras empilhariam no mesmo
+      // pixel da borda direita, e a ferramenta pareceria desenhar uma linha so.
+      const dx = p1.x - p0.x;
+      const strokes: Stroke[] = [];
+      const xs: number[] = [p0.x];
+      // ⚠️ Intervalo de largura zero nao projeta nada: `n * 0` cai sempre na propria ancora.
+      // Degrada para a vertical de partida, que e o que o operador ja marcou.
+      if (Math.abs(dx) >= 1) {
+        for (const level of fibLevelsOf(d)) {
+          const x = p0.x + dx * level;
+          if (x < recorte.minX || x > recorte.maxX) continue;
+          strokes.push({ a: { x, y: 0 }, b: { x, y: altura } });
+          xs.push(x);
+        }
+      }
+      if (strokes.length === 0) {
+        if (p0.x < recorte.minX || p0.x > recorte.maxX) return null;
+        strokes.push({ a: { x: p0.x, y: 0 }, b: { x: p0.x, y: altura } });
+      }
+
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes,
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: {
+          minX: Math.min(...xs) - HIT_TOLERANCE_PX,
+          maxX: Math.max(...xs) + HIT_TOLERANCE_PX,
+          minY: 0,
+          maxY: altura,
+        },
+        locked,
+        style,
+      };
+    }
+
     default: {
       // Ferramenta nova sem projecao: nao desenha, em vez de desenhar errado.
       return null;
     }
   }
+}
+
+/**
+ * Quantos segmentos aproximam uma elipse.
+ *
+ * ⚠️ Nao e constante: 24 segmentos numa elipse de 40 px de raio sao lisos, e numa de 400 px
+ * viram um poligono visivel. E 72 segmentos numa elipse pequena sao 72 tracos para pintar 30
+ * pixels de contorno — custo puro, tanto na pintura quanto no hit-test, que percorre todo
+ * traco.
+ *
+ * A conta: um segmento a cada ~8 px de perimetro (aproximacao de Ramanujan e caro demais para
+ * isto; a media dos raios erra pouco e nao divide nada por zero), recortado em 24..72.
+ */
+function segmentosDeElipse(rx: number, ry: number): number {
+  const perimetroAproximado = Math.PI * (rx + ry);
+  return Math.min(72, Math.max(24, Math.round(perimetroAproximado / 8)));
+}
+
+/** Meia-largura da caixa de acerto de uma ancora solitaria (nota). */
+const HANDLE_BOX_PX = 10;
+
+function isInsideBoxComFolga(box: Box, p: Point, folga: number): boolean {
+  return (
+    p.x >= box.minX - folga &&
+    p.x <= box.maxX + folga &&
+    p.y >= box.minY - folga &&
+    p.y <= box.maxY + folga
+  );
 }

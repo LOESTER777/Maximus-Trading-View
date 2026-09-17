@@ -124,6 +124,58 @@ const AJUDA: Readonly<Record<DrawingKind, AjudaDeFerramenta>> = Object.freeze({
     passos: ['Clique na ENTRADA.', 'Arraste até o STOP (acima) e solte.'],
     ajuste: 'Espelho da compra: stop acima, alvo abaixo, e o alvo continua derivado do múltiplo de risco.',
   },
+  PARALLEL_CHANNEL: {
+    nome: 'Canal paralelo',
+    passos: [
+      'Clique no início da reta de base (dois fundos, numa alta).',
+      'Arraste até o fim dela e solte. A reta paralela sai do outro lado.',
+    ],
+    // ⭐ Duas coisas que o operador descobriria errando: que não há terceiro clique, e que base
+    // horizontal não vira canal.
+    ajuste:
+      'Não há terceiro clique: a largura é um MÚLTIPLO do próprio movimento da base (1x por default). Base horizontal não forma canal — para faixa reta use o retângulo ou uma zona.',
+  },
+  ELLIPSE: {
+    nome: 'Elipse',
+    passos: ['Clique num canto da área.', 'Arraste até o canto oposto: a elipse fica inscrita nele.'],
+    ajuste: 'Só contorno, sem preenchimento — o miolo continua livre para dar pan no gráfico.',
+  },
+  TEXT_NOTE: {
+    nome: 'Nota de texto',
+    passos: ['Um clique onde a nota deve ficar.'],
+    ajuste:
+      'Nasce escrito "Nota" e o texto se edita com ela selecionada. O mesmo rótulo pode ser posto em QUALQUER desenho, não só aqui.',
+  },
+  ZONE_SUPPLY: {
+    nome: 'Zona de oferta',
+    passos: [
+      'Clique no topo da faixa onde apareceu vendedor.',
+      'Arraste até a base dela e solte.',
+    ],
+    // ⭐ A diferença em relação ao retângulo é a razão de a ferramenta existir.
+    ajuste:
+      'Vale do ponto marcado para a DIREITA, até a borda — uma zona não termina onde você parou de arrastar. A cor é fixa: vermelho é vendedor.',
+  },
+  ZONE_DEMAND: {
+    nome: 'Zona de demanda',
+    passos: ['Clique no topo da faixa onde apareceu comprador.', 'Arraste até a base dela e solte.'],
+    ajuste: 'Espelho da oferta, em verde. Estende-se para a direita pelo mesmo motivo.',
+  },
+  FIB_FAN: {
+    nome: 'Leque de Fibonacci',
+    passos: ['Clique no início do movimento.', 'Clique no fim: os níveis saem INCLINADOS, em leque.'],
+    ajuste:
+      'Responde onde o suporte está em CADA instante, e não num preço só — é a diferença em relação à retração.',
+  },
+  FIB_TIME_ZONES: {
+    nome: 'Zonas de tempo de Fibonacci',
+    passos: [
+      'Clique no início do intervalo de referência.',
+      'Arraste até o fim dele: saem verticais em 1, 2, 3, 5, 8, 13 e 21 intervalos.',
+    ],
+    // ⚠️ É a única ferramenta de Fibonacci que mede tempo, e quem espera 61,8% se confunde.
+    ajuste: 'Mede TEMPO, não preço: os níveis são os números da sequência, e não as razões.',
+  },
 });
 
 /**

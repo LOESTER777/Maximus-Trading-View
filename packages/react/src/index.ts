@@ -242,6 +242,12 @@ export type {
 export { ToolHelpStrip } from './ToolHelpStrip.js';
 export type { ToolHelpStripProps } from './ToolHelpStrip.js';
 
+// ⭐ O editor do ROTULO do desenho selecionado. Nasceu para a ferramenta de nota e serve a
+// qualquer desenho — `DrawingStyle.label` existia desde o inicio e nunca era editavel nem
+// pintado. Ver o cabecalho de `DrawingLabelEditor.tsx`.
+export { DrawingLabelEditor, MAX_ROTULO_DE_DESENHO } from './DrawingLabelEditor.js';
+export type { DrawingLabelEditorProps } from './DrawingLabelEditor.js';
+
 // ⭐⭐ O CROMO de sub-painel em HTML sobre o canvas: alca de arrasto para REORDENAR, nome, cor e
 // acoes. Ver `PaneChrome.tsx` — HTML para o cromo, canvas para o dado. Dividir em N canvas foi
 // RECUSADO (o crosshair pararia de atravessar as panes e voltariam N janelas que divergem).

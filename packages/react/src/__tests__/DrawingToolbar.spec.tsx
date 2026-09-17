@@ -243,12 +243,16 @@ describe('DrawingToolbar — estrutura e grupos', () => {
     const barra = screen.getByRole('toolbar', { name: 'Ferramentas de desenho' });
     expect(barra.getAttribute('aria-orientation')).toBe('vertical');
 
-    // As seis familias, cada uma anunciada por nome — e o que da o "para que"
-    // antes de qualquer texto.
+    // Cada grupo anunciado por nome — e o que da o "para que" antes de qualquer texto.
+    //
+    // ⭐ `Anotação` entrou como grupo próprio na rodada das sete ferramentas novas, e `Formas`
+    // virou `Formas e zonas`. A separação é por ATO: delimitar uma área, afirmar de que lado
+    // está a pressão, e dizer algo a quem olha depois.
     for (const nome of [
       'Selecionar',
       'Linhas',
-      'Formas',
+      'Formas e zonas',
+      'Anotação',
       'Medição',
       'Ajuda de precisão',
       'Histórico',
@@ -260,9 +264,9 @@ describe('DrawingToolbar — estrutura e grupos', () => {
     // forma nem medida, e a pergunta que precede a ordem — quanto se perde estando errado e
     // quanto se ganha estando certo.
     expect(within(barra).getByRole('group', { name: 'Posição' })).toBeTruthy();
-    // Separador visual entre grupos: um a menos que o numero de familias, nunca um solto no
-    // fim. Sete familias agora.
-    expect(within(barra).getAllByRole('separator')).toHaveLength(6);
+    // Separador visual entre grupos: um a menos que o numero de grupos, nunca um solto no
+    // fim. Oito grupos agora (entrou `Anotação`).
+    expect(within(barra).getAllByRole('separator')).toHaveLength(7);
   });
 
   it('⭐ NENHUM atalho e usado por duas ferramentas', () => {
@@ -593,15 +597,19 @@ describe('⭐⭐ familias de ferramenta', () => {
     render(<DrawingToolbar drawings={d} onToggleSnap={() => undefined} />);
     const barra = screen.getByRole('toolbar');
     const alvos = within(barra).getAllByRole('button');
-    // Antes eram 18 (17 itens + recolher). Agora: cursor, 3 familias, 2 formas, ima, 3 de
-    // historico. O ganho e de LEITURA, e por isso e medido.
-    expect(alvos.length).toBeLessThanOrEqual(11);
+    // ⭐⭐ O que se mede e a RAZAO entre ferramentas e alvos, nao o numero absoluto.
+    //
+    // Historico: 13 ferramentas em 18 alvos -> 11 alvos. Depois das sete novas: **20 ferramentas
+    // em 13 alvos** (cursor, 1 familia de linhas, 2 de formas/zonas, 1 de anotacao, 1 de
+    // medicao, 1 de posicao, ima, 3 de historico, recolher). Sete ferramentas entraram e a barra
+    // cresceu DOIS alvos — que e exatamente o ponto de existir familia.
+    expect(alvos.length).toBeLessThanOrEqual(13);
 
-    // E as seis linhas continuam alcancaveis, uma a uma.
+    // E as SETE linhas continuam alcancaveis, uma a uma (entrou o canal paralelo).
     const familiaLinhas = within(barra).getByRole('button', { name: /Linha de tend|Raio|Reta|vertical/ });
     fireEvent.contextMenu(familiaLinhas);
     const variantes = within(barra).getAllByRole('menuitemradio');
-    expect(variantes).toHaveLength(6);
+    expect(variantes).toHaveLength(7);
   });
 
   it('⭐⭐ escolher no menu ARMA a ferramenta e passa a ser a exibida', () => {
@@ -675,7 +683,7 @@ describe('⭐⭐ familias de ferramenta', () => {
 
     fireEvent.keyDown(familia, { key: 'ArrowDown', altKey: true });
     expect(familia.getAttribute('aria-expanded')).toBe('true');
-    expect(screen.getAllByRole('menuitemradio').length).toBe(6);
+    expect(screen.getAllByRole('menuitemradio').length).toBe(7);
 
     fireEvent.keyDown(screen.getAllByRole('menuitemradio')[0] as HTMLElement, { key: 'Escape' });
     expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);

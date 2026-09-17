@@ -97,6 +97,16 @@ export {
   FIB_EXTENSION_LEVELS_DEFAULT,
   R_MULTIPLE_DEFAULT,
   rMultipleOf,
+  // ⭐ Rodada das sete ferramentas novas: zonas de TEMPO de Fibonacci, largura do canal
+  // paralelo, cores fixas das zonas de oferta/demanda e o rotulo (que vale para toda
+  // ferramenta, nao so para a nota).
+  FIB_TIME_LEVELS_DEFAULT,
+  CHANNEL_WIDTH_RATIO_DEFAULT,
+  ZONE_SUPPLY_COLOR,
+  ZONE_DEMAND_COLOR,
+  TEXT_NOTE_PLACEHOLDER,
+  channelWidthRatioOf,
+  labelOf,
   createDefaultIdFactory,
   createDrawing,
   fibLevelsOf,
@@ -152,6 +162,14 @@ export type { Box, Point } from './geometry.core.js';
 export {
   DEFAULT_COLOR,
   MAX_DRAWINGS_DEFAULT,
+  // ⭐ Metrica de texto do plano. Exportada porque quem quiser posicionar um rotulo em HTML
+  // sobre o canvas precisa da MESMA estimativa que o hit-test usa — duas contas divergiriam e o
+  // rotulo apareceria num lugar e pegaria clique noutro.
+  LARGURA_MEDIA_DE_CARACTERE_PX,
+  TEXT_BOX_HEIGHT_PX,
+  TEXT_FONT_SIZE_PX,
+  TEXT_PADDING_PX,
+  larguraDeTextoEstimada,
   buildRenderPlan,
   resolveStyle,
   sameEpoch,
@@ -163,6 +181,7 @@ export type {
   RenderPlan,
   ResolvedStyle,
   ScreenDrawing,
+  ScreenText,
   Stroke,
   ViewportEpoch,
 } from './render-plan.core.js';

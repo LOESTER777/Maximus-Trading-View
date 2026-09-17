@@ -109,7 +109,17 @@ export type IconName =
   | 'close'
   | 'layers'
   | 'crosshair'
-  | 'help';
+  | 'help'
+  // ⭐ As sete ferramentas de desenho da rodada. Mesma regra dos demais: traco em
+  // `currentColor`, desenho dentro de 3..21, e o icone imita a FORMA que a ferramenta produz —
+  // e nao um simbolo abstrato. Icone que não parece o resultado obriga a decorar a barra.
+  | 'parallelChannel'
+  | 'ellipse'
+  | 'textNote'
+  | 'zoneSupply'
+  | 'zoneDemand'
+  | 'fibFan'
+  | 'fibTimeZones';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // A geometria
@@ -162,6 +172,53 @@ const GEOMETRIA: Readonly<Record<IconName, ReactNode>> = {
     </>
   ),
   rectangle: <rect x="4" y="6" width="16" height="12" rx="1.5" />,
+  // Duas retas paralelas com as alcas na de BASE: e a base que se arrasta, a de cima e derivada.
+  parallelChannel: (
+    <>
+      <line x1="4" y1="19" x2="20" y2="9" />
+      <line x1="4" y1="14" x2="20" y2="4" />
+      <circle cx="4" cy="19" r="1.7" />
+      <circle cx="20" cy="9" r="1.7" />
+    </>
+  ),
+  ellipse: <ellipse cx="12" cy="12" rx="8.5" ry="6" />,
+  // Caixa de texto com uma linha de escrita dentro, e a ponta que ancora no preco.
+  textNote: (
+    <>
+      <rect x="4" y="5" width="16" height="11" rx="1.5" />
+      <line x1="7.5" y1="10.5" x2="16.5" y2="10.5" />
+      <path d="M8 16l-1.5 4 4.5-4" />
+    </>
+  ),
+  // Zona de oferta: faixa no ALTO que segue para a direita (a seta), porque a zona nao termina
+  // onde o arrasto parou.
+  zoneSupply: (
+    <>
+      <rect x="4" y="5" width="12" height="5.5" rx="1" opacity="0.45" />
+      <path d="M4 5h16M4 10.5h16" />
+      <path d="M16 18h4m-3-2l2 2-2 2" />
+    </>
+  ),
+  zoneDemand: (
+    <>
+      <rect x="4" y="13.5" width="12" height="5.5" rx="1" opacity="0.45" />
+      <path d="M4 13.5h16M4 19h16" />
+      <path d="M16 6h4m-3-2l2 2-2 2" />
+    </>
+  ),
+  // Leque: raios saindo de UM ponto — o que distingue do fibonacci, cujos niveis sao paralelos.
+  fibFan: (
+    <>
+      <path d="M4 20L20 4M4 20L20 10M4 20L20 15M4 20h16" />
+      <circle cx="4" cy="20" r="1.8" fill="currentColor" stroke="none" />
+    </>
+  ),
+  // Zonas de tempo: verticais com espacamento CRESCENTE, que e a sequencia de Fibonacci vista.
+  fibTimeZones: (
+    <>
+      <path d="M4 4v16M6 4v16M9 4v16M14 4v16M21 4v16" />
+    </>
+  ),
   // ⭐ Ícones das ferramentas novas. Todos em traço, 24×24, `currentColor` — a mesma regra
   // dos existentes: o ícone herda a cor do estado (ativo/inativo) sem duas variantes.
   horizontalRay: (
