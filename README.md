@@ -11,7 +11,7 @@ anotações — sem depender de provedor de gráfico de terceiro.
 
 ```bash
 npm install
-npm test              # 1949 testes, 99 arquivos
+npm test              # 2171 testes, 107 arquivos
 npm run build         # compila todos os pacotes
 npm run verify        # typecheck + typecheck do playground + extensão ESM + testes
 npm run smoke:consumo # ⭐ prova que o pacote PUBLICADO instala e importa
@@ -26,16 +26,16 @@ projeto](#consumindo-em-outro-projeto).
 
 | Pacote | O que é | DOM? |
 |---|---|---|
-| `@robustus/charts-core` | Núcleos puros: agregação por zoom, escala de cor por percentil, decodificação colunar, perfil de volume, footprint | **não** |
-| `@robustus/charts-indicators` | 29 indicadores incrementais (`warmup`+`update`+`preview` O(1)) | **não** |
+| `@robustus/charts-core` | Núcleos puros: agregação por zoom, escala de cor por percentil, decodificação colunar, perfil de volume, footprint, **escada lateral do bookmap** (`bookmap-lateral.core`) | **não** |
+| `@robustus/charts-indicators` | **45 indicadores** incrementais (`warmup`+`update`+`preview` O(1)): médias, osciladores, **fluxo de ordem** (delta, CVD, delta ratio), médias adaptativas (HMA, KAMA, LSMA, TRIX), osciladores de regime (PPO, Stoch RSI, Aroon, Chop, BOP, ADL, Force Index, Elder Ray) | **não** |
 | `@robustus/charts-alerts` | Motor puro de alerta de preço, máquina ARMED→TRIGGERED sem repique | **não** |
 | `@robustus/charts-replay` | Replay de mercado determinístico, relógio injetado, pausa no fim | **não** |
 | `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados: dia de mercado, HTTP bars/depth, WS ao vivo com reconexão, agregador de timeframes | tipos¹ |
 | `@robustus/chart-core` | **Motor de renderização próprio** em canvas: eixo de tempo com sessão irregular, autoescala por escala de preço, pan/zoom, pinça em touch, crosshair com rótulos, sub-painéis em **grade** (empilhados ou em colunas), marcadores com forma, banda, formatação de preço por tick, exportar imagem | sim |
 | `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive`, `VolumeProfilePrimitive` | sim |
-| `@robustus/charts-drawings` | 13 ferramentas de desenho, hit-test priorizado, ímã ao OHLC, desfazer/refazer, persistência versionada | sim |
+| `@robustus/charts-drawings` | **20 ferramentas de desenho** (linha, raio, reta, horizontal, raio horizontal, vertical, retângulo, seta, nota de texto, régua, retrações e extensões de Fibonacci, **leque de Fibonacci, zonas de tempo de Fibonacci**, **canal paralelo, elipse, zonas de oferta e demanda**, posição long/short), hit-test priorizado, **rótulos editáveis**, ímã ao OHLC, desfazer/refazer, persistência versionada | sim |
 | `@robustus/charts-engine` | Motor sem framework + persistência de layout (`serializeChartState`) + setups nomeados (`layout-templates.core`) + **abas por ativo** (`chart-workspace.core`) | sim |
-| `@robustus/charts-react` | Hooks finos (`useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, `useHistoryBackfill`, `useChartSync`, `useVisibleTimeRange`, `useLayerLegends`, `useSymbolWorkspace`), UI própria (`ChartToolbar`, `DrawingToolbar`, `IndicatorToolbox`, `CommandPalette`, `ChartLegend`, `TimeframeSelector`, `SymbolTabs`, `ChartGrid`, `ObjectTree`, `AssetReadout`, `CorrelationInset`) e `<RobustusChart />` | sim |
+| `@robustus/charts-react` | Hooks finos (`useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, `useHistoryBackfill`, `useChartSync`, `useVisibleTimeRange`, `useLayerLegends`, `useSymbolWorkspace`), UI própria (`ChartToolbar` **com famílias e zoom configurável**, `DrawingToolbar`, **`DrawingLabelEditor`**, `IndicatorToolbox`, `CommandPalette`, `ChartLegend`, `TimeframeSelector`, `SymbolTabs`, `ChartGrid`, `ObjectTree`, `AssetReadout`, `CorrelationInset`, **`PaneChrome` com arrastar para reordenar**, **`ToolHelpStrip`**) e `<RobustusChart />` | sim |
 | `@robustus/charts-devtools` | Bancada de desempenho com dublês de canvas — **não publicável** (`private: true`) | sim |
 
 ¹ `charts-datafeed` **roda** em Node (o `fetch` é injetado, o pacote não o
@@ -43,15 +43,21 @@ importa), mas seus tipos citam `Response`, `AbortSignal` e `WebSocket`. Em
 projeto Node com `lib` sem `DOM` o *runtime* funciona e o *typecheck* reclama —
 adicione `"DOM"` à `lib` do consumidor ou use um `@types/node` recente.
 
-Os 29 indicadores: SMA, EMA, WMA, RMA, DEMA, TEMA, RSI, Stochastic, CCI,
+Os 45 indicadores: SMA, EMA, WMA, RMA, DEMA, TEMA, RSI, Stochastic, CCI,
 Williams %R, ROC, Momentum, ATR, StdDev, Bollinger, Keltner, MACD, ADX, OBV,
 VWAP, SuperTrend, Parabolic SAR, Ichimoku, Donchian, VWAP com bandas, MFI, CMF,
-Awesome Oscillator e Pivot Points.
+Awesome Oscillator, Pivot Points, **Delta, CVD (Cumulative Volume Delta), Delta
+Ratio, HMA (Hull Moving Average), VWMA (Volume-Weighted MA), KAMA (Kaufman
+Adaptive MA), LSMA (Least Squares MA), TRIX, PPO (Percentage Price Oscillator),
+Stochastic RSI, Aroon, Choppiness Index, Balance of Power, Accumulation/Distribution
+Line, Force Index e Elder Ray** (Bull/Bear Power).
 
-As 13 ferramentas de desenho: linha de tendência, raio, reta infinita, linha
-horizontal, raio horizontal, linha vertical, retângulo, seta, régua, retração e
-extensão de Fibonacci, e posição de compra/venda (entrada + stop, com o alvo
-derivado do múltiplo de risco e as zonas pintadas na proporção).
+As 20 ferramentas de desenho: linha de tendência, raio, reta infinita, linha
+horizontal, raio horizontal, linha vertical, retângulo, **elipse**, seta, **nota
+de texto**, régua, retração e extensão de Fibonacci, **leque de Fibonacci, zonas
+de tempo de Fibonacci, canal paralelo, zonas de oferta e demanda**, e posição de
+compra/venda (entrada + stop, com o alvo derivado do múltiplo de risco e as zonas
+pintadas na proporção).
 
 ## Consumindo em outro projeto
 
@@ -281,10 +287,22 @@ importam `vitest` e `fast-check`, que não são dependência dos pacotes. O
   configuráveis (ou automáticas pela largura). Quatro osciladores em duas colunas
   ocupam duas faixas em vez de quatro, e o preço recupera o resto. Altura e largura
   ajustáveis à mão pelas divisórias, e o ajuste sobrevive a ligar outro indicador.
-- **Ferramentas de desenho:** 13 delas — linha, raio, reta, horizontal, raio
-  horizontal, vertical, retângulo, seta, régua, retração e extensão de Fibonacci,
-  e posição de compra/venda com risco-retorno — todas com ímã ao OHLC, seleção,
-  edição por alça e histórico.
+  **Cromo HTML sobre canvas** (`PaneChrome`) permite **arrastar sub-painel para
+  reordenar** com mouse ou teclado (`Alt+setas`).
+- **Ferramentas de desenho:** 20 delas — linha, raio, reta, horizontal, raio
+  horizontal, vertical, retângulo, **elipse**, seta, **nota de texto**, régua,
+  retração e extensão de Fibonacci, **leque de Fibonacci, zonas de tempo de
+  Fibonacci, canal paralelo, zonas de oferta e demanda**, e posição de compra/venda
+  com risco-retorno — todas com ímã ao OHLC, seleção, **rótulos editáveis**
+  (`DrawingLabelEditor`), edição por alça e histórico. **Barra de ferramentas com
+  famílias** (variantes agrupadas por conceito), cores VIVAS por grupo, **zoom
+  configurável** (12–28px) e **auxílio de passos** (`ToolHelpStrip`) que explica o
+  gesto de cada ferramenta.
+- ⭐ **Bookmap expandido:** cinco **métricas configuráveis** (FILA, EXECUÇÃO, AMBAS,
+  DELTA, VOLUME) acessíveis pela paleta de comandos, **escada lateral** com perfil
+  acumulado por preço (compete com o perfil de volume pela mesma faixa), e **escala
+  temporal** (janela visível vs. dia inteiro) escolhível. Modo de cor térmico
+  (azul → amarelo → branco) além do modo por lado (verde/vermelho).
 - **Alertas de preço:** cruzamento, toque, faixa, variação percentual e cruzamento
   de duas séries, sem repique, e **desenhados no gráfico** com o estado virando
   aparência (armado é tracejado âmbar; disparado é sólido ciano).
@@ -311,7 +329,14 @@ import { RobustusChart } from '@robustus/charts-react';
 <RobustusChart
   options={{ withVolume: true }}
   candles={velas}
-  bookmap={grid ? { grid, metrica: 'AMBAS', escala: 'P99_GAMMA', tickSize: 5 } : null}
+  bookmap={grid ? {
+    grid,
+    metrica: 'AMBAS',      // ou 'FILA' | 'EXECUCAO' | 'DELTA' | 'VOLUME'
+    escala: 'P99_GAMMA',   // ou 'P99_LINEAR' para escala do dia
+    tickSize: 5,
+    modoCor: 'TERMICA',    // ou 'LADO' para verde/vermelho
+    mostrarPerfilLateral: false,  // escada acumulada à direita
+  } : null}
   resetViewportOn={periodo}
   height="520px"
 />
