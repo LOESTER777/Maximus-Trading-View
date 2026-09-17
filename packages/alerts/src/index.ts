@@ -68,3 +68,22 @@ export { createAlert, feed, rearm } from './alert-engine.core.js';
 
 export type { StoreFireEvent } from './alert-store.core.js';
 export { AlertStore } from './alert-store.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// O alerta DESENHADO no grafico — estado vira aparencia
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ Devolve DESCRITOR estrutural, nao importa o motor de grafico: `alerts` e uma ILHA, e
+// amarra-la ao desenho faria quem so vigia nivel num robo sem tela carregar canvas.
+
+export {
+  linhaDeAlerta,
+  linhasDeAlertas,
+  niveisDaCondicao,
+  rotuloDaCondicao,
+  /** As linhas de um alerta, com o ESTADO virando aparencia. Vazio sem nivel fixo. */
+  linhaDeAlerta as alertPriceLines,
+  /** Os niveis que uma condicao vigia. Vazio para PERCENT_CHANGE e SERIES_CROSS. */
+  niveisDaCondicao as conditionLevels,
+} from './alert-line.core.js';
+export type { LinhaDeAlerta as AlertLine } from './alert-line.core.js';

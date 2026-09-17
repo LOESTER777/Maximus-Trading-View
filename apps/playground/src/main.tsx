@@ -99,6 +99,20 @@ import type { SnapBar } from '@robustus/charts-drawings';
 import type { ChartEngine, PriceSeriesType, ChartPriceLine } from '@robustus/charts-engine';
 import { registry } from '@robustus/charts-indicators';
 import type { AlertSpec } from '@robustus/charts-react';
+// ⭐ O alerta DESENHADO: o estado (armado/disparado) virando cor e traço. Ver
+// `alert-line.core.ts` — é núcleo puro, e o pacote de alerta continua sem conhecer canvas.
+import { linhasDeAlertas } from '@robustus/charts-alerts';
+// ⭐ Templates de layout NOMEADOS. Núcleo PURO: a persistência é deste app (`localStorage`), o
+// núcleo só decide o que é nome válido, como a coleção muda e como sobrevive a leitura ruim.
+import {
+  acharTemplate,
+  desserializarTemplates,
+  ordenarParaExibicao,
+  removerTemplate,
+  salvarTemplate,
+  serializarTemplates,
+  type ColecaoDeTemplates,
+} from '@robustus/charts-engine';
 import {
   makeOlderCandles,
   makeSyntheticBundle,
@@ -728,16 +742,29 @@ function App(): JSX.Element {
   }, [indicadores, desenho, alertas.alerts]);
 
 
-  const linhasAlerta = useMemo<ChartPriceLine[]>(
-    () =>
-      alertasLigados
-        ? [
-            { price: niveis.acima, color: '#16c784', title: 'Alerta ↑', lineStyle: 2 },
-            { price: niveis.abaixo, color: '#ea3943', title: 'Alerta ↓', lineStyle: 2 },
-          ]
-        : [],
-    [alertasLigados, niveis],
-  );
+  /**
+   * ⭐ As linhas de alerta com o ESTADO virando aparência.
+   *
+   * ⚠️ Antes eram duas linhas de cor FIXA (verde e vermelho) que nunca mudavam: o alerta
+   * disparava, o painel lateral registrava, e a linha no gráfico continuava idêntica. O
+   * operador olhava um nível achando que ele ainda vigiava algo.
+   *
+   * ⚠️ E a cor era enganosa: verde/vermelho já significam ALTA e BAIXA em todo pixel deste
+   * gráfico (vela, volume, delta, zona de posição), então "alerta em vermelho" era lido como
+   * afirmação sobre o mercado. Agora armado é âmbar tracejado (a cor de ressalva do projeto) e
+   * disparado é ciano sólido — ver `alert-line.core.ts`.
+   */
+  const linhasAlerta = useMemo<ChartPriceLine[]>(() => {
+    if (!alertasLigados) return [];
+    return linhasDeAlertas(
+      alertas.alerts.map(([key, alert]) => ({
+        condicao: alert.condition,
+        estado: alert.state,
+        nome: key === 'cross-acima' ? 'Cruzar ↑' : 'Cruzar ↓',
+      })),
+      1,
+    ) as unknown as ChartPriceLine[];
+  }, [alertasLigados, alertas.alerts]);
 
   // ── Ambiente do motor ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -769,6 +796,76 @@ function App(): JSX.Element {
     a.download = `robustus-${Date.now()}.png`;
     a.click();
   }, [engine]);
+
+  /**
+   * ⭐ TEMPLATES NOMEADOS: os setups do operador.
+   *
+   * ⚠️ Havia UM lugar para salvar, e salvar sobrescrevia. Um operador tem vários setups pelo
+   * mesmo ativo — fluxo, tendência, abertura — e troca entre eles no meio do pregão. Sem nome,
+   * cada troca é reconstruir tudo à mão, e é justamente no pregão que ninguém tem tempo.
+   *
+   * ⚠️ A leitura NUNCA lança: o núcleo descarta item corrompido e devolve avisos. Perder todos
+   * os templates por causa de um corrompido é o desfecho que a validação evita — e um `JSON.parse`
+   * solto num `try` vazio perderia a lista inteira.
+   */
+  const CHAVE_TEMPLATES = 'robustus-templates';
+  const [templates, setTemplates] = useState<ColecaoDeTemplates>(() => {
+    const bruto = localStorage.getItem(CHAVE_TEMPLATES);
+    if (bruto === null) return [];
+    try {
+      return desserializarTemplates(JSON.parse(bruto)).colecao;
+    } catch {
+      // JSON inválido (gravação truncada por cota estourada): começa vazio em vez de derrubar
+      // a montagem do aplicativo.
+      return [];
+    }
+  });
+  const [nomeDoTemplate, setNomeDoTemplate] = useState('');
+
+  /** O documento de estado corrente — o que qualquer "salvar" guarda. */
+  const documentoAtual = useCallback(
+    () =>
+      capture({
+        symbol: simboloExibido,
+        priceSeriesType: serieDoModo(modo),
+        indicators: indicadores.states,
+        alerts: alertSpecs.map((s) => ({ key: s.key, condition: s.condition, mode: s.options?.mode })),
+        drawings: desenho.drawings,
+      }) as unknown as Record<string, unknown>,
+    [alertSpecs, capture, desenho.drawings, indicadores.states, modo, simboloExibido],
+  );
+
+  const gravarTemplates = useCallback((colecao: ColecaoDeTemplates): void => {
+    setTemplates(colecao);
+    try {
+      localStorage.setItem(CHAVE_TEMPLATES, JSON.stringify(serializarTemplates(colecao)));
+    } catch {
+      // ⚠️ Cota de `localStorage` estourada. O estado em memória FICA (o operador não perde o
+      // trabalho da sessão) e a próxima gravação tenta de novo — melhor que derrubar a
+      // interface por causa de armazenamento cheio.
+    }
+  }, []);
+
+  const salvarComoTemplate = useCallback((): void => {
+    const r = salvarTemplate(templates, nomeDoTemplate, documentoAtual(), Math.floor(Date.now() / 1000));
+    if (!r.ok) return;
+    gravarTemplates(r.colecao);
+    setNomeDoTemplate('');
+    setTick((n) => n + 1);
+  }, [documentoAtual, gravarTemplates, nomeDoTemplate, templates]);
+
+  const carregarTemplate = useCallback(
+    (nome: string): void => {
+      const t = acharTemplate(templates, nome);
+      if (t === null) return;
+      const { state } = restore(t.documento);
+      setModo(state.priceSeriesType as ModoGrafico);
+      indicadores.load(state.indicators);
+      desenho.load(state.drawings.drawings as never);
+      setTick((n) => n + 1);
+    },
+    [desenho, indicadores, restore, templates],
+  );
 
   const salvarLayout = useCallback((): void => {
     const doc = capture({
@@ -1220,6 +1317,89 @@ function App(): JSX.Element {
             está na tela, e a caixa é o catálogo do que se pode acrescentar. Ver o que existe
             precede escolher o que somar.
           */}
+          {/*
+            ⭐ TEMPLATES: os setups do operador, com nome. Fica depois da leitura do ativo e
+            antes dos objetos — é configuração de SESSÃO, não do gráfico corrente.
+          */}
+          <CollapsiblePanel
+            title="Meus setups"
+            icon="save"
+            badge={`${templates.length}`}
+            hint="Salve a combinação atual de indicadores, desenhos e alertas com um nome, e volte a ela com um clique. Salvar com um nome que já existe sobrescreve."
+            defaultOpen={false}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <input
+                  value={nomeDoTemplate}
+                  onChange={(e) => setNomeDoTemplate(e.target.value)}
+                  // ⚠️ Enter salva: é o gesto que qualquer campo de nome tem, e obrigar o
+                  // operador a ir com o mouse até o botão no meio do pregão é atrito.
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') salvarComoTemplate();
+                  }}
+                  placeholder="Nome do setup (ex.: Fluxo abertura)"
+                  aria-label="Nome do setup"
+                  maxLength={48}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    background: 'rgba(15,23,42,0.6)',
+                    color: '#cbd5e1',
+                    border: '1px solid rgba(148,163,184,0.28)',
+                    borderRadius: 4,
+                    fontSize: 11,
+                    padding: '3px 6px',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={salvarComoTemplate}
+                  // ⚠️ Desabilitado com nome vazio, em vez de salvar como "sem nome": um item
+                  // sem nome na lista é indistinguível do próximo item sem nome.
+                  disabled={nomeDoTemplate.trim().length === 0}
+                  style={{
+                    fontSize: 11,
+                    padding: '3px 8px',
+                    borderRadius: 4,
+                    border: '1px solid rgba(148,163,184,0.28)',
+                    background: 'rgba(56,189,248,0.12)',
+                    color: '#cbd5e1',
+                    cursor: nomeDoTemplate.trim().length === 0 ? 'not-allowed' : 'pointer',
+                    opacity: nomeDoTemplate.trim().length === 0 ? 0.45 : 1,
+                  }}
+                >
+                  {acharTemplate(templates, nomeDoTemplate) === null ? 'Salvar' : 'Sobrescrever'}
+                </button>
+              </div>
+
+              {/*
+                ⭐ O botão DIZ "Sobrescrever" quando o nome já existe. O núcleo sobrescreve de
+                propósito (recusar obrigaria a inventar "Fluxo 2" para atualizar o setup), mas
+                sobrescrever em silêncio destrói trabalho — o rótulo é o aviso.
+              */}
+              <ObjectTree
+                groups={[
+                  {
+                    id: 'templates',
+                    label: 'Salvos',
+                    emptyHint: 'Nenhum setup salvo. Dê um nome à combinação atual e salve.',
+                    items: ordenarParaExibicao(templates).map((tpl) => ({
+                      id: tpl.nome,
+                      label: tpl.nome,
+                      detail:
+                        tpl.atualizadoEm > 0
+                          ? new Date(tpl.atualizadoEm * 1000).toLocaleDateString('pt-BR')
+                          : undefined,
+                      onSelect: () => carregarTemplate(tpl.nome),
+                      onRemove: () => gravarTemplates(removerTemplate(templates, tpl.nome)),
+                    })),
+                  },
+                ]}
+              />
+            </div>
+          </CollapsiblePanel>
+
           <CollapsiblePanel
             title="Objetos no gráfico"
             icon="settings"
