@@ -419,12 +419,47 @@ export const williamsRFactory: IndicatorFactory = (() => {
 
 /**
  * ROC = 100 * (preco - preco[n atras]) / preco[n atras]. Momentum = preco -
- * preco[n atras] (absoluto). Ambos precisam do preco de `period` barras atras,
- * guardado numa janela de `period+1` posicoes (a mais antiga e o alvo).
+ * preco[n atras] (absoluto).
  *
  * ⚠️ ROC divide pelo preco antigo; se ele for 0, ROC e null (indefinido) em vez
  * de Infinity — preco 0 nao ocorre em mercado real, mas entrada hostil nao pode
  * gerar Infinity.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⚠️⚠️ DEFEITO CORRIGIDO EM 17/09/2026: A DEFASAGEM ERA `period + 1`
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A janela era construida com `period + 1` posicoes, com este raciocinio no
+ * comentario original: *"precisamos manter o valor de `period` barras atras E o
+ * atual"*. O raciocinio esta errado, e o motivo e a ORDEM das operacoes em
+ * `update`: a janela e LIDA antes do `push`, entao o valor atual **nao precisa
+ * caber nela**.
+ *
+ * ⭐ Com `period + 1` e leitura antes do push, no indice `i` a janela contem
+ * `[i-period .. i-1]` mais um elemento a mais, e o `oldest` fica `period + 1`
+ * posicoes atras. Medido com `period = 10`, o defeito era consistente:
+ *
+ * ```
+ * i=11 obtido=0.83  -> defasagem 11   (deveria ser 10)
+ * i=12 obtido=-0.46 -> defasagem 11
+ * i=13 obtido=-2.76 -> defasagem 11
+ * ```
+ *
+ * ⚠️ E ele era INVISIVEL para a suite que existia: `incremental == batch`
+ * passava (os dois caminhos erravam igual) e `preview` nao mutava nada. Um
+ * indicador consistente consigo mesmo e errado contra a definicao passa por
+ * qualquer teste que nao tenha REFERENCIA EXTERNA. Foi o lote 3 de
+ * `valores-conhecidos`, com referencia calculada em Python pela definicao
+ * classica, que expos o desvio.
+ *
+ * ⚠️ Efeito na tela: um `Momentum(10)` que media 11 barras, e um `ROC(9)` que
+ * media 10. Em serie suave a diferenca e pequena; em serie volatil o sinal pode
+ * INVERTER — e o operador leria aceleracao onde havia desaceleracao. Tambem
+ * atrasava a primeira emissao em uma barra.
+ *
+ * ⭐ A janela correta tem exatamente `period` posicoes: no indice `i` ela contem
+ * `[i-period .. i-1]`, o `oldest` e `i-period`, e a defasagem fecha na
+ * definicao.
  */
 class LaggedLogic {
   private readonly win: RingWindow;
@@ -433,8 +468,9 @@ class LaggedLogic {
     private readonly source: PriceSourceLite,
     private readonly mode: 'roc' | 'momentum',
   ) {
-    // period+1: precisamos manter o valor de `period` barras atras E o atual.
-    this.win = new RingWindow(period + 1);
+    // ⚠️ `period`, NAO `period + 1`. Ver a nota longa acima: a janela e lida
+    // ANTES do push, entao o valor atual nao entra na conta de tamanho.
+    this.win = new RingWindow(period);
   }
   private valFrom(oldest: number, current: number): number | null {
     if (this.mode === 'momentum') return current - oldest;

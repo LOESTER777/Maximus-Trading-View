@@ -408,16 +408,40 @@ class LsmaLogic {
     return { valor: intercepto + slope * (n - 1), slope };
   }
 
+  /**
+   * ⚠️⚠️ DEFEITO CORRIGIDO EM 17/09/2026: faltava DEVOLVER o elemento que saiu.
+   *
+   * A identidade do deslizamento, derivada com cuidado. Ao entrar `y` e sair o elemento de
+   * indice 0, todos os que ficam descem uma posicao:
+   *
+   * ```
+   * Σ(i·y)_novo = Σ((i−1)·y) dos que ficam            + (n−1)·y
+   *             = Σ(i·y)_antes − Σ(y dos que FICAM)   + (n−1)·y
+   *             = Σ(i·y)_antes − (somaYAntes − saiu)  + (n−1)·y
+   *                                          ↑↑↑↑↑
+   *                              este termo estava AUSENTE
+   * ```
+   *
+   * ⭐ O elemento que sai tinha indice 0, entao contribuia `0·saiu = 0` para `Σ(i·y)` e nao tira
+   * nada dela ao sair. Mas ele ESTAVA em `somaYAntes`, e por isso precisa ser devolvido — senao
+   * subtrai-se o deslizamento de um elemento que nem esta mais na janela.
+   *
+   * ⚠️ O sintoma era caracteristico e foi o que denunciou: a PRIMEIRA emissao estava CERTA
+   * (quando a janela acabou de encher, `saiu === null` e o ramo defeituoso nem roda) e todas as
+   * seguintes erravam, com o erro acumulando. Medido com `period = 25`: indice 24 correto
+   * (102.432892), indice 25 devolvia 101.526615 contra 102.458 da referencia.
+   *
+   * ⚠️ E era INVISIVEL para a suite: `incremental == batch` passava porque os dois caminhos
+   * usam este mesmo `push` e erravam igual. Só referencia externa pega isso.
+   */
   push(y: number): { valor: number; slope: number } | null {
     const somaYAntes = this.somaY.value();
     const saiu = this.win.push(y);
     this.somaY.add(y);
     if (saiu !== null) this.somaY.add(-saiu);
-    // ⭐ A identidade do deslizamento: cada indice desce 1, entao `Σ(i·y)` perde `Σy` (o de
-    // ANTES de a barra nova entrar) e ganha `(n−1)·y`. Enquanto enche, o indice do novo e o
-    // tamanho corrente menos 1.
+    // Enquanto enche, o indice do novo e o tamanho corrente menos 1.
     const pesoNovo = saiu !== null ? this.period - 1 : this.win.size() - 1;
-    this.somaIY.add(pesoNovo * y - (saiu !== null ? somaYAntes : 0));
+    this.somaIY.add(pesoNovo * y - (saiu !== null ? somaYAntes - saiu : 0));
     if (!this.win.isFull()) return null;
     return this.resolver(this.somaY.value(), this.somaIY.value());
   }
@@ -428,7 +452,10 @@ class LsmaLogic {
     const saiu = cheia ? (this.win.oldest() ?? 0) : null;
     const somaYProj = this.somaY.value() + y - (saiu ?? 0);
     const pesoNovo = saiu !== null ? this.period - 1 : this.win.size();
-    const somaIYProj = this.somaIY.value() + pesoNovo * y - (saiu !== null ? this.somaY.value() : 0);
+    // ⚠️ A MESMA correcao do `push`: devolver o `saiu`. Divergir aqui faria `preview` e `update`
+    // discordarem na mesma barra, que e o defeito que o property test de preview persegue.
+    const somaIYProj =
+      this.somaIY.value() + pesoNovo * y - (saiu !== null ? this.somaY.value() - saiu : 0);
     return this.resolver(somaYProj, somaIYProj);
   }
 

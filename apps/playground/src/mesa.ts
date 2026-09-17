@@ -438,6 +438,39 @@ function mensagemDeFalha(cause: string): string {
 const INTERVALO_AO_VIVO_MS = 60_000;
 
 /**
+ * ⭐⭐ O intervalo REAL, derivado do período — e a razão é a OPERAÇÃO, não a tela.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⚠️⚠️ A CONSULTA PESADA BLOQUEIA A BRIDGE INTEIRA. MEDIDO.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A bridge serializa: o pacote `MetaTrader5` do Python não é thread-safe, e as chamadas ao
+ * terminal entram em fila. Medição de 17/09/2026, disparando `/historical-flow` e batendo em
+ * `/ticker` durante:
+ *
+ * ```
+ * /ticker durante a consulta pesada : 5.004 ms   ⇠ ENFILEIRADO
+ * /ticker depois dela               :    11 ms
+ * ```
+ *
+ * E a consulta pesada leva **5,2 a 16,4 s** (20 amostras). Ou seja: enquanto o gráfico busca
+ * volume e agressor, **o robô que opera não consegue mandar ordem nem ler preço**. Num day
+ * trade, 16 s de espera é inaceitável — e a culpa seria de um playground.
+ *
+ * ⭐ O que resolve não é só espaçar: é notar que **o volume de uma barra FECHADA não muda**.
+ * Pedir a rota pesada a cada minuto reconsulta 95 barras imutáveis para descobrir o volume de
+ * UMA. O intervalo certo é o do próprio período: uma barra de 5 min só tem volume novo a cada
+ * 5 min.
+ *
+ * ⚠️ Piso de 60 s para M1 não virar uma consulta pesada por minuto, e teto de 5 min porque
+ * acima disso a barra em formação fica com volume velho demais para leitura de fluxo.
+ */
+function intervaloDoAoVivo(periodSeconds: number): number {
+  const doPeriodo = Math.max(1, Math.floor(periodSeconds)) * 1000;
+  return Math.min(300_000, Math.max(INTERVALO_AO_VIVO_MS, doPeriodo));
+}
+
+/**
  * Quantos DIAS de fluxo pedir. 1 = o dia corrente, que é exatamente o buraco a tapar.
  *
  * ⚠️ Não aumente sem medir: o custo cresce com o número de ticks reclassificados, e o default
@@ -718,7 +751,9 @@ export function useMesaComAoVivo(params: {
     };
 
     void puxar();
-    const timer = setInterval(() => void puxar(), INTERVALO_AO_VIVO_MS);
+    // ⚠️ Derivado do PERÍODO, não fixo. Ver `intervaloDoAoVivo`: a consulta pesada bloqueia a
+    // bridge que o robô usa para operar, e o volume de barra fechada não muda.
+    const timer = setInterval(() => void puxar(), intervaloDoAoVivo(periodSeconds));
     return () => {
       vivo = false;
       ctrl.abort();
