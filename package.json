@@ -29,7 +29,8 @@
     "test": "vitest --run",
     "test:watch": "vitest",
     "test:core": "vitest --run packages/core",
-    "test:primitives": "vitest --run packages/primitives"
+    "test:primitives": "vitest --run packages/primitives",
+    "auditoria": "node scripts/auditoria-de-dados.mjs"
   },
   "devDependencies": {
     "@testing-library/react": "^16.1.0",
