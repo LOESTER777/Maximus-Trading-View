@@ -142,6 +142,18 @@ export interface VolumeProfileLayerOptions {
    */
   readonly margemInferiorFracao?: number;
   readonly paleta?: Partial<PaletaPerfil>;
+  /**
+   * ⭐ PUBLICA a linha de legenda em vez de a camada escolher um canto.
+   *
+   * ⚠️ Esta camada escrevia no PÉ do painel quando tinha dado e no TOPO-ESQUERDO quando
+   * estava vazia — inclusive quando estava DESLIGADA (`Perfil de volume: Camada
+   * desligada.`), no canto mais disputado da tela. Eram dois cantos numa camada só, e
+   * nenhum deles sabia da faixa do histograma de volume nem da fita de O/H/L/C.
+   *
+   * Ver `onLegenda` em `BookmapLayerOptions` e `legend-rail.core.ts` no `charts-core`:
+   * a camada publica, a trilha empilha. Notifica só quando o texto MUDA.
+   */
+  readonly onLegenda?: (linhas: readonly string[], alerta: boolean) => void;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -305,6 +317,8 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
   private requestUpdate: (() => void) | null = null;
 
   private plano: PlanoDoPerfil = PLANO_VAZIO;
+  /** Última legenda entregue ao consumidor, como cadeia. Ver `publicarLegenda`. */
+  private legendaPublicada: string | null = null;
 
   private readonly views: readonly IPrimitivePaneView[];
 
@@ -391,6 +405,9 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
       // Perfil vazio: a camada DIZ o motivo em vez de ficar idêntica a desligada.
       // "Ligado e sem dado" e "desligado" são estados diferentes.
       if (perfil.niveis.length === 0 || !(perfil.maiorTotal > 0)) {
+        // ⚠️ Publica o motivo, mas NÃO como alerta: "sem dado na janela" é estado
+        // legítimo (dia sem pregão, ativo sem livro), não falha.
+        this.publicarLegenda([`Perfil de volume: ${perfil.motivoVazio ?? 'sem dado na janela.'}`], false);
         this.plano = comLegenda
           ? {
               barras: [],
@@ -495,10 +512,14 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
         }
       }
 
+      // ⚠️ `montarLegenda` é chamado SEMPRE — ele é quem publica na trilha (ver
+      // `onLegenda`). O que `mostrarLegenda: false` suprime é o DESENHO, não a
+      // publicação: silenciar o canvas e publicar é exatamente a combinação da trilha.
+      const legenda = this.montarLegenda(perfil, paleta);
       this.plano = {
         barras,
         linhas,
-        texto: comLegenda ? this.montarLegenda(perfil, paleta) : null,
+        texto: comLegenda ? legenda : null,
       };
     } catch {
       this.plano = PLANO_VAZIO;
@@ -584,6 +605,22 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
     return Number.isFinite(d) && d > ALTURA_MIN_PX ? d : ALTURA_MIN_PX;
   }
 
+  /**
+   * Entrega a linha ao consumidor, uma vez por MUDANÇA. Ver `onLegenda`.
+   */
+  private publicarLegenda(linhas: readonly string[], alerta: boolean): void {
+    const cb = this.options.onLegenda;
+    if (cb === undefined) return;
+    const chave = `${alerta ? '!' : ''}${linhas.join('\u0000')}`;
+    if (chave === this.legendaPublicada) return;
+    this.legendaPublicada = chave;
+    try {
+      cb(linhas, alerta);
+    } catch {
+      // Consumidor que lança não derruba a construção do plano.
+    }
+  }
+
   /** A linha de identidade da camada, no topo da faixa. */
   private montarLegenda(perfil: PerfilDeVolume, paleta: PaletaPerfil): TextoDoPerfil {
     const partes = [`Perfil de volume · ${perfil.niveis.length} níveis`];
@@ -591,6 +628,8 @@ export class VolumeProfilePrimitive implements ISeriesPrimitive<Time> {
     if (perfil.vah !== null && perfil.val !== null) {
       partes.push(`VA ${Math.round(perfil.fracaoAreaDeValor * 100)}% ${perfil.val}–${perfil.vah}`);
     }
+    // Publica SEMPRE, inclusive com o desenho suprimido — é o par da trilha.
+    this.publicarLegenda([partes.join(' · ')], false);
     return {
       x: TEXTO_MARGEM_PX,
       // ⚠️ No PÉ do painel, não no topo: o topo à esquerda é da legenda do bookmap e da

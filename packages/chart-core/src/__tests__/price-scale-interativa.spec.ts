@@ -35,8 +35,20 @@ function flushRender(): Promise<void> {
  * motor ja trata). Um `MouseEvent` com o `type` de ponteiro dispara os mesmos
  * ouvintes. Ver `vitest.setup.ts` sobre por que o ambiente e proposital.
  */
+/**
+ * ⚠️ `buttons: 1` por DEFAULT nos eventos de arrasto, e isto e fidelidade, nao atalho.
+ *
+ * O navegador entrega `pointerdown`/`pointermove` de um arrasto com o bit do botao
+ * principal ligado em `buttons`. A simulacao antiga omitia o campo (`buttons === 0`), e
+ * um `pointermove` sem botao e, por definicao, HOVER — nao arrasto. Isso importou quando
+ * o motor ganhou a guarda que encerra arrasto orfao ao ver `buttons === 0` (a rede
+ * contra o `pointerup` perdido, que fazia o grafico arrastar sozinho). Sem o campo, a
+ * bancada pedia ao motor que panasse durante um hover, coisa que nenhum navegador faz.
+ *
+ * Quem quiser simular hover de verdade passa `buttons: 0` explicitamente.
+ */
 function ponteiro(type: string, init: MouseEventInit & { pointerId?: number }): MouseEvent {
-  return new MouseEvent(type, init);
+  return new MouseEvent(type, { buttons: 1, ...init });
 }
 
 /** Container com dimensoes fixas (jsdom nao faz layout). */

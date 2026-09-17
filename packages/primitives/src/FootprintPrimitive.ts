@@ -83,6 +83,17 @@ export interface FootprintLayerOptions {
    */
   readonly mostrarLegenda?: boolean;
   /**
+   * ⭐ PUBLICA a linha de legenda em vez de a camada escolher um canto.
+   *
+   * ⚠️ Esta camada foi do topo para o PÉ do painel com o comentário "o topo à esquerda é
+   * da legenda do bookmap" — coordenação por convenção escrita em comentário, que
+   * quebrou assim que o bookmap também foi para baixo. Ver `onLegenda` em
+   * `BookmapLayerOptions` e `legend-rail.core.ts` no `charts-core`.
+   *
+   * Notifica só quando o texto MUDA, e publicar é independente de desenhar.
+   */
+  readonly onLegenda?: (linhas: readonly string[], alerta: boolean) => void;
+  /**
    * ⚠️ **Não existe canal de diagnóstico separado nesta camada, de propósito.**
    *
    * O `BookmapLayerOptions` tem `mostrarDiagnostico` porque lá a instrumentação
@@ -224,6 +235,8 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
   private formas: readonly FormaFootprint[] = [];
   private velasDesenhadas = 0;
   private podadas = 0;
+  /** Última legenda entregue ao consumidor, como cadeia. Ver `publicarLegenda`. */
+  private legendaPublicada: string | null = null;
 
   private readonly view: FootprintPaneView;
   private readonly views: readonly IPrimitivePaneView[];
@@ -327,17 +340,27 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
         // forma, e como ele dispara com a vela estreita — o estado normal de um
         // gráfico com dois pregões na tela — era o texto que MAIS aparecia
         // justamente para quem pediu silêncio.
+        const paneAviso = chart.paneSize();
+        const larguraAviso = paneAviso.width;
+        const cabemAviso = Math.max(
+          1,
+          Math.floor((Number.isFinite(larguraAviso) && larguraAviso > 0 ? larguraAviso : 900) / 46),
+        );
+        const textoAviso =
+          `Footprint oculto: vela de ${Math.round(conv.larguraVelaPx)} px é estreita demais ` +
+          `para ler nível — dê zoom até ~${cabemAviso} velas, ou use o Perfil de volume.`;
+        // ⭐ Publica na trilha ANTES de decidir o desenho: com `mostrarLegenda: false` a
+        // camada fica muda no canvas e a informação continua chegando ao operador pela
+        // trilha. É ressalva, então vai em âmbar.
+        this.publicarLegenda([textoAviso], true);
+
         if (this.options.mostrarLegenda === false) {
           this.formas = [];
           return;
         }
 
-        const pane = chart.paneSize();
-        const larguraPainel = pane.width;
-        const cabem = Math.max(
-          1,
-          Math.floor((Number.isFinite(larguraPainel) && larguraPainel > 0 ? larguraPainel : 900) / 46),
-        );
+        const pane = paneAviso;
+        const cabem = cabemAviso;
         // ⚠️ Foi do topo (`y: 18`) para o PÉ do painel. No topo à esquerda ele
         // caía exatamente sobre a legenda do `BookmapPrimitive`, e com as duas
         // camadas ligadas — a combinação normal — os dois textos se sobrepunham,
@@ -351,9 +374,7 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
             y: alturaPainel > 2 * RODAPE_TEXTO_PX ? alturaPainel - RODAPE_TEXTO_PX : RODAPE_TEXTO_PX,
             largura: 0,
             altura: 0,
-            texto:
-              `Footprint oculto: vela de ${Math.round(conv.larguraVelaPx)} px é estreita demais ` +
-              `para ler nível — dê zoom até ~${cabem} velas, ou use o Perfil de volume.`,
+            texto: textoAviso,
             cor: 'rgba(245, 158, 11, 0.95)',
             alinhamento: 'left',
             // Ganha caixa de contraste no renderizador, como a legenda.
@@ -390,11 +411,11 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
       // ⚠️ Suprimida só por pedido explícito (`mostrarLegenda: false`), quando a
       // tela tem mais de uma camada densa e a informação passa a aparecer fora
       // do canvas. Ausência da opção mantém o desenho.
-      const legenda =
-        this.options.mostrarLegenda === false
-          ? null
-          : this.montarLegenda(opcoes.modo, opcoes.fatorDiagonal, conv);
-      this.formas = legenda === null ? r.formas : [...r.formas, legenda];
+      // ⚠️ `montarLegenda` roda SEMPRE — é ele que publica na trilha (ver `onLegenda`).
+      // `mostrarLegenda: false` suprime o DESENHO, não a publicação.
+      const legenda = this.montarLegenda(opcoes.modo, opcoes.fatorDiagonal, conv);
+      const desenharLegenda = this.options.mostrarLegenda !== false && legenda !== null;
+      this.formas = desenharLegenda ? [...r.formas, legenda] : r.formas;
     } catch {
       this.formas = [];
       this.velasDesenhadas = 0;
@@ -438,6 +459,8 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
     });
     if (legenda === null) return null;
 
+    this.publicarLegenda([legenda.texto], legenda.alerta);
+
     return {
       tipo: 'texto',
       x: 12,
@@ -452,6 +475,22 @@ export class FootprintPrimitive implements ISeriesPrimitive<Time> {
       alinhamento: 'left',
       papel: 'legenda',
     };
+  }
+
+  /**
+   * Entrega as linhas ao consumidor, uma vez por MUDANÇA de conteúdo. Ver `onLegenda`.
+   */
+  private publicarLegenda(linhas: readonly string[], alerta: boolean): void {
+    const cb = this.options.onLegenda;
+    if (cb === undefined) return;
+    const chave = `${alerta ? '!' : ''}${linhas.join('\u0000')}`;
+    if (chave === this.legendaPublicada) return;
+    this.legendaPublicada = chave;
+    try {
+      cb(linhas, alerta);
+    } catch {
+      // Consumidor que lança não derruba o recálculo das formas.
+    }
   }
 
   /**

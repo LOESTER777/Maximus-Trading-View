@@ -182,10 +182,31 @@ export class DrawingController {
     this.ids = opts.ids ?? createDefaultIdFactory();
 
     const el = opts.container;
-    el.addEventListener('pointerdown', this.onPointerDown);
-    el.addEventListener('pointermove', this.onPointerMove);
-    el.addEventListener('pointerup', this.onPointerUp);
-    el.addEventListener('pointercancel', this.onPointerCancel);
+    // ⭐⭐ FASE DE CAPTURA (`capture: true`) — e isto corrige um defeito grave.
+    //
+    // ⚠️ RELATO: *"os componentes de linhas e indicadores para inserir na mão pararam de
+    // funcionar, quando clica, o gráfico arrasta por inteiro"*.
+    //
+    // O container e ANCESTRAL do `<canvas>` onde o motor escuta ponteiro. Em fase de
+    // BOLHA (o default) este ouvinte rodava DEPOIS do motor, que ja havia ligado o
+    // arrasto de pan e capturado o ponteiro no canvas. O `preventDefault()` daqui
+    // chegava tarde: nao tem efeito retroativo. Pior, o `setPointerCapture` de
+    // `captureDrag` roubava a captura, o `pointerup` deixava de chegar ao canvas, e o
+    // motor ficava com o arrasto ligado PARA SEMPRE — mover o mouse depois, sem botao
+    // nenhum, arrastava o grafico inteiro.
+    //
+    // Em fase de CAPTURA o percurso e de fora para dentro: este ouvinte roda ANTES do
+    // canvas, e o `preventDefault()` chega em tempo de o motor ver `defaultPrevented` e
+    // nao iniciar arrasto nenhum. E o protocolo padrao do DOM para "esta camada tratou o
+    // gesto", e mantem o motor sem conhecer este pacote (regra 4 do grafo).
+    //
+    // ⚠️ `capture: true` tem de aparecer TAMBEM no `removeEventListener`: as duas
+    // chamadas precisam concordar na fase, senao o ouvinte nao e removido e o
+    // controlador descartado continua tratando gesto do proximo.
+    el.addEventListener('pointerdown', this.onPointerDown, { capture: true });
+    el.addEventListener('pointermove', this.onPointerMove, { capture: true });
+    el.addEventListener('pointerup', this.onPointerUp, { capture: true });
+    el.addEventListener('pointercancel', this.onPointerCancel, { capture: true });
     // `keydown` no container exige foco; no documento funciona sempre. O custo e
     // ter de checar se o alvo e um campo de texto — ver `onKeyDown`.
     document.addEventListener('keydown', this.onKeyDown);
@@ -272,10 +293,11 @@ export class DrawingController {
     this.disposed = true;
 
     const el = this.opts.container;
-    el.removeEventListener('pointerdown', this.onPointerDown);
-    el.removeEventListener('pointermove', this.onPointerMove);
-    el.removeEventListener('pointerup', this.onPointerUp);
-    el.removeEventListener('pointercancel', this.onPointerCancel);
+    // A fase tem de casar com o registro — ver a nota no construtor.
+    el.removeEventListener('pointerdown', this.onPointerDown, { capture: true });
+    el.removeEventListener('pointermove', this.onPointerMove, { capture: true });
+    el.removeEventListener('pointerup', this.onPointerUp, { capture: true });
+    el.removeEventListener('pointercancel', this.onPointerCancel, { capture: true });
     document.removeEventListener('keydown', this.onKeyDown);
 
     if (this.frame !== null) {
@@ -299,6 +321,16 @@ export class DrawingController {
 
     // ── Ferramenta ativa: criar ──
     if (this.tool !== null) {
+      // ⭐ COM FERRAMENTA ATIVA, O GESTO E DA FERRAMENTA — sempre, e antes de qualquer
+      // conta poder falhar. `preventDefault` e o sinal que impede o motor de panar (ver
+      // a nota no construtor sobre a fase de captura).
+      //
+      // ⚠️ Ficar depois do `anchorAt` era um buraco: ancora nula (clique na faixa do
+      // eixo de preco, eixo de tempo ainda vazio) saia por `return` sem marcar nada, e o
+      // motor panava um gesto que o operador fez para desenhar. Chamar aqui, no alto,
+      // fecha esse e todos os outros retornos antecipados deste ramo.
+      e.preventDefault();
+
       const ancora = this.anchorAt(p.x, p.y);
       if (ancora === null) return;
 
@@ -306,6 +338,12 @@ export class DrawingController {
 
       if (exigidas === 1) {
         // Uma ancora basta: nasce completo no pressionar.
+        //
+        // ⚠️ Este ramo NAO chama `captureDrag` (nao ha arrasto a acompanhar), e por isso
+        // era o pior caso do defeito: sem captura e sem `preventDefault`, pressionar
+        // para inserir uma linha horizontal panava o grafico na hora. O
+        // `preventDefault` acima e o que resolve — e o motivo de ele estar no alto do
+        // ramo, e nao dentro de `captureDrag`.
         const d = createDrawing(
           { kind: this.tool, anchors: [ancora], ...this.estiloNovo() },
           this.ids,

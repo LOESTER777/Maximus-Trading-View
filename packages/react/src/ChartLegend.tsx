@@ -95,6 +95,30 @@ export interface ChartLegendProps {
   readonly symbol?: string;
   readonly period?: string;
   readonly series?: readonly ChartLegendSeries[];
+  /**
+   * ⭐ A TRILHA das camadas de canvas (livro, footprint, perfil de volume).
+   *
+   * ⚠️ **O defeito que isto encerra:** *"o bookmap ainda está em cima do histograma de
+   * volume, ele precisa ficar no topo alinhado ao lado de quem está lá, pois pode haver
+   * outros componentes"*. Cada camada escolhia um canto do canvas por conta própria — e
+   * duas correções anteriores apenas mudaram o canto da colisão, porque nenhuma camada
+   * sabe da faixa do histograma de volume nem desta legenda em HTML.
+   *
+   * Aqui as linhas entram na MESMA coluna em que já vivem a identidade do ativo, o
+   * O/H/L/C e os indicadores. Empilhar é o que garante ausência de sobreposição sem
+   * ninguém precisar conhecer a geometria dos outros.
+   *
+   * Vem de `useLayerLegends(engine)`. Ordem e conteúdo são decididos no núcleo puro
+   * `legend-rail.core.ts`; este componente só desenha.
+   *
+   * ⚠️ Tipado ESTRUTURALMENTE de propósito — o pacote `react` não importa `charts-core`
+   * em runtime, mesma regra do registry de indicadores e da lista de períodos.
+   */
+  readonly notes?: readonly {
+    readonly fonte: string;
+    readonly linhas: readonly string[];
+    readonly alerta?: boolean;
+  }[];
   /** Casas decimais. Default 2. */
   readonly precision?: number;
   readonly className?: string;
@@ -124,6 +148,7 @@ export function ChartLegend({
   symbol,
   period,
   series,
+  notes,
   precision = 2,
   className,
   style,
@@ -200,6 +225,27 @@ export function ChartLegend({
             />
           ))}
           <Variacao change={dado.change} changePercent={dado.changePercent} precision={precision} />
+        </div>
+      )}
+
+      {notes !== undefined && notes.length > 0 && (
+        <div className="robustus-legend__notes" style={estiloNotas}>
+          {notes.map((n) =>
+            n.linhas.map((linha, i) => (
+              <span
+                // A chave junta fonte e ÍNDICE porque a mesma camada emite várias linhas
+                // e duas podem ter o mesmo texto (raro, mas possível em estado vazio).
+                key={`${n.fonte}-${i}-${linha}`}
+                className={`robustus-legend__note robustus-legend__note--${n.fonte}`}
+                style={n.alerta === true ? estiloNotaAlerta : estiloNota}
+                // Devolve a frase inteira quando ela foi cortada por reticências. Não
+                // substitui rótulo: o texto já está no DOM e o leitor de tela o lê todo.
+                title={linha}
+              >
+                {linha}
+              </span>
+            )),
+          )}
         </div>
       )}
 
@@ -378,6 +424,41 @@ const estiloTenue: CSSProperties = { opacity: 0.6 };
 const estiloSeries: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 8 };
 
 const estiloSerie: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 };
+
+/**
+ * As notas das camadas: uma linha por item, empilhadas.
+ *
+ * ⚠️ `flexDirection: column` e NÃO `wrap` horizontal: cada linha de camada é uma frase
+ * ("Livro · fila em repouso", "Verde: fila de compra · Vermelho: fila de venda"), não um
+ * campo curto como `Abr`/`Máx`. Enfileirá-las na horizontal produziria uma parede de
+ * texto sem separação visível entre as frases.
+ */
+const estiloNotas: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 1,
+  marginTop: 1,
+};
+
+const estiloNota: CSSProperties = {
+  fontSize: 10,
+  opacity: 0.72,
+  whiteSpace: 'nowrap',
+  // ⚠️ `nowrap` com `overflow: hidden` e reticências: a frase da camada pode ser longa
+  // (o aviso do footprint tem duas orações), e deixá-la quebrar em três linhas empurraria
+  // o resto da trilha para baixo do gráfico. Cortar é melhor que empurrar — e o `title`
+  // devolve o texto inteiro no repouso do cursor.
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  maxWidth: '46ch',
+};
+
+/** Ressalva (âmbar): o mesmo vocabulário de cor que as camadas usam no canvas. */
+const estiloNotaAlerta: CSSProperties = {
+  ...estiloNota,
+  color: '#fbbf24',
+  opacity: 0.95,
+};
 
 const estiloPonto: CSSProperties = {
   width: 7,

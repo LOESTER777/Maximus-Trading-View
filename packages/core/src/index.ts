@@ -179,3 +179,63 @@ export type {
   /** Cor em componentes RGB. */
   CorRgb as RgbColor,
 } from './rampa-termica.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Trilha de legendas — um canto, uma fila
+// ═════════════════════════════════════════════════════════════════════════════
+
+export {
+  // As duas grafias, como manda a convencao do projeto: pt-BR (a original) e o apelido
+  // em ingles. Mesmo simbolo, custo zero em runtime.
+  enfileirarNotas,
+  alturaEmLinhas,
+  notasIguais,
+  ORDEM_DA_TRILHA,
+  /** Enfileira as notas na ordem canonica de leitura, descartando as vazias. */
+  enfileirarNotas as queueLegendNotes,
+  /** Quantas linhas a fila ocupa — a medida para reservar altura. */
+  alturaEmLinhas as legendLineCount,
+  /** As filas sao iguais por CONTEUDO? Evita re-renderizacao por quadro. */
+  notasIguais as legendNotesEqual,
+  /** A ordem canonica das fontes, de cima para baixo. */
+  ORDEM_DA_TRILHA as LEGEND_RAIL_ORDER,
+} from './legend-rail.core.js';
+export type {
+  NotaDeLegenda,
+  FonteDeLegenda,
+  /** Uma entrada da trilha: fonte, linhas em pt-BR, e se e ressalva. */
+  NotaDeLegenda as LegendNote,
+  /** Quem pode publicar na trilha. Conjunto fechado. */
+  FonteDeLegenda as LegendSource,
+} from './legend-rail.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Leitura do ativo — desempenho, sazonalidade e termometro tecnico
+// ═════════════════════════════════════════════════════════════════════════════
+
+export {
+  desempenhoPorJanela,
+  sazonalidadePorAno,
+  termometroTecnico,
+  votoDeOscilador,
+  votoDeMedia,
+  JANELAS_DE_DESEMPENHO,
+  ROTULO_DA_JANELA,
+  ROTULO_TECNICO,
+  /** Desempenho por janela de CALENDARIO. `null` quando a serie nao alcanca a janela. */
+  desempenhoPorJanela as performanceByWindow,
+  /** Retorno acumulado de cada ano, normalizado, num eixo de dia do ano. */
+  sazonalidadePorAno as seasonalityByYear,
+  /** Resume votos de indicadores numa leitura. `NEUTRO` dilui; `null` nao conta. */
+  termometroTecnico as technicalGauge,
+} from './asset-readout.core.js';
+export type {
+  BarraDeLeitura as ReadoutBar,
+  JanelaDeDesempenho as PerformanceWindow,
+  DesempenhoDaJanela as WindowPerformance,
+  PontoDeSazonalidade as SeasonalityPoint,
+  AnoDeSazonalidade as SeasonalityYear,
+  VotoTecnico as TechnicalVote,
+  LeituraTecnica as TechnicalReading,
+  TermometroTecnico as TechnicalGauge,
+} from './asset-readout.core.js';

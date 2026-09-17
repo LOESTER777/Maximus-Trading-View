@@ -112,6 +112,14 @@ export function useDrawings(params: UseDrawingsParams): UseDrawingsResult {
   snapRef.current = params.snapEnabled;
   onChangeRef.current = params.onChange;
 
+  // ⚠️ A ferramenta corrente tambem vive num ref, e o motivo e uma armadilha real: o
+  // controlador e RECRIADO quando o motor troca (ver o efeito abaixo), e o controlador
+  // novo nasce em modo de selecao (`tool = null`) enquanto o estado React continua
+  // marcando o botao da ferramenta como aceso. A interface diria "linha de tendencia
+  // ativa" e o clique faria PAN — o mesmo sintoma do defeito de convivencia com o pan,
+  // por outra causa. Reaplicar a ferramenta na criacao fecha isso.
+  const toolRef = useRef<ActiveTool>(null);
+
   useEffect(() => {
     if (engine === null || engine.isDisposed) return;
 
@@ -142,6 +150,9 @@ export function useDrawings(params: UseDrawingsParams): UseDrawingsResult {
       ctrl.load(initialRef.current);
     }
 
+    // Reaplica a ferramenta escolhida — ver a nota em `toolRef`.
+    if (toolRef.current !== null) ctrl.setTool(toolRef.current);
+
     setController(ctrl);
 
     return () => {
@@ -168,6 +179,7 @@ export function useDrawings(params: UseDrawingsParams): UseDrawingsResult {
     interaction,
     tool,
     setTool: (t) => {
+      toolRef.current = t;
       setToolState(t);
       controller?.setTool(t);
     },

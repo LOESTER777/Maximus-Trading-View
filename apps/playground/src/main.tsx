@@ -65,6 +65,7 @@ import {
   useReplay,
   useHistoryBackfill,
   useCrosshair,
+  useLayerLegends,
   useChartState,
   // ── Cromo de interface ──
   Icon,
@@ -79,7 +80,19 @@ import {
   type Command,
   type ToolbarToggleItem,
   type ToolbarActionItem,
+  AssetReadout,
 } from '@robustus/charts-react';
+// ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
+// que já estão na tela, sem requisição nova.
+import {
+  desempenhoPorJanela,
+  sazonalidadePorAno,
+  termometroTecnico,
+  votoDeMedia,
+  votoDeOscilador,
+  ROTULO_DA_JANELA,
+  ROTULO_TECNICO,
+} from '@robustus/charts-core';
 import type { SnapBar } from '@robustus/charts-drawings';
 import type { ChartEngine, PriceSeriesType, ChartPriceLine } from '@robustus/charts-engine';
 import { registry } from '@robustus/charts-indicators';
@@ -90,6 +103,8 @@ import {
   type SyntheticBundle,
   type SyntheticCandle,
 } from './synthetic.js';
+// ⭐ O histórico REAL da mesa. Ver `mesa.ts`: WIN desde 2005, com volume por agressor.
+import { ATIVOS_DA_MESA, PERIODOS_DA_MESA_IDS, useMesaBars } from './mesa.js';
 
 /**
  * O modo de grafico.
@@ -142,6 +157,29 @@ function App(): JSX.Element {
   const [tfComparacao, setTfComparacao] = useState('H1');
   /** Ativo corrente. Uma aba só até o playground ganhar segunda fonte de dado. */
   const [ativo, setAtivo] = useState('SINTETICO');
+  /**
+   * ⭐ A FONTE do dado. `sintetico` continua o default, e é decisão:
+   *
+   * ⚠️ O sintético não depende de rede, é determinístico (semente fixa) e faz o playground
+   * funcionar em qualquer máquina. A mesa depende do túnel para a máquina B estar no ar —
+   * e ele JÁ FICOU quatro dias fora sem ninguém notar, segundo o registro do projeto de
+   * origem. Nascer apontando para uma dependência que pode estar ausente faria a primeira
+   * impressão do playground ser uma tela de erro.
+   */
+  const [fonte, setFonte] = useState<'sintetico' | 'mesa'>('sintetico');
+  /**
+   * ⭐ A altura dos sub-painéis de indicador, em três degraus.
+   *
+   * ⚠️ UM controle para todos, e não um seletor por indicador. Com 29 indicadores
+   * disponíveis, uma barra de altura por linha da lista seria a "parede de botões" que este
+   * projeto evita por regra — e a pergunta real do operador é *"quero os osciladores
+   * discretos ou dominantes"*, que é uma decisão só. Quem quiser altura por indicador
+   * chama `setPaneHeight` direto: a API é por indicador, a INTERFACE é agregada.
+   *
+   * `null` = repartição automática (o comportamento histórico, 38% divididos).
+   */
+  const [alturaOsciladores, setAlturaOsciladores] = useState<number | null>(0.11);
+  const [ativoMesa, setAtivoMesa] = useState('WIN');
   const [mostrarBookmap, setMostrarBookmap] = useState(true);
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
   const [imaLigado, setImaLigado] = useState(false);
@@ -168,7 +206,14 @@ function App(): JSX.Element {
   // ⭐ O dado base é M5; períodos maiores saem por AGREGAÇÃO (`rollupBars`), que é o
   // mesmo caminho de um provedor real que só entrega o período mínimo.
   const TF_BASE = useMemo(() => timeframePorId('M5') as Timeframe, []);
-  const tfsDisponiveis = useMemo(() => timeframesAgregaveisDe(TF_BASE), [TF_BASE]);
+  const tfsDisponiveis = useMemo(() => {
+    const agregaveis = timeframesAgregaveisDe(TF_BASE);
+    // ⚠️ Em modo mesa só os períodos MATERIALIZADOS são oferecidos. A base não tem M1, e
+    // oferecer para depois mostrar tela vazia é pior que não oferecer.
+    return fonte === 'mesa'
+      ? agregaveis.filter((x) => PERIODOS_DA_MESA_IDS.includes(x.id))
+      : agregaveis;
+  }, [TF_BASE, fonte]);
   const tf = useMemo(() => timeframePorId(tfId) ?? TF_BASE, [tfId, TF_BASE]);
 
   // ── Perfil de volume (histograma por LINHA) ────────────────────────────────
@@ -189,11 +234,33 @@ function App(): JSX.Element {
   const [historico, setHistorico] = useState<SyntheticCandle[]>([]);
   const [volumeHistorico, setVolumeHistorico] = useState<SyntheticBundle['volume']>([]);
 
+  // ── O histórico REAL da mesa ───────────────────────────────────────────────
+  //
+  // ⭐ Em modo mesa o período é pedido DIRETO à fonte, sem `rollupBars`: os quatro
+  // períodos (5min/15min/1h/D1) são materializados lá a partir do TICK, e reagregar em
+  // cima da derivada só perderia precisão.
+  const mesa = useMesaBars({
+    ligado: fonte === 'mesa',
+    symbol: ativoMesa,
+    periodSeconds: tf.seconds,
+  });
+
+  // A série de partida, conforme a fonte escolhida.
+  const velasDaFonte = fonte === 'mesa' ? mesa.candles : bundle.candles;
+  const volumeDaFonte = fonte === 'mesa' ? mesa.volume : bundle.volume;
+
   // ── Replay ────────────────────────────────────────────────────────────────
-  const replay = useReplay({ bars: bundle.candles, speed: 4 });
+  const replay = useReplay({ bars: velasDaFonte, speed: 4 });
   const velasComHistorico = useMemo(
-    () => (historico.length === 0 ? bundle.candles : [...historico, ...bundle.candles]),
-    [historico, bundle.candles],
+    () =>
+      // Em modo mesa o passado já vem dentro de `mesa.candles` (a caminhada para trás
+      // acontece lá); o `historico` local é do gerador sintético.
+      fonte === 'mesa'
+        ? velasDaFonte
+        : historico.length === 0
+          ? velasDaFonte
+          : [...historico, ...velasDaFonte],
+    [fonte, historico, velasDaFonte],
   );
   const velasCruas = modoReplay ? replay.revealedBars : velasComHistorico;
 
@@ -207,13 +274,16 @@ function App(): JSX.Element {
   // identidade, mas pagar uma varredura para não mudar nada é desperdício no caminho mais
   // comum.
   const velasBase = useMemo(() => {
+    // ⚠️ Em modo mesa o dado JÁ vem no período pedido — agregar de novo seria reamostrar
+    // 1h sobre 1h e produzir uma barra só.
+    if (fonte === 'mesa') return velasCruas;
     if (tf.seconds === TF_BASE.seconds) return velasCruas;
     const agregadas = rollupBars(velasCruas, TF_BASE.seconds, tf.seconds);
     // ⚠️ Agregação vazia (período não múltiplo, dado insuficiente) DEGRADA para as velas
     // cruas em vez de esvaziar a tela. Tela vazia sem explicação é o defeito que este
     // projeto já pagou várias vezes.
     return agregadas.length === 0 ? velasCruas : (agregadas as typeof velasCruas);
-  }, [velasCruas, tf, TF_BASE]);
+  }, [fonte, velasCruas, tf, TF_BASE]);
 
   // ── Forma das velas ───────────────────────────────────────────────────────
   const velasExibidas = useMemo(() => {
@@ -233,11 +303,12 @@ function App(): JSX.Element {
   // requisito, não refinamento.
   const volumeExibido = useMemo(() => {
     const cru = modoReplay
-      ? bundle.volume.slice(0, velasCruas.length)
-      : volumeHistorico.length === 0
-        ? bundle.volume
-        : [...volumeHistorico, ...bundle.volume];
-    if (tf.seconds === TF_BASE.seconds) return cru;
+      ? volumeDaFonte.slice(0, velasCruas.length)
+      : fonte === 'mesa' || volumeHistorico.length === 0
+        ? volumeDaFonte
+        : [...volumeHistorico, ...volumeDaFonte];
+    // Em modo mesa o volume já vem no período das velas (mesma consulta).
+    if (fonte === 'mesa' || tf.seconds === TF_BASE.seconds) return cru;
 
     // Soma por balde do período alvo. A COR vem da vela agregada (alta/baixa), não da
     // última barrinha do balde — a cor tem de concordar com a vela que está em cima dela.
@@ -254,7 +325,122 @@ function App(): JSX.Element {
         const alta = vela === undefined ? true : vela.close >= vela.open;
         return { time, value, color: alta ? '#16c784' : '#ea3943' };
       });
-  }, [modoReplay, bundle.volume, velasCruas.length, volumeHistorico, tf, TF_BASE, velasBase]);
+  }, [fonte, modoReplay, volumeDaFonte, velasCruas.length, volumeHistorico, tf, TF_BASE, velasBase]);
+
+  /** O ativo da mesa em uso, ou `null` em modo sintético. */
+  const ativoAtual = useMemo(
+    () => (fonte === 'mesa' ? (ATIVOS_DA_MESA.find((a) => a.symbol === ativoMesa) ?? null) : null),
+    [fonte, ativoMesa],
+  );
+  /**
+   * A casa de preço do ativo.
+   *
+   * ⚠️ Importa mais do que parece: `WDO` anda em 0,5 e `PETR4` em 0,01. Usar o tick do
+   * sintético (5) no `PETR4` faria o eixo de preço arredondar tudo para múltiplos de 5 —
+   * uma ação de R$ 38,42 apareceria como 40, e o gráfico mentiria sobre o preço.
+   */
+  const tickSizeAtual = ativoAtual?.tickSize ?? bundle.tickSize;
+  const simboloExibido = fonte === 'mesa' ? ativoMesa : 'SINTÉTICO';
+
+  /**
+   * A trilha da FONTE: o que está carregado, e o que falhou.
+   *
+   * ⭐ Entra na mesma trilha das camadas (`useLayerLegends` → `ChartLegend notes`) em vez
+   * de abrir um canto novo na tela. É exatamente o que a trilha existe para evitar: mais
+   * um dono de canto.
+   */
+  const notasDaFonte = useMemo(() => {
+    if (fonte !== 'mesa') return [];
+    if (mesa.erro !== null) {
+      return [{ fonte: 'preco', linhas: [mesa.erro], alerta: true }];
+    }
+    if (mesa.carregando && mesa.candles.length === 0) {
+      return [{ fonte: 'preco', linhas: [`Carregando ${ativoMesa} ${tf.label}…`] }];
+    }
+    if (mesa.candles.length === 0) {
+      return [
+        {
+          fonte: 'preco',
+          linhas: [`Sem barras de ${ativoMesa} ${tf.label} na janela buscada.`],
+          alerta: true,
+        },
+      ];
+    }
+    const primeira = mesa.candles[0];
+    const desde =
+      primeira === undefined
+        ? ''
+        : ` · desde ${new Date(primeira.time * 1000).toLocaleDateString('pt-BR')}`;
+    const comDelta = mesa.delta.size;
+    return [
+      {
+        fonte: 'preco',
+        linhas: [
+          `Mesa · ${mesa.candles.length} barras${desde}` +
+            (comDelta > 0 ? ` · ${comDelta} com agressor` : ' · sem agressor') +
+            (mesa.esgotado ? ' · início da série' : ''),
+        ],
+      },
+    ];
+  }, [fonte, mesa.erro, mesa.carregando, mesa.candles, mesa.delta, mesa.esgotado, ativoMesa, tf.label]);
+
+  // ── A LEITURA do ativo: desempenho, sazonalidade e termômetro ──────────────
+  //
+  // ⭐ Tudo derivado das MESMAS barras que estão na tela. Nenhuma requisição nova.
+  const leitura = useMemo(() => {
+    const barras = velasBase.map((c) => ({ time: c.time, close: c.close }));
+    const ultima = barras[barras.length - 1];
+    // ⚠️ O "agora" é o tempo da ÚLTIMA BARRA, e não `Date.now()`. Num gráfico de histórico
+    // (WIN de 2005, ou um ativo cuja série terminou) o relógio da máquina está anos à frente
+    // do dado, e todas as janelas sairiam vazias — o painel pareceria quebrado quando o que
+    // está velho é a série. O desempenho é do ativo, medido de onde ele parou.
+    const agora = ultima?.time ?? 0;
+    return {
+      desempenho: desempenhoPorJanela(barras, agora),
+      // Três anos: mais que isso vira emaranhado num painel de 260 px de largura.
+      sazonalidade: sazonalidadePorAno(barras, 3),
+    };
+  }, [velasBase]);
+
+  /**
+   * O termômetro técnico a partir dos indicadores LIGADOS.
+   *
+   * ⚠️ Só indicadores VISÍVEIS votam: um indicador escondido não está na leitura do operador,
+   * e deixá-lo votar faria o consenso discordar do que está na tela.
+   *
+   * ⚠️ O voto sai do ÚLTIMO valor calculado de cada um, por natureza: oscilador com faixa
+   * (RSI, MFI, estocástico) vota por sobrecompra/sobrevenda; média vota por posição do preço.
+   * Indicador sem regra conhecida NÃO vota — inventar uma faria o número parecer mais
+   * informado do que é.
+   */
+  const termometro = useMemo(() => {
+    const ultimoFechamento = velasBase[velasBase.length - 1]?.close ?? null;
+    // ⚠️ A INSTÂNCIA vive em `plots` e o `name`/`visible` em `active`: são duas visões do
+    // mesmo indicador, e o cruzamento é pelo id. Só `plots` tem como calcular.
+    const barrasParaCalculo = velasBase.map((c) => ({
+      time: c.time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    }));
+    const votos = indicadores.plots
+      .map((plot) => {
+        const meta = indicadores.active.find((a) => a.id === plot.id);
+        if (meta === undefined || !meta.visible) return null;
+        const pontos = plot.instance.warmup(barrasParaCalculo);
+        const ultimo = pontos[pontos.length - 1]?.values ?? {};
+        const valor = (ultimo['value'] ?? null) as number | null;
+        const nome = meta.name;
+        if (nome === 'rsi' || nome === 'stoch' || nome === 'cci') return votoDeOscilador(valor);
+        if (nome === 'mfi') return votoDeOscilador(valor, 20, 80);
+        if (nome.startsWith('ema') || nome.startsWith('sma') || nome === 'vwap') {
+          return votoDeMedia(ultimoFechamento, valor);
+        }
+        return null;
+      });
+    return termometroTecnico(votos);
+  }, [indicadores.plots, indicadores.active, velasBase]);
 
   const barsSnap = useMemo<SnapBar[]>(
     () =>
@@ -280,19 +466,30 @@ function App(): JSX.Element {
     // ⭐ Perfil de volume: o histograma por LINHA, em faixa própria à direita.
     // `margemInferiorFracao: 0.15` é a SEPARAÇÃO DE AMBIENTES — é onde o histograma
     // por COLUNA (volume por barra) começa, e os dois deixam de compartilhar pixel.
-    volumeProfile: perfil === null ? null : { perfil, larguraFracao: 0.16, margemInferiorFracao: 0.15 },
+    // ⚠️ `mostrarLegenda: false` NÃO silencia a informação: a camada continua PUBLICANDO
+    // as linhas, e elas aparecem na trilha da `ChartLegend` (ver `useLayerLegends`). O
+    // que sai é só o texto desenhado no canvas — que era o que colidia.
+    volumeProfile:
+      perfil === null
+        ? null
+        : { perfil, larguraFracao: 0.16, margemInferiorFracao: 0.15, mostrarLegenda: false },
     bookmap:
       mostrarBookmap && grid !== null
         ? {
             grid,
             metrica: 'AMBAS',
             escala: 'P99_GAMMA',
-            tickSize: bundle.tickSize,
+            tickSize: tickSizeAtual,
             modoCor: 'TERMICA',
-            // ⭐ Legenda do bookmap no canto de BAIXO: o de cima é da `ChartLegend`
-            // (O/H/L/C). As duas ali era o "bookmap sobrepondo componente no topo
-            // esquerdo" — ver `posicaoLegenda` na primitive.
-            posicaoLegenda: 'inferior-esquerda',
+            // ⭐ A legenda do livro sai do CANVAS e entra na TRILHA.
+            //
+            // ⚠️ Antes era `posicaoLegenda: 'inferior-esquerda'`, para fugir da fita de
+            // O/H/L/C no topo. Só que o canto de baixo é a faixa do histograma de volume
+            // — daí o relato *"o bookmap ainda está em cima do histograma de volume"*. A
+            // camada não conhece essa faixa (ela vem de `scaleMargins` numa escala de
+            // overlay) e não tem como conhecer. Escolher canto era o problema; a trilha
+            // empilha tudo num lugar só, alinhado, que é o que foi pedido.
+            mostrarLegenda: false,
           }
         : null,
   });
@@ -316,6 +513,13 @@ function App(): JSX.Element {
     // Replay é dado sintético revelado aos poucos; buscar passado ali não faz sentido.
     enabled: !modoReplay,
     loadOlder: (antesDe) => {
+      // ⭐ Em modo mesa quem anda para trás é o hook da mesa (ele conhece a borda PEDIDA e
+      // atravessa fim de semana e feriado). Devolver 0 aqui não é "não há mais": o
+      // `carregarMaisAntigo` é assíncrono e o dado entra pelo estado dele.
+      if (fonte === 'mesa') {
+        void mesa.carregarMaisAntigo();
+        return 0;
+      }
       if (historico.length >= TETO_HISTORICO) return 0;
       const chegada = velasComHistorico[0]?.open ?? 130_000;
       const { candles, volume } = makeOlderCandles(antesDe, LOTE, 300, chegada);
@@ -356,9 +560,23 @@ function App(): JSX.Element {
   // ⭐ `onIndicatorClick`: clicar na linha de um indicador NO GRÁFICO abre as
   // propriedades dele na caixa de ferramentas. O `nonce` faz o segundo clique na mesma
   // linha reabrir o painel se o operador o tiver fechado.
+  /**
+   * A altura pedida por indicador — a mesma para todos, vinda do degrau escolhido.
+   *
+   * ⚠️ `{}` quando o degrau é automático, e NÃO um objeto com `undefined`: o hook trata
+   * chave ausente como "devolva à repartição automática", que é exatamente o que se quer.
+   */
+  const alturasDeIndicador = useMemo<Record<string, number>>(() => {
+    if (alturaOsciladores === null) return {};
+    const m: Record<string, number> = {};
+    for (const p of indicadores.plots) m[p.id] = alturaOsciladores;
+    return m;
+  }, [alturaOsciladores, indicadores.plots]);
+
   useIndicators({
     engine,
     plots: indicadores.plots,
+    paneHeights: alturasDeIndicador,
     bars: velasExibidas,
     colors: indicadores.colors,
     visibility: indicadores.visibility,
@@ -367,6 +585,9 @@ function App(): JSX.Element {
   });
 
   const ohlc = useCrosshair({ engine });
+  // ⭐ A trilha: o que cada camada de canvas tem a dizer, enfileirado pelo motor na ordem
+  // canônica de leitura. Ver `useLayerLegends` e `legend-rail.core.ts`.
+  const notasDasCamadas = useLayerLegends(engine);
   const { capture, restore } = useChartState();
 
   // ── Alertas ───────────────────────────────────────────────────────────────
@@ -409,13 +630,16 @@ function App(): JSX.Element {
         vertLines: { visible: gradeVertical, color: 'rgba(148,163,184,0.07)' },
         horzLines: { visible: true, color: 'rgba(148,163,184,0.10)' },
       },
-      watermark: marcaDagua ? { text: 'SINTÉTICO', fontSize: 64 } : { text: '', visible: false },
+      // ⚠️ A marca d'água diz o ATIVO, e não uma palavra fixa: com dado real na tela,
+      // "SINTÉTICO" escrito em 64 px atrás das velas seria uma afirmação falsa — e a marca
+      // d'água existe justamente para dizer o que se está vendo.
+      watermark: marcaDagua ? { text: simboloExibido, fontSize: 64 } : { text: '', visible: false },
       rightPriceScale: {
         scaleMargins: { top: 0.08, bottom: 0.2 },
-        priceFormat: { tickSize: bundle.tickSize },
+        priceFormat: { tickSize: tickSizeAtual },
       },
     });
-  }, [engine, gradeVertical, marcaDagua, bundle.tickSize]);
+  }, [engine, gradeVertical, marcaDagua, tickSizeAtual, simboloExibido]);
 
   // ── Acoes ─────────────────────────────────────────────────────────────────
   const exportarPng = useCallback((): void => {
@@ -654,6 +878,48 @@ function App(): JSX.Element {
           nasce em M5, e oferecer M1 para depois mostrar tela vazia é pior que não
           oferecer.
         */}
+        {/*
+          ⭐ UM controle só para "o que eu estou vendo", e isso é decisão de interface.
+          Escolher `WIN` já implica dado REAL da mesa; escolher `SINTÉTICO` implica gerador
+          local. Dois controles (uma chave "fonte" e um seletor "ativo") criariam a
+          combinação impossível — fonte sintética com ativo `PETR4` — e o operador teria de
+          administrar um estado que não significa nada. Um `select` também não enche a tela
+          de botões, que é a regra desta barra.
+        */}
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+          <span style={{ opacity: 0.6 }}>Ativo</span>
+          <select
+            value={fonte === 'mesa' ? ativoMesa : 'SINTETICO'}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'SINTETICO') {
+                setFonte('sintetico');
+                return;
+              }
+              setFonte('mesa');
+              setAtivoMesa(v);
+              // ⚠️ Período que a mesa não tem cai para M5 em vez de mostrar tela vazia: o
+              // sintético oferece M1 e a mesa não, então trocar de fonte com M1 escolhido
+              // deixaria o seletor apontando para um período inexistente.
+              if (!PERIODOS_DA_MESA_IDS.includes(tf.id)) setTfId('M5');
+            }}
+            style={{
+              background: 'rgba(15,23,42,0.6)',
+              color: '#cbd5e1',
+              border: '1px solid rgba(148,163,184,0.28)',
+              borderRadius: 4,
+              fontSize: 11,
+              padding: '2px 4px',
+            }}
+          >
+            <option value="SINTETICO">SINTÉTICO (local)</option>
+            {ATIVOS_DA_MESA.map((a) => (
+              <option key={a.symbol} value={a.symbol}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <TimeframeSelector
           timeframes={tfsDisponiveis}
           value={tf.id}
@@ -757,9 +1023,10 @@ function App(): JSX.Element {
             <div style={{ position: 'relative', minHeight: 0, minWidth: 0 }}>
               <ChartLegend
                 readout={ohlc}
-                symbol="SINTÉTICO"
+                symbol={simboloExibido}
                 period={tf.label}
                 series={seriesLegenda}
+                notes={[...notasDaFonte, ...notasDasCamadas]}
                 precision={1}
               />
               <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
@@ -793,12 +1060,69 @@ function App(): JSX.Element {
             overflowY: 'auto',
           }}
         >
+          {/*
+            ⭐ A LEITURA do ativo, em primeiro lugar no painel lateral — e a posição é
+            decisão: "como está o ativo" é a pergunta que se faz ANTES de configurar
+            indicador ou alerta. Aberto por default pelo mesmo motivo.
+          */}
+          <CollapsiblePanel
+            title="Leitura do ativo"
+            icon="indicator"
+            badge={simboloExibido}
+            hint="Desempenho por janela, sazonalidade por ano e consenso dos indicadores ligados. Tudo derivado das barras que já estão na tela."
+          >
+            <AssetReadout
+              symbol={simboloExibido}
+              performance={leitura.desempenho}
+              rotulos={ROTULO_DA_JANELA}
+              seasonality={leitura.sazonalidade}
+              gauge={termometro}
+              rotulosTecnicos={ROTULO_TECNICO}
+            />
+          </CollapsiblePanel>
+
           <CollapsiblePanel
             title="Indicadores"
             icon="indicator"
             badge={`${indicadores.active.length} ativo(s)`}
             hint="Insira, remova e configure os 29 indicadores. Os campos vêm do metadado de cada um."
           >
+            {/*
+              ⭐ ALTURA dos sub-painéis, em três degraus mais o automático.
+              ⚠️ Um controle para o conjunto, não um por indicador: a pergunta do operador é
+              "quero os osciladores discretos ou dominantes", e é uma decisão só. Um seletor
+              por linha em 29 indicadores seria a parede de botões que este projeto evita.
+            */}
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                marginBottom: 8,
+              }}
+            >
+              <span style={{ opacity: 0.7 }}>Altura dos sub-painéis</span>
+              <select
+                value={alturaOsciladores === null ? 'auto' : String(alturaOsciladores)}
+                onChange={(e) =>
+                  setAlturaOsciladores(e.target.value === 'auto' ? null : Number(e.target.value))
+                }
+                style={{
+                  background: 'rgba(15,23,42,0.6)',
+                  color: '#cbd5e1',
+                  border: '1px solid rgba(148,163,184,0.28)',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  padding: '2px 4px',
+                }}
+              >
+                <option value="0.07">Mínima</option>
+                <option value="0.11">Baixa</option>
+                <option value="0.18">Média</option>
+                <option value="auto">Automática</option>
+              </select>
+            </label>
             {/* ⭐ `openIndicator` vem do clique NO GRÁFICO: a linha clicada abre as
                 propriedades dela aqui, sem o operador ter de procurar na lista. */}
             <IndicatorToolbox catalog={indicadores} title="" openIndicator={indicadorClicado} />

@@ -56,6 +56,18 @@ export interface UseIndicatorsParams {
    */
   readonly visibility?: Readonly<Record<string, boolean>>;
   /**
+   * ⭐ ALTURA do sub-painel de cada indicador, como fracao da altura util do grafico.
+   *
+   * Atende o pedido *"reducao de altura da secao do histograma"*. Canal SEPARADO de
+   * `plots` pela mesma razao de `colors` e `visibility`: mudar altura nao pode recriar
+   * serie nem recalcular indicador — `setPlots` destroi e recria tudo, a tela pisca e a
+   * pane perde o tamanho que o operador arrastou.
+   *
+   * Chave = `plot.id`. Indicador que plota sobre o PRECO nao tem pane propria e e
+   * ignorado. Ausente = este consumidor nao controla altura por aqui.
+   */
+  readonly paneHeights?: Readonly<Record<string, number>>;
+  /**
    * ⭐ Chamado quando o operador CLICA num indicador dentro do gráfico.
    *
    * Recebe o `id` do plot e a chave da saída clicada (`'value'`, `'%D'`, ...). É o que
@@ -117,7 +129,8 @@ export interface UseIndicatorsResult {
  * });
  */
 export function useIndicators(params: UseIndicatorsParams): UseIndicatorsResult {
-  const { engine, plots, bars, colors, visibility, onIndicatorClick, clickTolerancePx } = params;
+  const { engine, plots, bars, colors, visibility, paneHeights, onIndicatorClick, clickTolerancePx } =
+    params;
   const plotterRef = useRef<IndicatorPlotter | null>(null);
 
   // ── Cria o plotter quando o motor existe; descarta ao trocar/desmontar ──
@@ -171,6 +184,28 @@ export function useIndicators(params: UseIndicatorsParams): UseIndicatorsResult 
       if (plotter.isVisible(plot.id) !== desejado) plotter.setVisible(plot.id, desejado);
     }
   }, [plots, visibility, engine]);
+
+  // ── Altura das panes: nem recria, nem recalcula ──
+  //
+  // ⚠️ Depois do efeito de conjunto, pela mesma razao da visibilidade: definir altura exige
+  // que a pane exista. E compara antes de aplicar, senao cada mudanca de QUALQUER indicador
+  // remediria o layout inteiro.
+  useEffect(() => {
+    const plotter = plotterRef.current;
+    if (plotter === null || paneHeights === undefined) return;
+    for (const plot of plots) {
+      const desejada = paneHeights[plot.id];
+      const atual = plotter.paneHeightOf(plot.id);
+      if (desejada === undefined) {
+        // ⚠️ Chave AUSENTE devolve a pane a reparticao automatica em vez de deixar a altura
+        // velha: sem isto, remover a chave do estado nao teria efeito nenhum e o operador
+        // veria a interface discordar da tela.
+        if (atual !== null) plotter.setPaneHeight(plot.id, null);
+        continue;
+      }
+      if (atual !== desejada) plotter.setPaneHeight(plot.id, desejada);
+    }
+  }, [plots, paneHeights, engine]);
 
   // ── Cores: nem recria, nem recalcula ──
   useEffect(() => {

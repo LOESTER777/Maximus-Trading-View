@@ -154,6 +154,13 @@ interface PaneViva {
 export class IndicatorPlotter {
   private readonly seriesVivas: SerieViva[] = [];
   private readonly panesVivas: PaneViva[] = [];
+  /**
+   * Altura pedida por indicador, como fracao. Ver `setPaneHeight`.
+   *
+   * ⚠️ Guardada no plotter (e nao so no motor) porque `setPlots` recria as panes: sem isto,
+   * adicionar um indicador novo devolveria todos os outros a altura automatica.
+   */
+  private readonly alturasPorPlot = new Map<string, number>();
   private plots: readonly IndicatorPlot[] = [];
   private corSeq = 0;
   /**
@@ -203,6 +210,9 @@ export class IndicatorPlotter {
     }
     for (const id of [...this.visiveis.keys()]) {
       if (!idsAtuais.has(id)) this.visiveis.delete(id);
+    }
+    for (const id of [...this.alturasPorPlot.keys()]) {
+      if (!idsAtuais.has(id)) this.alturasPorPlot.delete(id);
     }
 
     for (const plot of plots) {
@@ -362,6 +372,37 @@ export class IndicatorPlotter {
     }
   }
 
+  /**
+   * ⭐ A ALTURA do sub-painel de um indicador, como fracao da altura util.
+   *
+   * Atende o pedido *"reducao de altura da secao do histograma"* sem o consumidor precisar
+   * saber que existe indice de pane: ele fala em INDICADOR, que e o vocabulario dele.
+   *
+   * ⚠️ A fracao e GUARDADA aqui, e nao so repassada, por causa do ciclo de vida: `setPlots`
+   * destroi e recria as panes, e a fracao pedida se perderia. Guardar faz o pedido
+   * sobreviver a adicionar ou remover outro indicador.
+   *
+   * Indicador que plota sobre o PRECO (sem pane propria) e no-op: nao ha altura a definir.
+   * `null` devolve a pane a reparticao automatica.
+   */
+  setPaneHeight(plotId: string, fracao: number | null): void {
+    if (fracao === null) this.alturasPorPlot.delete(plotId);
+    else this.alturasPorPlot.set(plotId, fracao);
+
+    const pane = this.panesVivas.find((p) => p.plotId === plotId);
+    if (pane === undefined) return;
+    try {
+      this.chart.setPaneHeightFraction(pane.paneIndex, fracao);
+    } catch {
+      // Motor sem a pane (em descarte) ou sem o metodo: no-op.
+    }
+  }
+
+  /** A fracao pedida para o sub-painel de um indicador, ou `null`. */
+  paneHeightOf(plotId: string): number | null {
+    return this.alturasPorPlot.get(plotId) ?? null;
+  }
+
   /** O indicador esta visivel? Plot desconhecido conta como visivel (o default). */
   isVisible(plotId: string): boolean {
     return this.visiveis.get(plotId) !== false;
@@ -447,6 +488,15 @@ export class IndicatorPlotter {
     if (precisaPane) {
       paneDoPlot = this.chart.addPane();
       this.panesVivas.push({ plotId: plot.id, paneIndex: paneDoPlot });
+      // Reaplica a altura pedida — a pane e NOVA e nasce na reparticao automatica.
+      const alturaPedida = this.alturasPorPlot.get(plot.id);
+      if (alturaPedida !== undefined) {
+        try {
+          this.chart.setPaneHeightFraction(paneDoPlot, alturaPedida);
+        } catch {
+          // Motor sem o metodo: a altura fica a automatica, sem derrubar a criacao.
+        }
+      }
     }
 
     // ⭐ Banda preenchida (Bollinger/Keltner): se este plot tem uma saida marcada

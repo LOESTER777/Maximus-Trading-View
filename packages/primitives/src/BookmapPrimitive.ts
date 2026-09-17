@@ -336,6 +336,40 @@ export interface BookmapLayerOptions {
    * layer.update({ relogio: makeClockFormatter(PRESENTATION_UTC, { withSeconds: false }) });
    */
   readonly relogio?: ClockFormatter;
+  /**
+   * ⭐ PUBLICA as linhas de legenda em vez de a camada escolher um canto.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O DEFEITO QUE ISTO ENCERRA — E POR QUE `posicaoLegenda` NÃO BASTOU
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * *"o bookmap ainda está em cima do histograma de volume, ele precisa ficar no topo
+   * alinhado ao lado de quem está lá, pois pode haver outros componentes"*.
+   *
+   * `posicaoLegenda` deu ao consumidor a escolha entre DOIS cantos, e o playground
+   * escolheu o de baixo para fugir da fita de O/H/L/C. Só que os 15% inferiores do
+   * painel são a faixa do histograma de volume — uma escala de OVERLAY com
+   * `scaleMargins`, que esta camada não conhece e não tem como conhecer. A colisão
+   * mudou de canto, não desapareceu. Foi a segunda vez.
+   *
+   * ⭐ A saída não é um terceiro canto: é a camada **deixar de escolher canto**. Ela
+   * publica o texto; quem monta a interface empilha tudo numa trilha única, alinhado —
+   * que é literalmente o que o operador pediu. Ver `legend-rail.core.ts` no
+   * `charts-core` para a ordem da fila e o porquê dela.
+   *
+   * ⚠️ Chamado **só quando o conteúdo MUDA**, e a comparação é por texto. A legenda é
+   * remontada na construção do plano, muitas vezes por segundo; notificar por quadro
+   * faria o consumidor React re-renderizar 60 vezes por segundo com o mesmo texto — a
+   * mesma armadilha que causou o laço infinito de `useAlerts` com `bars` literal.
+   *
+   * ⚠️ Publicar é INDEPENDENTE de desenhar. Com `mostrarLegenda: false` a camada fica
+   * muda no canvas e **continua publicando**: é exatamente a combinação que a trilha
+   * usa. Quem não passa este callback não paga nada.
+   *
+   * ⚠️ O callback é tratado como código de terceiro: exceção nele não pode derrubar a
+   * construção do plano, então a chamada é cercada.
+   */
+  readonly onLegenda?: (linhas: readonly string[], alerta: boolean) => void;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1121,11 +1155,32 @@ class DrawPlan {
  * lugar só onde ela é tratada.
  */
 class BookmapRenderer implements IPrimitivePaneRenderer {
+  /**
+   * @param camada `'formas'` desenha o heatmap (fila, execução, contorno, hachura);
+   *   `'texto'` desenha só a legenda e o rodapé.
+   *
+   * ⭐ A separação existe porque as duas coisas pertencem a CAMADAS DE PROFUNDIDADE
+   * diferentes. O heatmap é FUNDO — o contrato desta camada é "antes das velas, nenhum
+   * pixel de vela coberto". A legenda é LEITURA: atrás das velas e do histograma de
+   * volume ela fica ilegível, que é exatamente o problema que a caixa opaca veio
+   * resolver.
+   *
+   * ⚠️ Antes disso não importava, porque o motor desenhava TODAS as primitives depois
+   * das séries — `zOrder` só ordenava primitives entre si. Corrigido o motor (o bookmap
+   * era plotado em cima do volume), a legenda iria para trás junto com o heatmap se
+   * continuassem na mesma view.
+   *
+   * ⚠️ Só a passada de FORMAS reporta a medição de desempenho. O orçamento de 8 ms é do
+   * custo de emitir milhares de retângulos; alimentar a mediana com a passada de texto
+   * (que custa quase nada) a derrubaria pela metade e desligaria a degradação adaptativa
+   * na prática.
+   */
   constructor(
     private readonly plan: DrawPlan,
     private readonly clock: () => number,
     private readonly reportPass: (elapsedMs: number) => void,
     private readonly reportFailure: (erro: unknown) => void,
+    private readonly camada: 'formas' | 'texto' = 'formas',
   ) {}
 
   /**
@@ -1175,7 +1230,8 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
       }
       return;
     }
-    this.reportPass(this.clock() - inicioMs);
+    // Ver o `camada` no construtor: texto não entra no orçamento de desenho.
+    if (this.camada === 'formas') this.reportPass(this.clock() - inicioMs);
   }
 
   /**
@@ -1194,6 +1250,16 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
       const ctx = scope.context;
       const hpr = scope.horizontalPixelRatio;
       const vpr = scope.verticalPixelRatio;
+
+      // ⭐ CAMADA DE TEXTO: só a etapa 6, e sai.
+      //
+      // Ela é uma passada SEPARADA porque vive em outra profundidade (`zOrder: 'top'`)
+      // enquanto o heatmap vive no fundo (`'bottom'`, antes das velas). Ver o `camada`
+      // no construtor do renderizador para o defeito que motivou a divisão.
+      if (this.camada === 'texto') {
+        this.drawText(ctx, plan, scope.bitmapSize.width, scope.bitmapSize.height, hpr, vpr);
+        return;
+      }
 
       // ── 1 e 2: retângulos de fila, em lote por bucket ──
       //
@@ -1242,11 +1308,11 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
       // ── 5: hachura de cobertura ausente ──
       this.fillHatch(ctx, plan.hatch, scope.bitmapSize.height, hpr, vpr);
 
-      // ── 6: legenda e rodapé, cada um em caixa opaca ──
-      // A supressão acontece no PLANO (listas vazias), não aqui: o renderizador
-      // não decide nada por contrato. Ver `mostrarLegenda` e `mostrarDiagnostico`
-      // — é em `buildLegend` que se decide o que cada canal escreve.
-      this.drawText(ctx, plan, scope.bitmapSize.width, scope.bitmapSize.height, hpr, vpr);
+      // ── 6: legenda e rodapé — NÃO aqui. Ver o desvio no topo deste método.
+      //
+      // A supressão do conteúdo continua acontecendo no PLANO (listas vazias), não no
+      // renderizador: ver `mostrarLegenda` e `mostrarDiagnostico` — é em `buildLegend`
+      // que se decide o que cada canal escreve.
     });
   }
 
@@ -1597,6 +1663,34 @@ class BookmapPaneView implements IPrimitivePaneView {
   }
 }
 
+/**
+ * A view que põe a LEGENDA no topo da pilha visual.
+ *
+ * ⭐ Existe porque o heatmap e a legenda pertencem a profundidades opostas. O heatmap é
+ * contexto e vai ao fundo (`BookmapPaneView`, `'bottom'`, antes das velas). A legenda é
+ * leitura: atrás das velas e do histograma de volume ela fica ilegível — e é justamente
+ * o problema que a caixa opaca de contraste veio resolver.
+ *
+ * ⚠️ Enquanto o motor desenhava TODAS as primitives depois das séries, as duas podiam
+ * viver na mesma view sem consequência: o `zOrder` só ordenava primitives entre si.
+ * Corrigido o motor — o bookmap era plotado em cima do volume —, manter a legenda na
+ * view de fundo a mandaria para trás do volume junto com o heatmap.
+ */
+class BookmapTextPaneView implements IPrimitivePaneView {
+  constructor(
+    private readonly renderer_: BookmapRenderer,
+    private readonly hasContent: () => boolean,
+  ) {}
+
+  zOrder(): 'top' {
+    return 'top';
+  }
+
+  renderer(): IPrimitivePaneRenderer | null {
+    return this.hasContent() ? this.renderer_ : null;
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // O primitive
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1656,6 +1750,9 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
 
   private readonly plan = new DrawPlan();
   private readonly view: BookmapPaneView;
+  private readonly viewTexto: BookmapTextPaneView;
+  /** Última legenda entregue ao consumidor, como cadeia. Ver `publicarLegenda`. */
+  private legendaPublicada: string | null = null;
   private readonly views: readonly IPrimitivePaneView[];
 
   /** Escala da fila, compartilhada pelos dois lados (requisito 2.9). */
@@ -1769,9 +1866,22 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
       (erro) => this.onPaintFailure(erro),
     );
     this.view = new BookmapPaneView(renderer, () => this.hasContent());
+    // A passada de TEXTO, no topo da pilha. Mesmo plano de desenho, outra profundidade.
+    const rendererTexto = new BookmapRenderer(
+      this.plan,
+      () => this.clock(),
+      (elapsedMs) => this.onPassCompleted(elapsedMs),
+      (erro) => this.onPaintFailure(erro),
+      'texto',
+    );
+    this.viewTexto = new BookmapTextPaneView(rendererTexto, () => this.hasContent());
     // Sempre o MESMO array: a biblioteca mantém cache interno por referência e
     // devolver um array novo por chamada invalidaria esse cache a cada quadro.
-    this.views = [this.view];
+    //
+    // ⚠️ A ORDEM aqui não decide profundidade — o `zOrder` de cada view decide, e o
+    // motor agrupa por camada. `[formas, texto]` é a ordem de leitura, e mantém
+    // `paneViews()[0]` sendo o heatmap, que é o que as bancadas herdadas inspecionam.
+    this.views = [this.view, this.viewTexto];
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -2766,6 +2876,27 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
    * classe vem exclusivamente do campo da resposta, nunca inferida das células
    * desenhadas.
    */
+  /**
+   * Entrega as linhas ao consumidor, uma vez por MUDANÇA de conteúdo.
+   *
+   * ⚠️ A memória é a cadeia junta, e não o array: arrays novos com o mesmo texto são o
+   * caso NORMAL (a legenda é remontada por quadro), e comparar referência notificaria
+   * sempre. O separador `\u0000` não pode aparecer no texto, então não há colisão entre
+   * `['ab','c']` e `['a','bc']`.
+   */
+  private publicarLegenda(linhas: readonly string[], alerta: boolean): void {
+    const cb = this.options.onLegenda;
+    if (cb === undefined) return;
+    const chave = `${alerta ? '!' : ''}${linhas.join('\u0000')}`;
+    if (chave === this.legendaPublicada) return;
+    this.legendaPublicada = chave;
+    try {
+      cb(linhas, alerta);
+    } catch {
+      // Consumidor que lança não derruba a construção do plano.
+    }
+  }
+
   private buildLegend(
     coverage: CoverageView,
     scaleBase: ColorScale,
@@ -2867,6 +2998,11 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
      *
      * Ausência da opção mantém o desenho, byte a byte como antes.
      */
+    // ⭐ PUBLICA antes de decidir se desenha. Ver `onLegenda`: a trilha de legendas usa
+    // justamente `mostrarLegenda: false` + publicação, e a ordem importa — publicar
+    // depois da supressão publicaria lista vazia.
+    this.publicarLegenda(linhas, this.plan.legendAlerta);
+
     if (this.options.mostrarLegenda === false) {
       this.plan.legend = [];
       this.plan.legendAlerta = false;

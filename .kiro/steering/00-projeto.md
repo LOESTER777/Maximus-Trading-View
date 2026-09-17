@@ -11,6 +11,55 @@ de provedor de gráfico de terceiro.
 (conta `LOESTER777`, via **SSH**). Branch `main` com tracking. Antes o repositório
 era só local.
 
+## ⭐⭐ DADO REAL — o histórico da mesa está ligado (17/09/2026)
+
+O playground não é mais só sintético. Existe um serviço HTTP de leitura de barras na
+**máquina B** (Postgres `tick_archive` em `192.168.15.183:5433`), alcançado por um túnel
+systemd `--user` já ativo nesta máquina:
+
+```
+robustus-bars-tunnel.service   A:18899 -> B:8899
+curl http://127.0.0.1:18899/health   # {"ok": true, "service": "bars_api"}
+```
+
+Medido com `curl` em 17/09/2026:
+
+| ativo | barras diárias | de | até |
+|---|---|---|---|
+| **`WIN`** | **6.376** | **2005-02-18** | 2026-09-16 |
+| `WDO` | 2.574 | 2021-05 | 2026-09-16 |
+| `BTC` | 3.318 | 2017-08 | 2026-09-16 |
+| `PETR4`,`VALE3`,`ITUB4`,`BBAS3` | ~2.536 | 2021-07 | 2026-09-16 |
+| `BOVA11` | 1.248 | 2021-07 | 2026-08 |
+
+⭐ **5.163 dos 6.376 dias do WIN trazem `buy_vol`/`sell_vol`** — volume por AGRESSOR, o
+insumo de delta e footprint. Quase nenhum provedor entrega isso.
+
+Rota: `GET /candles?asset=WIN&tf=5min&from=<epoch_s>&to=<epoch_s>` → `{asset, tf, count,
+cols, rows}`, COLUNAR. `bar_epoch` já é epoch em **segundos**. `to` é **exclusivo**.
+
+⚠️ **`/candles` não tem `LIMIT` nem paginação.** Sem `from`/`to` devolve a série inteira
+(18 anos de 5min). O projeto de origem já matou o próprio processo servindo 28 MB de JSON
+de uma vez — por isso `montarCaminhoDeBarras` **recusa** pedido sem janela.
+
+⚠️ **M1 não existe** na base (a agregação materializa 5min do tick e deriva 15min/1h/D1);
+M30 e H4 também não (são agregáveis com `rollupBars`). ⚠️ O símbolo aceito é
+`[A-Za-z0-9]{1,16}` — **`WIN$` é recusado**; o nome canônico é `WIN`. ⚠️ `bid_size`/
+`ask_size` vêm **nulos** em quase todo o histórico: o book não foi gravado, então bookmap
+em dado antigo fica vazio e isso é a verdade sobre o dado, não defeito da camada.
+
+O adaptador é `packages/datafeed/src/robustus-bars.core.ts` (dialeto PURO) +
+`robustus-bars-source.ts` (reusa `createHttpBarsSource`, sem segundo cliente HTTP). O
+playground usa por `apps/playground/src/mesa.ts`, com **proxy do Vite** em `/mesa` — o
+serviço não emite CORS e não se toca em código que o robô usa para operar.
+
+⚠️ **Lote vazio NÃO é fim de histórico.** Pedir um domingo devolve zero barras; quem
+caminha pela "barra mais antiga recebida" repete a mesma janela para sempre e o gráfico
+afirma não haver passado. Use `janelaAnterior` (anda pelo `from` PEDIDO) e `alcancouInicio`
+(o único critério de fim é alcançar o `MIN(bar_epoch)` da cobertura). Provado contra o
+serviço: 8 lotes atravessando sábado, domingo e o feriado de 7/9 = 570 barras únicas, zero
+duplicadas.
+
 ## Origem do código — leia antes de mexer
 
 A maior parte dos núcleos foi **copiada** de um cockpit de mesa em produção:
@@ -29,10 +78,10 @@ cosmética.
 
 | Pacote | Situação | Testes |
 |---|---|---|
-| `@robustus/charts-core` | 14 núcleos puros, compila **sem DOM** | herdados |
+| `@robustus/charts-core` | 16 núcleos puros, compila **sem DOM** (+ **trilha de legendas**, **leitura do ativo**) | herdados + 40 |
 | `@robustus/charts-primitives` | `BookmapPrimitive` (2.669 linhas), `FootprintPrimitive`, **`VolumeProfilePrimitive`** (histograma por LINHA) | herdados + 22 |
 | `@robustus/chart-core` | motor de renderização próprio em canvas (eixo, escala, panes, interação) | herdados |
-| `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador + **vocabulário de TIMEFRAME** | ~140 |
+| `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador + vocabulário de TIMEFRAME + ⭐ **fonte de barras da MESA** (histórico real) | ~168 |
 | `@robustus/charts-indicators` | 29 indicadores incrementais (warmup+update+preview O(1)), registry | 79 |
 | `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 |
 | `@robustus/charts-engine` | motor sem framework | 18 novos |
@@ -42,7 +91,7 @@ cosmética.
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test            # 1588 testes, 80 arquivos
+npm test            # 1695 testes, 88 arquivos
 npm run build       # todos os pacotes
 npm run verify      # ⭐ typecheck + typecheck:playground + check ESM + testes
 npm run smoke:consumo  # empacota, instala FORA do workspace e importa em Node ESM puro

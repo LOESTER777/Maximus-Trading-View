@@ -201,3 +201,15 @@ export type {
 } from '@robustus/charts-engine';
 
 export { ChartEngine, isValidCandle } from '@robustus/charts-engine';
+
+// ⭐ A trilha de legendas das camadas de canvas — ver `useLayerLegends.ts`.
+export { useLayerLegends } from './useLayerLegends.js';
+
+// ⭐ O painel de LEITURA do ativo (desempenho, sazonalidade, termometro) — ver `AssetReadout.tsx`.
+export { AssetReadout } from './AssetReadout.js';
+export type {
+  AssetReadoutProps,
+  DesempenhoDeJanela,
+  AnoSazonal,
+  TermometroLido,
+} from './AssetReadout.js';

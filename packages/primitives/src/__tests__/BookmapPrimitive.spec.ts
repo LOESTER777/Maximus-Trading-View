@@ -423,12 +423,21 @@ function montarBancada(
       quadros = 0;
     },
     rendererCorrente,
+    // ⚠️ TODAS as views, e não só a primeira: a camada tem duas desde que o motor foi
+    // corrigido (o bookmap era desenhado em cima do volume). O heatmap ficou em
+    // `zOrder: 'bottom'`, ANTES das velas, e a legenda foi para `'top'` para continuar
+    // legível. Estas bancadas afirmam o TEXTO — inspecionar só a primeira view mediria
+    // um quadro que o motor nunca produz.
     desenharUmaPassada: (): boolean => {
       primitive.updateAllViews();
-      const r = rendererCorrente();
-      if (r === null) return false;
-      r.draw(alvo);
-      return true;
+      let desenhou = false;
+      for (const view of primitive.paneViews()) {
+        const r = view.renderer();
+        if (r === null) continue;
+        (r as { draw: (a: CanvasRenderingTarget2D) => void }).draw(alvo);
+        desenhou = true;
+      }
+      return desenhou;
     },
   };
 }
@@ -1217,10 +1226,13 @@ describe('BookmapPrimitive — a bolha não se funde em corrente', () => {
     );
     primitive.attached(anexacaoComJanela(() => undefined, fator));
     primitive.updateAllViews();
-    const view = primitive.paneViews()[0];
-    const r = view?.renderer() as { draw: (a: CanvasRenderingTarget2D) => void } | null;
     ctx.zerar();
-    if (r !== null && r !== undefined) r.draw(alvo);
+    // Todas as views (heatmap em `bottom`, legenda em `top`) — ver a nota em
+    // `desenharUmaPassada`: este teste também lê texto (o aviso de zoom apertado).
+    for (const view of primitive.paneViews()) {
+      const r = view.renderer() as { draw: (a: CanvasRenderingTarget2D) => void } | null;
+      if (r !== null) r.draw(alvo);
+    }
     return ctx;
   }
 

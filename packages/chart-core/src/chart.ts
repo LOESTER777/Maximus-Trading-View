@@ -45,6 +45,7 @@ import type {
   IChartApi,
   IPriceScaleApi,
   ISeriesApi,
+  ISeriesPrimitive,
   ITimeScaleApi,
   LogicalRange,
   MouseEventParams,
@@ -141,6 +142,14 @@ interface Pane {
   readonly overlayScales: Map<string, PriceScaleState>;
   /** Fracao da altura total que esta pane ocupa. */
   heightFraction: number;
+  /**
+   * Fração PEDIDA pelo consumidor (`setPaneHeightFraction`), ou `null`.
+   *
+   * ⚠️ Separada de `heightFraction` de propósito: esta é a INTENÇÃO e sobrevive ao
+   * rebalanceamento; a outra é o RESULTADO, recalculado a cada pane que entra ou sai.
+   * Guardar só o resultado faria a intenção ser apagada pelo próximo indicador ligado.
+   */
+  heightFractionFixa: number | null;
   readonly series: SeriesImpl<SeriesType>[];
   /**
    * Escala de preco em modo MANUAL.
@@ -268,6 +277,13 @@ export class RobustusChartCore implements IChartApi {
   private dragging = false;
   private lastPointerX = 0;
   private lastPointerY = 0;
+  /**
+   * O `pointerdown` corrente foi consumido por outra camada (`defaultPrevented`)?
+   *
+   * Guarda a decisao do `pointerdown` para o `pointerup` do mesmo gesto NAO emitir
+   * clique. Ver a nota longa em `onPointerDown`.
+   */
+  private cliqueSuprimido = false;
 
   /**
    * Ponteiros ATIVOS, por `pointerId`, em pixel logico.
@@ -350,6 +366,7 @@ export class RobustusChartCore implements IChartApi {
         ),
         overlayScales: new Map(),
         heightFraction: 1,
+        heightFractionFixa: null,
         series: [],
         priceScaleManual: false,
         collapsed: false,
@@ -531,6 +548,7 @@ export class RobustusChartCore implements IChartApi {
       priceScale: createPriceScaleState(0.15, 0.15),
       overlayScales: new Map(),
       heightFraction: 0, // definido por rebalancePanes
+      heightFractionFixa: null,
       series: [],
       priceScaleManual: false,
       collapsed: false,
@@ -591,14 +609,46 @@ export class RobustusChartCore implements IChartApi {
       this.panes[0]!.heightFraction = 1;
       return;
     }
-    // Principal com 62%, sub-paineis dividindo 38% — os mesmos valores de antes,
-    // agora num lugar so.
-    this.panes[0]!.heightFraction = 0.62;
-    for (let k = 1; k < this.panes.length; k++) {
-      const p = this.panes[k]!;
-      if (p.collapsed) continue;
-      p.heightFraction = 0.38 / subs;
+
+    // ⭐ Fração FIXADA pelo consumidor vence a repartição automática. Ver
+    // `setPaneHeightFraction`: sem isto, ligar o indicador seguinte apagaria a altura que
+    // o operador pediu.
+    const visiveis = this.panes.filter((p) => p.index !== 0 && !p.collapsed);
+    let fixado = 0;
+    let semFixar = 0;
+    for (const p of visiveis) {
+      if (p.heightFractionFixa === null) semFixar += 1;
+      else fixado += p.heightFractionFixa;
     }
+
+    // ⚠️ Teto de 80% para os sub-painéis no total: o preço nunca fica com menos de 20% da
+    // tela. Sem este piso, fixar 60% em duas panes deixaria o gráfico de preço numa tira
+    // de poucos pixels — o defeito de "não aparece nenhuma vela" por outro caminho. O
+    // excesso é recortado PROPORCIONALMENTE, para a ordem relativa que o operador pediu
+    // ser preservada.
+    const TETO_SUBPANEIS = 0.8;
+    let escala = 1;
+    if (fixado > TETO_SUBPANEIS) {
+      escala = TETO_SUBPANEIS / fixado;
+      fixado = TETO_SUBPANEIS;
+    }
+
+    // O que sobra para as panes SEM fração fixa: até os 38% históricos, limitado pelo que
+    // as fixadas já tomaram. Quando todas têm fração fixa, o resto vai para o preço — quem
+    // fixou tudo decidiu tudo.
+    const paraAsLivres = Math.max(0, Math.min(0.38, TETO_SUBPANEIS - fixado));
+    // Piso de 4% por pane livre: abaixo disso ela não cabe nem no eixo de preço dela, e o
+    // operador veria uma tira sem nada em vez de um indicador.
+    const porPaneLivre = semFixar > 0 ? Math.max(0.04, paraAsLivres / semFixar) : 0;
+
+    let usado = 0;
+    for (const p of visiveis) {
+      p.heightFraction =
+        p.heightFractionFixa === null ? porPaneLivre : p.heightFractionFixa * escala;
+      usado += p.heightFraction;
+    }
+    // O preço fica com o resto, com piso de 20%.
+    this.panes[0]!.heightFraction = Math.max(0.2, 1 - usado);
   }
 
   /**
@@ -627,6 +677,58 @@ export class RobustusChartCore implements IChartApi {
     if (pane.collapsed) pane.priceScaleManual = false;
     this.rebalancePanes();
     this.measure();
+  }
+
+  /**
+   * ⭐ A ALTURA de um sub-painel, como fração da altura útil do gráfico.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O PEDIDO QUE ISTO ATENDE
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * *"redução de altura da seção do histograma"*.
+   *
+   * ⚠️ Antes a repartição era FIXA: 62% para o preço e 38% divididos igualmente entre os
+   * sub-painéis. Com três osciladores ligados, cada um ficava com ~12,7% e o preço perdia
+   * mais de um terço da tela — para indicadores que só precisam de altura suficiente para
+   * mostrar forma, não nível. E o operador não tinha como dizer isso: a divisória
+   * arrastável muda a altura de UM par de vizinhos, não a proporção do conjunto, e o valor
+   * arrastado se perde na próxima vez que um indicador é ligado (`rebalancePanes` recalcula
+   * tudo).
+   *
+   * ⭐ `fracao` é RELATIVA e não absoluta, e isso importa: o gráfico é redimensionável.
+   * Fixar 90 px faria o sub-painel ocupar metade da tela num celular e uma tira invisível
+   * num monitor de 4K.
+   *
+   * ⚠️ A fração pedida é MARCADA (`heightFractionFixa`) e sobrevive a `rebalancePanes` —
+   * senão ligar o indicador seguinte apagaria a escolha, que é exatamente o defeito que a
+   * divisória arrastável já tem. As panes SEM fração fixa continuam dividindo o que sobra
+   * por igual.
+   *
+   * ⚠️ Piso e teto declarados: abaixo de 4% o sub-painel não cabe nem no eixo de preço
+   * dele, e acima de 60% ele deixaria de ser sub-painel. Valor fora da faixa é RECORTADO
+   * em vez de recusado — o consumidor pediu "bem pequeno", e recusar deixaria a tela como
+   * estava sem dizer por quê.
+   *
+   * A pane principal (índice 0) não aceita fração: ela recebe o que sobra, por definição.
+   */
+  setPaneHeightFraction(paneIndex: number, fracao: number | null): void {
+    if (this.disposed || paneIndex === 0) return;
+    const pane = this.panes.find((p) => p.index === paneIndex);
+    if (pane === undefined) return;
+    if (fracao === null) {
+      pane.heightFractionFixa = null;
+    } else {
+      if (!Number.isFinite(fracao)) return;
+      pane.heightFractionFixa = Math.min(0.6, Math.max(0.04, fracao));
+    }
+    this.rebalancePanes();
+    this.measure();
+  }
+
+  /** A fração fixada para um sub-painel, ou `null` quando ele divide o que sobra. */
+  paneHeightFraction(paneIndex: number): number | null {
+    return this.panes.find((p) => p.index === paneIndex)?.heightFractionFixa ?? null;
   }
 
   /** O sub-painel esta visivel? Pane inexistente conta como nao visivel. */
@@ -872,6 +974,8 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.addEventListener('pointerup', this.onPointerUp);
     this.canvas.addEventListener('pointercancel', this.onPointerCancel);
     this.canvas.addEventListener('pointerleave', this.onPointerLeave);
+    // ⭐ A REDE DE SEGURANCA do arrasto. Ver `onLostPointerCapture`.
+    this.canvas.addEventListener('lostpointercapture', this.onLostPointerCapture);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('dblclick', this.onDoubleClick);
   }
@@ -882,6 +986,7 @@ export class RobustusChartCore implements IChartApi {
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave);
+    this.canvas.removeEventListener('lostpointercapture', this.onLostPointerCapture);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('dblclick', this.onDoubleClick);
   }
@@ -1013,6 +1118,41 @@ export class RobustusChartCore implements IChartApi {
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
+
+    // ⭐⭐ O GESTO JA FOI CONSUMIDO POR OUTRA CAMADA — e isto corrige um defeito grave.
+    //
+    // ⚠️ RELATO: *"os componentes de linhas e indicadores para inserir na mão pararam de
+    // funcionar, quando clica, o gráfico arrasta por inteiro"*.
+    //
+    // O motor escuta ponteiro no CANVAS; a camada de desenho escuta no CONTAINER, que e
+    // o pai do canvas. O motor ligava `dragging = true` e chamava
+    // `canvas.setPointerCapture` ANTES de a ferramenta ser consultada. Em seguida a
+    // camada de desenho chamava `container.setPointerCapture`, ROUBANDO a captura — e a
+    // partir dai `pointermove` e `pointerup` eram despachados no container. O
+    // `onPointerUp` do canvas, unico lugar que baixa `dragging`, NUNCA chegava.
+    //
+    // Consequencia medida no codigo: terminado o desenho, `dragging` continuava `true` e
+    // `lastPointerX` guardava a posicao do gesto ANTERIOR. Qualquer movimento do mouse
+    // sobre o grafico — sem botao nenhum pressionado — passava a panar o eixo, com um
+    // salto grande no primeiro quadro. O grafico "arrastava por inteiro" e a ferramenta
+    // parecia morta porque o eixo corria debaixo dela.
+    //
+    // ⭐ A CORRECAO E UM CONTRATO, NAO UMA GAMBIARRA: `defaultPrevented` e o mecanismo
+    // que o DOM ja tem para "esta camada tratou o gesto". Quem trata chama
+    // `preventDefault()` na fase de CAPTURA (antes do canvas, portanto), e o motor nao
+    // inicia arrasto nenhum. E o mesmo protocolo do navegador para acao default.
+    //
+    // ⚠️ O motor continua NAO conhecendo o pacote de desenho (regra 4 do grafo de
+    // dependencia). Ele nao pergunta "ha ferramenta ativa?": ele obedece a um sinal
+    // padrao do evento, que qualquer camada — desenho, medicao, anotacao — pode usar.
+    if (e.defaultPrevented) {
+      // O clique tambem nao e do grafico: emiti-lo faria a caixa de propriedades de
+      // indicador abrir no meio de uma insercao de linha.
+      this.cliqueSuprimido = true;
+      return;
+    }
+    this.cliqueSuprimido = false;
+
     // ⭐ O usuario agarrou o grafico: a transicao em curso morre AQUI, onde o eixo
     // está. Continuar a rampa faria o conteudo escorregar debaixo da mao dele, e
     // saltar para o destino arrancaria a tela no instante do toque.
@@ -1022,6 +1162,15 @@ export class RobustusChartCore implements IChartApi {
     const y = e.clientY - r.top;
 
     this.pointers.set(e.pointerId, { x, y });
+
+    // ⭐ O crosshair tambem e atualizado no PRESSIONAR, e nao so no mover.
+    //
+    // ⚠️ `emitClick` le a posicao daqui e desiste quando ela e `null`. Num mouse sempre
+    // ha `pointermove` antes do clique, entao o defeito nao aparecia — mas num TOQUE o
+    // dedo desce sem mover: `crosshair` seguia `null` e o clique NUNCA era emitido.
+    // Efeito pratico: "clicar num indicador abre as propriedades dele" nao funcionava em
+    // tela sensivel ao toque, sem erro nenhum para dar pista.
+    this.crosshair = { x, y };
 
     // ⭐ Dois ponteiros ativos => PINCA. Cancela pan e escala de eixo em curso: o
     // segundo dedo muda a natureza do gesto, e continuar panando com um deles
@@ -1199,6 +1348,24 @@ export class RobustusChartCore implements IChartApi {
     // ponteiro que nunca sera removido por `pointerup`.
     if (this.pointers.has(e.pointerId)) this.pointers.set(e.pointerId, { x, y });
 
+    // ⭐ SEGUNDA REDE: arrasto "em curso" com NENHUM botao pressionado nao existe.
+    //
+    // ⚠️ Se `pointerup` se perder — captura roubada por outra camada, janela que perde
+    // o foco no meio do gesto, ponteiro que sobe fora do documento —, `dragging` ficaria
+    // ligado e o simples HOVER passaria a panar o grafico. Foi o defeito relatado ("o
+    // gráfico arrasta por inteiro"), e o `lostpointercapture` acima cobre a causa
+    // conhecida; esta guarda cobre as que ainda nao aconteceram.
+    //
+    // ⚠️ Ela so ENCERRA gesto, nunca comeca: um `pointermove` sem botao com nada em
+    // curso nao muda nada. E por isso e barata e nao tem como quebrar o pan legitimo,
+    // onde `buttons` traz o bit do botao principal durante todo o arrasto.
+    if (
+      e.buttons === 0 &&
+      (this.dragging || this.scalingPriceAxis || this.resizingBoundary !== null)
+    ) {
+      this.encerrarGestos();
+    }
+
     // ⭐ PINCA tem precedencia sobre tudo: dois dedos na tela e gesto de zoom.
     //
     // ⚠️ Sai daqui mesmo com a pinca DESLIGADA (`pinchInicio === null`). Cair no pan
@@ -1280,16 +1447,47 @@ export class RobustusChartCore implements IChartApi {
     if (this.canvas.style.cursor !== desejado) this.canvas.style.cursor = desejado;
   }
 
-  private readonly onPointerUp = (e: PointerEvent): void => {
-    const estavaEscalando = this.scalingPriceAxis;
-    const estavaRedimensionando = this.resizingBoundary !== null;
-    const estavaEmPinca = this.pointers.size >= 2;
-
-    this.esquecerPonteiro(e.pointerId);
+  /**
+   * Baixa TODO gesto de arrasto em curso.
+   *
+   * Existe como metodo porque tres caminhos precisam do mesmo encerramento — soltar,
+   * cancelar e PERDER A CAPTURA — e tres copias divergiriam no primeiro campo novo.
+   */
+  private encerrarGestos(): void {
     this.dragging = false;
     this.scalingPriceAxis = false;
     this.scalingPane = null;
     this.resizingBoundary = null;
+  }
+
+  /**
+   * ⭐ A captura do ponteiro foi PERDIDA — a rede de seguranca do arrasto.
+   *
+   * ⚠️ Quando outra camada chama `setPointerCapture` no container (a de desenho faz
+   * exatamente isso para o gesto nao escapar do elemento), a captura do canvas cai e
+   * `pointermove`/`pointerup` passam a ser despachados no container. O `onPointerUp`
+   * deste canvas NUNCA chega, e sem este ouvinte `dragging` ficaria `true` para
+   * sempre: mover o mouse depois — sem botao — arrastaria o grafico inteiro. Foi o
+   * defeito relatado; ver a nota longa em `onPointerDown`.
+   *
+   * ⚠️ Chamar isto no fim de um arrasto NORMAL e inofensivo por construcao: o
+   * navegador solta a captura DEPOIS do `pointerup`, e `pointerup` ja encerrou tudo.
+   * O metodo e idempotente.
+   */
+  private readonly onLostPointerCapture = (e: PointerEvent): void => {
+    this.esquecerPonteiro(e.pointerId);
+    this.encerrarGestos();
+  };
+
+  private readonly onPointerUp = (e: PointerEvent): void => {
+    const estavaEscalando = this.scalingPriceAxis;
+    const estavaRedimensionando = this.resizingBoundary !== null;
+    const estavaEmPinca = this.pointers.size >= 2;
+    const gestoDeOutraCamada = this.cliqueSuprimido;
+
+    this.esquecerPonteiro(e.pointerId);
+    this.encerrarGestos();
+    this.cliqueSuprimido = false;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
@@ -1297,8 +1495,11 @@ export class RobustusChartCore implements IChartApi {
     }
     // Arrasto de escala, redimensionamento de pane e pinca nao sao clique do
     // grafico — emiti-los faria a camada de desenho criar uma figura ao fim de cada
-    // gesto de ajuste.
-    if (!estavaEscalando && !estavaRedimensionando && !estavaEmPinca) this.emitClick();
+    // gesto de ajuste. E gesto que outra camada consumiu no `pointerdown` (ver
+    // `cliqueSuprimido`) tambem nao e clique do grafico.
+    if (!estavaEscalando && !estavaRedimensionando && !estavaEmPinca && !gestoDeOutraCamada) {
+      this.emitClick();
+    }
   };
 
   /**
@@ -1312,10 +1513,8 @@ export class RobustusChartCore implements IChartApi {
    */
   private readonly onPointerCancel = (e: PointerEvent): void => {
     this.esquecerPonteiro(e.pointerId);
-    this.dragging = false;
-    this.scalingPriceAxis = false;
-    this.scalingPane = null;
-    this.resizingBoundary = null;
+    this.encerrarGestos();
+    this.cliqueSuprimido = false;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
@@ -1695,6 +1894,23 @@ export class RobustusChartCore implements IChartApi {
         ctx.clip();
         ctx.translate(0, topo * this.dpr);
 
+        // ⭐ CAMADA `bottom` ANTES DAS SERIES — e isto corrige um defeito relatado:
+        // *"o bookmap está sendo plotado em cima das médias de volume"*.
+        //
+        // ⚠️ Todas as primitives eram desenhadas DEPOIS de `renderPane`, e o `zOrder`
+        // só ordenava as primitives ENTRE SI. Logo `'bottom'` não significava nada em
+        // relação às séries: o heatmap de livro cobria velas, histograma de volume e
+        // linha de indicador. E o contrato da camada afirma o contrário, com estas
+        // palavras: *"as formas são emitidas no canvas do gráfico antes das velas, então
+        // nenhum pixel de corpo, de sombra ou de borda de vela é coberto"*. O motor
+        // quebrava a promessa da própria camada.
+        //
+        // Agora `'bottom'` é pintado aqui, antes de qualquer série; `'normal'` e `'top'`
+        // continuam depois. É o que faz o bookmap ser FUNDO — que é a razão de ele
+        // existir como camada de contexto.
+        // `true` = esta passada é a que ATUALIZA as views (uma vez por quadro).
+        this.drawPrimitives(ctx, pane, ['bottom'], true);
+
         renderPane(
           ctx,
           this.dpr,
@@ -1725,7 +1941,8 @@ export class RobustusChartCore implements IChartApi {
         );
 
         this.drawPriceLines(ctx, pane);
-        this.drawPrimitives(ctx, pane);
+        // ⭐ `normal` e `top` DEPOIS das series; `bottom` já saiu ANTES (ver acima).
+        this.drawPrimitives(ctx, pane, ['normal', 'top']);
         this.drawMarkers(ctx, pane);
       } finally {
         ctx.restore();
@@ -2172,14 +2389,43 @@ export class RobustusChartCore implements IChartApi {
     }
     if (!Number.isFinite(min) || !Number.isFinite(max)) return;
 
-    // Grupo só de histograma: ancora em zero (ver o cabeçalho).
+    // ⭐ Grupo só de histograma: o ZERO É OBRIGATORIAMENTE VISÍVEL (ver o cabeçalho).
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // O DEFEITO RELATADO: "os indicadores de histograma novos não ficam persistentes"
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // ⚠️ A regra anterior era `autoScale(escala, 0, max)` mais `bottomPrice = 0` — e o
+    // `min` era DESCARTADO. Ela foi escrita para o VOLUME, cuja premissa "não é
+    // negativo" é verdadeira, e foi aplicada a todo grupo só-histograma. Mas
+    // histograma de INDICADOR oscila em torno do zero: Awesome Oscillator e a direção
+    // do SuperTrend têm o histograma como ÚNICA saída da pane separada, então caem
+    // exatamente aqui. Dois regimes de falha, ambos "aparece e desaparece":
+    //
+    //  1. Janela com máximo positivo (AO entre −50 e +5): a faixa virava `0..5,25` e
+    //     TODAS as barras negativas caíam fora do recorte da pane. Metade do
+    //     indicador simplesmente não existia na tela, e voltava ao rolar a janela.
+    //  2. Janela inteiramente negativa (SuperTrend em baixa, `direction` = −1 fixo):
+    //     `autoScale(escala, 0, −1)` dava folga NEGATIVA e faixa INVERTIDA
+    //     (`topPrice = −1,05`, base forçada a 0). As barras saíam espelhadas e
+    //     `priceTicks` devolvia vazio — sub-painel sem nenhum rótulo de preço era o
+    //     sintoma diagnóstico.
+    //
+    // ⭐ A regra correta não é "a base é zero", é **"o zero está na faixa"**. Ela vale
+    // para os dois casos porque é a premissa do próprio desenho: `drawHistogram` mede
+    // a altura da barra contra `priceToCoordinate(0)`. Zero fora da faixa = barra
+    // medida contra o pé do retângulo, que é desenho sem significado.
+    //
+    // ⚠️ Para volume o resultado é BYTE-IDÊNTICO ao anterior: com `min >= 0` a base
+    // continua colada no zero (sem a folga de 5% que mostraria volume negativo) e o
+    // topo continua `max + folga`. O teste herdado que blinda a âncora em zero
+    // (`escalas-de-overlay.spec.ts`) mede exatamente esse caso e segue valendo.
     const soHistograma = series.every((s) => s.model.type === 'Histogram');
     if (soHistograma) {
-      autoScale(escala, 0, max);
-      // `autoScale` poe folga simetrica de 5%, o que deixaria a base em -0,05·max e
-      // uma faixa de volume negativo visivel. Volume nao e negativo: cola a base no
-      // zero e mantem so a folga do topo.
-      escala.bottomPrice = 0;
+      autoScale(escala, Math.min(0, min), Math.max(0, max));
+      // Grandeza que nunca é negativa (volume): cola a base no zero em vez de deixar a
+      // folga simétrica abrir uma faixa de volume negativo que não existe.
+      if (min >= 0) escala.bottomPrice = 0;
       return;
     }
 
@@ -2256,25 +2502,70 @@ export class RobustusChartCore implements IChartApi {
     }
   }
 
-  private drawPrimitives(ctx: CanvasRenderingContext2D, pane: Pane): void {
+  /**
+   * Desenha as primitives das camadas pedidas.
+   *
+   * ⚠️ A LISTA de camadas é parâmetro porque `'bottom'` é pintado ANTES das séries e as
+   * outras duas DEPOIS — ver a nota no `render`. Antes este método desenhava as três de
+   * uma vez, sempre depois das séries, e por isso `'bottom'` não significava nada em
+   * relação a elas.
+   */
+  private drawPrimitives(
+    ctx: CanvasRenderingContext2D,
+    pane: Pane,
+    camadas: ReadonlyArray<'bottom' | 'normal' | 'top'>,
+    atualizarViews = false,
+  ): void {
     const target = createCanvasTarget(ctx, this.ts.width, pane.priceScale.height, this.dpr, this.dpr);
-    // Ordem por z: bottom (bookmap), normal, top (footprint, desenho).
-    const ordem: Array<'bottom' | 'normal' | 'top'> = ['bottom', 'normal', 'top'];
+    // Ordem por z DENTRO do que foi pedido: bottom (bookmap), normal, top (footprint,
+    // desenho). A ordem relativa entre as três é preservada.
+    const ordem: Array<'bottom' | 'normal' | 'top'> = (['bottom', 'normal', 'top'] as const).filter(
+      (z) => camadas.includes(z),
+    );
+    // Esconder a serie esconde o que esta ancorado nela. O bookmap e anexado a uma
+    // serie; se ele continuasse desenhando com a serie oculta, o operador desligaria a
+    // serie e o heatmap ficaria flutuando sem a referencia dele.
+    const primitives: ISeriesPrimitive[] = [];
     for (const s of pane.series) {
-      // Esconder a serie esconde o que esta ancorado nela. O bookmap e anexado a
-      // uma serie; se ele continuasse desenhando com a serie oculta, o operador
-      // desligaria a serie e o heatmap ficaria flutuando sem a referencia dele.
       if (!RobustusChartCore.visivel(s)) continue;
-      for (const prim of s.model.primitives) {
+      for (const prim of s.model.primitives) primitives.push(prim);
+    }
+
+    // ⚠️ `updateAllViews` UMA vez por quadro, e nao uma por camada.
+    //
+    // Este metodo passou a ser chamado DUAS vezes por quadro (antes das series, para
+    // `bottom`, e depois, para `normal`/`top`). `updateAllViews` e o gancho de
+    // RECALCULO da camada: o `FootprintPrimitive` recalcula as formas ali sem guarda de
+    // sujeira, entao chamar de novo dobraria o custo de agregacao por quadro — uma
+    // regressao de desempenho invisivel, nascida de uma correcao de ordem de desenho.
+    //
+    // A primeira passada (a de `bottom`) atualiza; a segunda so desenha. Toda primitive
+    // e visitada na primeira, inclusive as que nao tem view de fundo.
+    if (atualizarViews) {
+      for (const prim of primitives) {
         try {
           prim.updateAllViews?.();
+        } catch {
+          /* primitive que lanca nao derruba o grafico */
+        }
+      }
+    }
+
+    // ⭐ CAMADA POR FORA, PRIMITIVE POR DENTRO — e esta ordem de lacos e uma correcao.
+    //
+    // ⚠️ O laco era o inverso (primitive por fora, `zOrder` por dentro), e com isso o
+    // `zOrder` so ordenava as views DE UMA MESMA primitive. Entre primitives diferentes
+    // quem vencia era a ORDEM DE ANEXACAO: anexar o footprint (`top`) antes de uma
+    // camada `normal` deixava o footprint embaixo, contrariando o que ele declara. Um
+    // teste de ordem foi escrito para o defeito do bookmap e reprovou tambem por este —
+    // ver `ordem-de-camadas.spec.ts`.
+    for (const z of ordem) {
+      for (const prim of primitives) {
+        try {
           const views = prim.paneViews?.() ?? [];
-          for (const z of ordem) {
-            for (const view of views) {
-              if (view.zOrder() !== z) continue;
-              const r = view.renderer();
-              r?.draw(target);
-            }
+          for (const view of views) {
+            if (view.zOrder() !== z) continue;
+            view.renderer()?.draw(target);
           }
         } catch {
           /* primitive que lanca nao derruba o grafico */

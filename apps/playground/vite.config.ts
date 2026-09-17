@@ -38,5 +38,30 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     strictPort: true,
+    // ⭐ PROXY PARA A API DE BARRAS DA MESA — o caminho do dado REAL.
+    //
+    // O serviço de barras roda na máquina B e chega aqui pelo túnel local
+    // `robustus-bars-tunnel.service` (A:18899 -> B:8899). Medido em 17/09/2026: WIN com
+    // 6.376 barras diárias desde 2005-02-18, com volume por agressor.
+    //
+    // ⚠️ O proxy existe por causa de CORS, e a alternativa era pior. O serviço é um
+    // `ThreadingHTTPServer` de biblioteca padrão e **não emite
+    // `Access-Control-Allow-Origin`** — o navegador bloquearia a resposta a partir de
+    // `127.0.0.1:5173`. As saídas seriam: (a) mexer no serviço da mesa para emitir CORS,
+    // que é código de produção que o robô usa para operar e não se toca por causa de um
+    // playground; (b) desligar a segurança do navegador, que é inaceitável; (c) proxy no
+    // servidor de desenvolvimento, que é o mecanismo que o Vite tem exatamente para
+    // isto. É a (c).
+    //
+    // ⚠️ Isto é conveniência de DESENVOLVIMENTO e não vaza para a biblioteca: o
+    // adaptador (`criarFonteDeBarrasDaMesa`) recebe `baseUrl` injetado e não sabe que
+    // existe proxy. Um consumidor de verdade aponta para o endereço que ele tiver.
+    proxy: {
+      '/mesa': {
+        target: 'http://127.0.0.1:18899',
+        changeOrigin: true,
+        rewrite: (caminho) => caminho.replace(/^\/mesa/, ''),
+      },
+    },
   },
 });

@@ -479,6 +479,24 @@ export interface IChartApi extends IChartApiBase {
   setPaneVisible(index: number, visible: boolean): void;
   /** O sub-painel esta visivel? Indice inexistente conta como nao visivel. */
   isPaneVisible(index: number): boolean;
+  /**
+   * ⭐ A ALTURA de um sub-painel, como FRACAO da altura util. `null` devolve a
+   * reparticao automatica.
+   *
+   * Atende o pedido *"reducao de altura da secao do histograma"*. A reparticao era fixa
+   * (62% preco / 38% dividido), e com tres osciladores o preco perdia mais de um terco da
+   * tela para indicadores que so precisam de altura para mostrar FORMA.
+   *
+   * ⚠️ Fracao e nao pixel: o grafico e redimensionavel, e 90 px sao metade da tela num
+   * celular e uma tira invisivel num 4K.
+   *
+   * ⚠️ A intencao SOBREVIVE a ligar outro indicador — diferente da divisoria arrastavel,
+   * cujo valor e apagado pelo rebalanceamento. Recortada entre 4% e 60%, com o preco
+   * garantido em pelo menos 20%. A pane principal (0) e ignorada: ela recebe o que sobra.
+   */
+  setPaneHeightFraction(index: number, fracao: number | null): void;
+  /** A fracao FIXADA para um sub-painel, ou `null` quando ele divide o que sobra. */
+  paneHeightFraction(index: number): number | null;
   subscribeClick(handler: (param: MouseEventParams) => void): void;
   subscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
   /**

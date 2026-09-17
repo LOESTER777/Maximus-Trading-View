@@ -55,6 +55,12 @@ import {
   VolumeProfilePrimitive,
 } from '@robustus/charts-primitives';
 import {
+  enfileirarNotas,
+  notasIguais,
+  type FonteDeLegenda,
+  type NotaDeLegenda,
+} from '@robustus/charts-core';
+import {
   BOOKMAP_MAX_CELLS_DEFAULT,
   BOOKMAP_MIN_CELL_PX_DEFAULT,
   isValidCandle,
@@ -170,6 +176,29 @@ export class ChartEngine {
   private priceLines: IPriceLine[] = [];
   /** Series de linha vivas, indexadas pela ordem em que foram informadas. */
   private lineSeries: ISeriesApi<'Line'>[] = [];
+
+  /**
+   * ⭐ A TRILHA DE LEGENDAS: o que cada camada publicou, por fonte.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * POR QUE O MOTOR AGREGA ISTO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * *"o bookmap ainda está em cima do histograma de volume, ele precisa ficar no topo
+   * alinhado ao lado de quem está lá, pois pode haver outros componentes"*.
+   *
+   * Cada camada escolhia um canto do canvas e nenhuma sabia dos outros — nem da faixa do
+   * histograma de volume, nem da fita de O/H/L/C em HTML. Empurrar o texto de canto em
+   * canto trocou a colisão de lugar duas vezes. O motor é o único lugar que VÊ todas as
+   * camadas, então é ele que enfileira; quem desenha recebe a fila pronta e alinhada.
+   *
+   * ⚠️ Um `Map` por FONTE, e não uma lista: a camada republica quando o texto muda, e
+   * acumular numa lista repetiria a mesma nota a cada mudança. A ordem de exibição não
+   * vem daqui — vem de `enfileirarNotas`, que é núcleo puro e determinístico.
+   */
+  private readonly notasDeLegenda = new Map<FonteDeLegenda, NotaDeLegenda>();
+  private filaDeLegenda: readonly NotaDeLegenda[] = [];
+  private readonly ouvintesDeLegenda = new Set<(fila: readonly NotaDeLegenda[]) => void>();
 
   private bookmap: BookmapPrimitive | null = null;
   private footprint: FootprintPrimitive | null = null;
@@ -522,6 +551,11 @@ export class ChartEngine {
 
     if (layer === null) {
       this.bookmap?.update({ grid: null });
+      // ⚠️ Camada desligada SAI da trilha. Sem isto a fila continuaria afirmando "Livro ·
+      // fila em repouso" com o livro desligado — e era exatamente o defeito que a camada
+      // de perfil tinha, escrevendo `Perfil de volume: Camada desligada.` no canto mais
+      // disputado da tela. Estado desligado não ocupa linha; ele não tem nada a dizer.
+      this.publicarNota('livro', [], false);
       return;
     }
 
@@ -532,7 +566,17 @@ export class ChartEngine {
     };
 
     if (this.bookmap === null) {
-      this.bookmap = new BookmapPrimitive(opcoes);
+      // ⚠️ O `onLegenda` do motor ENVOLVE o do consumidor em vez de substituí-lo: quem
+      // passou o próprio callback continua recebendo. Sobrescrever em silêncio faria a
+      // trilha "roubar" um canal que o consumidor já usava.
+      const doConsumidor = opcoes.onLegenda;
+      this.bookmap = new BookmapPrimitive({
+        ...opcoes,
+        onLegenda: (linhas, alerta) => {
+          this.publicarNota('livro', linhas, alerta);
+          doConsumidor?.(linhas, alerta);
+        },
+      });
       this.candleSeries.attachPrimitive(this.bookmap);
       return;
     }
@@ -545,11 +589,19 @@ export class ChartEngine {
 
     if (layer === null) {
       this.footprint?.update({ velas: [] });
+      this.publicarNota('footprint', [], false);
       return;
     }
 
     if (this.footprint === null) {
-      this.footprint = new FootprintPrimitive(layer);
+      const doConsumidor = layer.onLegenda;
+      this.footprint = new FootprintPrimitive({
+        ...layer,
+        onLegenda: (linhas, alerta) => {
+          this.publicarNota('footprint', linhas, alerta);
+          doConsumidor?.(linhas, alerta);
+        },
+      });
       this.candleSeries.attachPrimitive(this.footprint);
       return;
     }
@@ -588,15 +640,82 @@ export class ChartEngine {
           motivoVazio: 'Camada desligada.',
         },
       });
+      // ⚠️ E SAI da trilha: "Camada desligada." era texto sobre o gráfico anunciando
+      // ausência. Quem desligou sabe que desligou.
+      this.publicarNota('perfil', [], false);
       return;
     }
 
     if (this.volumeProfile === null) {
-      this.volumeProfile = new VolumeProfilePrimitive(layer);
+      const doConsumidor = layer.onLegenda;
+      this.volumeProfile = new VolumeProfilePrimitive({
+        ...layer,
+        onLegenda: (linhas, alerta) => {
+          this.publicarNota('perfil', linhas, alerta);
+          doConsumidor?.(linhas, alerta);
+        },
+      });
       this.candleSeries.attachPrimitive(this.volumeProfile);
       return;
     }
     this.volumeProfile.update(layer);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Trilha de legendas
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * A fila de legendas das camadas, na ordem canônica de leitura.
+   *
+   * Estável por referência entre mudanças: quem renderiza pode compará-la por identidade
+   * sem re-renderizar por quadro.
+   */
+  legendNotes(): readonly NotaDeLegenda[] {
+    return this.filaDeLegenda;
+  }
+
+  /**
+   * Assina mudanças na fila. Devolve a função de saída.
+   *
+   * ⚠️ Emite o estado CORRENTE na assinatura, e não só nas mudanças seguintes. Sem isso,
+   * um consumidor que assina depois de as camadas já terem publicado veria a trilha
+   * vazia até a próxima mudança de texto — que num gráfico parado pode não vir nunca.
+   */
+  subscribeLegend(ouvinte: (fila: readonly NotaDeLegenda[]) => void): () => void {
+    this.ouvintesDeLegenda.add(ouvinte);
+    try {
+      ouvinte(this.filaDeLegenda);
+    } catch {
+      // Ouvinte que lança na primeira emissão não impede a assinatura.
+    }
+    return () => {
+      this.ouvintesDeLegenda.delete(ouvinte);
+    };
+  }
+
+  /**
+   * Recebe a publicação de uma camada e reemite a fila se ela mudou.
+   *
+   * ⚠️ A comparação é por CONTEÚDO (`notasIguais`), não por identidade: as camadas
+   * remontam o texto na passada de desenho e emitir por quadro faria o consumidor React
+   * re-renderizar 60 vezes por segundo com o mesmo texto.
+   */
+  private publicarNota(fonte: FonteDeLegenda, linhas: readonly string[], alerta: boolean): void {
+    if (this.disposed) return;
+    if (linhas.length === 0) this.notasDeLegenda.delete(fonte);
+    else this.notasDeLegenda.set(fonte, { fonte, linhas, alerta });
+
+    const nova = enfileirarNotas([...this.notasDeLegenda.values()]);
+    if (notasIguais(nova, this.filaDeLegenda)) return;
+    this.filaDeLegenda = nova;
+    for (const ouvinte of this.ouvintesDeLegenda) {
+      try {
+        ouvinte(nova);
+      } catch {
+        // Ouvinte que lança não derruba as outras notificações.
+      }
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

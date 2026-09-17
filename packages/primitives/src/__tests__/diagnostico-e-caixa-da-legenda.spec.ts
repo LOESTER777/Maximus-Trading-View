@@ -259,14 +259,21 @@ function montarBancada(
   return {
     primitive,
     ctx,
+    // ⚠️ Desenha TODAS as views, e não `paneViews()[0]`, porque a camada passou a ter
+    // DUAS: o heatmap em `zOrder: 'bottom'` (antes das velas) e a legenda em `'top'`
+    // (para não ficar atrás do histograma de volume). Inspecionar só a primeira mediria
+    // um quadro que o motor nunca produz — e é justamente o TEXTO que estas bancadas
+    // afirmam. O motor faz o mesmo laço, agrupando por camada.
     desenharUmaPassada: (): boolean => {
       primitive.updateAllViews();
-      const view = primitive.paneViews()[0];
-      if (view === undefined) return false;
-      const r = view.renderer();
-      if (r === null) return false;
-      (r as { draw: (a: CanvasRenderingTarget2D) => void }).draw(alvo);
-      return true;
+      let desenhou = false;
+      for (const view of primitive.paneViews()) {
+        const r = view.renderer();
+        if (r === null) continue;
+        (r as { draw: (a: CanvasRenderingTarget2D) => void }).draw(alvo);
+        desenhou = true;
+      }
+      return desenhou;
     },
   };
 }

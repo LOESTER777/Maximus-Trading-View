@@ -402,3 +402,95 @@ errado.
 
 **Correto:** ao testar geometria, enquadre (`fitContent`) e desenhe um quadro antes de
 converter coordenada.
+
+## ⭐⭐ Rodada de 17/09/2026 — quatro defeitos, e todos eram de CONTRATO
+
+Os quatro nasceram da mesma raiz: uma camada assumindo algo sobre outra sem canal para
+verificar. Vale mais que a lista de recursos.
+
+### 1. `zOrder` não significava nada em relação às séries
+
+Todas as primitives eram desenhadas DEPOIS de `renderPane`, então `'bottom'` só ordenava
+primitives ENTRE SI. O bookmap cobria vela, volume e indicador — e o contrato escrito na
+própria `BookmapPaneView` afirmava o contrário.
+
+Correção: `drawPrimitives(ctx, pane, camadas, atualizarViews)`; `['bottom']` ANTES de
+`renderPane`, `['normal','top']` depois.
+
+⚠️ Duas consequências que o teste pegou:
+- `updateAllViews` passaria a rodar 2x por quadro (o `FootprintPrimitive` recalcula ali sem
+  guarda de sujeira). Só a primeira passada atualiza.
+- **O laço era `primitive` por fora e `zOrder` por dentro**, logo entre primitives
+  DIFERENTES quem ordenava era a ordem de ANEXAÇÃO. Invertido.
+
+### 2. O gesto de desenho e o pan do motor disputavam o ponteiro
+
+*"quando clica, o gráfico arrasta por inteiro"*. O motor escuta no `<canvas>`; o
+`DrawingController` escuta no CONTAINER (o pai) em fase de BOLHA. O motor ligava
+`dragging` e capturava o ponteiro primeiro; o `captureDrag` do desenho então ROUBAVA a
+captura, e o `pointerup` do canvas — único lugar que baixava `dragging` — nunca chegava.
+Depois de desenhar, mover o mouse SEM BOTÃO panava o eixo.
+
+Correção, e é um CONTRATO e não remendo: o desenho escuta em fase de **CAPTURA** e chama
+`preventDefault()`; o motor honra `e.defaultPrevented`. O motor continua sem conhecer o
+pacote de desenho (regra 4 do grafo). Mais duas redes: `lostpointercapture` e
+"`buttons === 0` com arrasto em curso encerra o gesto".
+
+⚠️ **O teste era VÁCUO na primeira versão.** O jsdom não tem captura de ponteiro, então o
+`pointerup` chegava ao canvas e o motor se limpava sozinho — a suíte ficava VERDE com as
+correções revertidas. Foi preciso simular as três regras da captura do navegador
+(redirecionar eventos, exclusividade, `lostpointercapture` para quem perde).
+
+⚠️ Achados de tabela: ferramenta de UMA âncora (linha horizontal) não chamava `captureDrag`
+e panava na hora; e `emitClick` lia a posição só do `pointermove`, então em TOQUE (dedo
+desce sem mover) clicar num indicador nunca abria as propriedades.
+
+### 3. Cinco donos de canto, e a coordenação só existia em comentário
+
+*"o bookmap ainda está em cima do histograma de volume, ele precisa ficar no topo alinhado
+ao lado de quem está lá"*. Cada camada escolhia um canto do canvas com um comentário do
+tipo "o topo é do bookmap, então eu vou pro pé". `posicaoLegenda: 'inferior-esquerda'` fugiu
+da fita de O/H/L/C e caiu nos 15% do histograma de volume — faixa que vem de `scaleMargins`
+numa escala de OVERLAY, **invisível para a primitive**. Trocou colisão por colisão, 2x.
+
+Correção: a camada **publica** as linhas (`onLegenda`), o motor enfileira
+(`legend-rail.core.ts`, ordem de LEITURA e não de chegada) e a `ChartLegend` empilha tudo
+numa coluna. Ninguém escolhe canto.
+
+⚠️ Publicar é INDEPENDENTE de desenhar: `mostrarLegenda: false` cala o canvas e CONTINUA
+publicando. ⚠️ Camada desligada publica `[]` e SAI da fila — acabou o `Perfil de volume:
+Camada desligada.` escrito no canto mais disputado da tela. ⚠️ A comparação é por CONTEÚDO:
+as camadas remontam o texto por quadro e comparar referência re-renderizaria 60x/s.
+
+### 4. A âncora em zero do histograma foi escrita para VOLUME
+
+*"os indicadores de histograma novos não estão ficando persistentes"*. Não era persistência:
+`autoScaleGroup` ancorava a base no zero e **descartava o `min`** para todo grupo
+só-histograma. Awesome Oscillator e a direção do SuperTrend têm o histograma como ÚNICA
+saída da pane separada e oscilam em torno de zero. Com máximo positivo, toda barra negativa
+caía fora do clip; com a janela toda negativa, a faixa INVERTIA e `priceTicks` saía vazio
+(sub-painel sem rótulo era o sintoma diagnóstico). MACD escapava porque a pane dele tem
+duas linhas junto — foi o que fez parecer aleatório.
+
+A invariante certa é **"o zero está na faixa"**, não "a base é zero": é contra o zero que
+`drawHistogram` mede a barra. Volume (`min >= 0`) ficou byte-idêntico.
+
+## ⚠️ Ao mexer em pacote consumido por outro: rode o `build` antes do `tsc` do consumidor
+
+`npx tsc --noEmit -p packages/engine` lê o **`dist`** do `charts-core`, não o `src`. Um
+símbolo novo no core aparece como `TS2305: has no exported member` até `npm run build -w
+@robustus/charts-core` rodar. Perdi uma volta com isso.
+
+## ⚠️ Janela de desempenho: calendário, alcance e proximidade — três guardas, não uma
+
+`desempenhoPorJanela` reprovou DUAS vezes no próprio teste antes de ficar honesta:
+
+1. **Calendário, não posição.** 30 barras diárias são ~43 dias corridos.
+2. **A série tem de ALCANÇAR o limite.** Com 90 dias de histórico, a janela de 1 ano media
+   os 90 dias e rotulava "1 ano" — número plausível de outra pergunta.
+3. **O ponto de partida não pode ser muito mais velho que a janela.** Numa série esparsa
+   (barras em −380 d e hoje), "1 semana" encontrava como partida o fechamento de −380 d e
+   reportava +50%: a variação de um ano inteiro rotulada como semanal.
+
+E a referência é a ÚLTIMA barra ANTES do limite, não a primeira depois — a convenção de
+mesa é comparar com o último fechamento conhecido antes da janela.

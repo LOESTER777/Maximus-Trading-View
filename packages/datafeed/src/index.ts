@@ -178,3 +178,42 @@ export {
 } from './timeframe.core.js';
 
 export type { Timeframe } from './timeframe.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// A fonte de barras da MESA (histórico real: WIN desde 2005, WDO, BTC, 33 ações)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ O dialeto é PURO e exportado separado do transporte de propósito: quem quiser usar
+// outro cliente HTTP reusa `montarCaminhoDeBarras` + `parseBarrasDaMesa` sem herdar o
+// `fetch` injetado, e quem só quer barras chama `criarFonteDeBarrasDaMesa`.
+
+export {
+  montarCaminhoDeBarras,
+  parseBarrasDaMesa,
+  janelaDeBackfill,
+  janelaAnterior,
+  alcancouInicio,
+  periodosDisponiveis,
+  rotuloDePeriodo,
+  simboloAceito,
+  PERIODOS_DA_MESA,
+  /** Monta o caminho da consulta de barras; `null` quando o pedido nao e atendivel. */
+  montarCaminhoDeBarras as buildDeskBarsPath,
+  /** Le o corpo colunar da API; `null` = contrato quebrado. */
+  parseBarrasDaMesa as parseDeskBars,
+  /** A janela do proximo lote de backfill, andando para tras. */
+  janelaDeBackfill as backfillWindow,
+  /** A janela ANTERIOR a uma ja pedida — e o que faz lote vazio nao empacar a caminhada. */
+  janelaAnterior as previousWindow,
+  /** A janela alcancou o inicio conhecido da serie? Lote vazio NAO e fim de historico. */
+  alcancouInicio as reachedSeriesStart,
+  /** Os periodos que a base REALMENTE tem, em segundos. */
+  periodosDisponiveis as deskPeriods,
+} from './robustus-bars.core.js';
+
+export { criarFonteDeBarrasDaMesa } from './robustus-bars-source.js';
+export type { FonteDeBarrasDaMesaOptions } from './robustus-bars-source.js';
+export {
+  /** Constroi a capacidade de barras contra a API de barras da mesa. */
+  criarFonteDeBarrasDaMesa as createDeskBarsSource,
+} from './robustus-bars-source.js';
