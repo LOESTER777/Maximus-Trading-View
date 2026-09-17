@@ -11,7 +11,7 @@ anotações — sem depender de provedor de gráfico de terceiro.
 
 ```bash
 npm install
-npm test              # 2171 testes, 107 arquivos
+npm test              # 2217 testes, 108 arquivos
 npm run build         # compila todos os pacotes
 npm run verify        # typecheck + typecheck do playground + extensão ESM + testes
 npm run smoke:consumo # ⭐ prova que o pacote PUBLICADO instala e importa
@@ -30,7 +30,7 @@ projeto](#consumindo-em-outro-projeto).
 | `@robustus/charts-indicators` | **45 indicadores** incrementais (`warmup`+`update`+`preview` O(1)): médias, osciladores, **fluxo de ordem** (delta, CVD, delta ratio), médias adaptativas (HMA, KAMA, LSMA, TRIX), osciladores de regime (PPO, Stoch RSI, Aroon, Chop, BOP, ADL, Force Index, Elder Ray) | **não** |
 | `@robustus/charts-alerts` | Motor puro de alerta de preço, máquina ARMED→TRIGGERED sem repique | **não** |
 | `@robustus/charts-replay` | Replay de mercado determinístico, relógio injetado, pausa no fim | **não** |
-| `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados: dia de mercado, HTTP bars/depth, WS ao vivo com reconexão, agregador de timeframes | tipos¹ |
+| `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados: dia de mercado, HTTP bars/depth, WS ao vivo com reconexão, agregador de timeframes, **bridge MT5 + emenda arquivo/dia-corrente** (`mt5-bridge.core`) | tipos¹ |
 | `@robustus/chart-core` | **Motor de renderização próprio** em canvas: eixo de tempo com sessão irregular, autoescala por escala de preço, pan/zoom, pinça em touch, crosshair com rótulos, sub-painéis em **grade** (empilhados ou em colunas), marcadores com forma, banda, formatação de preço por tick, exportar imagem | sim |
 | `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive`, `VolumeProfilePrimitive` | sim |
 | `@robustus/charts-drawings` | **20 ferramentas de desenho** (linha, raio, reta, horizontal, raio horizontal, vertical, retângulo, seta, nota de texto, régua, retrações e extensões de Fibonacci, **leque de Fibonacci, zonas de tempo de Fibonacci**, **canal paralelo, elipse, zonas de oferta e demanda**, posição long/short), hit-test priorizado, **rótulos editáveis**, ímã ao OHLC, desfazer/refazer, persistência versionada | sim |
@@ -320,6 +320,15 @@ importam `vitest` e `fast-check`, que não são dependência dos pacotes. O
   visibilidade, remoção e atalho para as propriedades.
 - **Fluxo de ordem:** bookmap (heatmap de livro), footprint e perfil de volume —
   este último por coluna ou por linha, e opcionalmente só da janela visível.
+- ⭐⭐ **Duas fontes, uma série:** o passado vem de um arquivo indexado e o **dia corrente vem
+  do terminal MT5**, emendados por `emendarSeries`. Existe porque o arquivo é alimentado
+  depois do pregão — medido, ele tinha 0 barras do dia às 16:33 enquanto o terminal tinha 91.
+  A emenda **declara** lacuna (nunca interpola) e marca a barra em formação, e cada barra vem
+  de uma fonte só: as duas cotam instrumentos diferentes (`WIN` contínuo vs `WINV26`
+  contrato), então misturá-las dentro de uma barra fabricaria um candle inexistente.
+
+  ⚠️ O `timestamp` da bridge MT5 **não é epoch UTC**: sem `+10800` o gráfico mostra preço
+  plausível três horas deslocado. Ver `mt5-bridge.core.ts` para a medição.
 
 ### Uso mínimo (React)
 

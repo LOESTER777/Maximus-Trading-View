@@ -62,6 +62,54 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (caminho) => caminho.replace(/^\/mesa/, ''),
       },
+      // ⭐⭐ PROXY PARA A BRIDGE MT5 — o DIA CORRENTE, que o arquivo não tem.
+      //
+      // ⚠️ Porta **8229**, e a escolha é crítica. Há quatro bridges MT5 no ar nesta
+      // máquina, uma por terminal/conta: 8228 (Forex genérica, e que escuta em 0.0.0.0),
+      // 8229 (**XP DEMO Pedro — a B3, onde o mini índice cota**), 8230 (XP REAL, somente
+      // leitura) e 8233 (segunda demo). Apontar para a errada entregaria cotação de OUTRO
+      // mercado, com preço plausível e nenhum erro — o mesmo tipo de defeito silencioso
+      // que o offset de fuso produz.
+      //
+      // ⚠️ Medido em 17/09/2026: `GET /health` em 8229 devolve `{"connected":true}`,
+      // conta 519324625, servidor `XPMT5-DEMO`, e `/candles/WINV26?timeframe=5m` traz as
+      // 91 barras do dia (09:00 → 16:30 BRT).
+      //
+      // ⚠️ O proxy existe pelo mesmo motivo do `/mesa`: a bridge não emite CORS. E a
+      // alternativa é ainda menos aceitável aqui — a bridge roda DENTRO do Wine, no mesmo
+      // terminal que alimenta o robô que opera. Não se mexe nela por causa de um
+      // playground.
+      //
+      // ⭐⭐ O TOKEN É INJETADO AQUI, NO SERVIDOR — e a decisão é de SEGURANÇA.
+      //
+      // ⚠️⚠️ A saída óbvia seria `import.meta.env.VITE_MT5_TOKEN` no adaptador. **Não
+      // faça.** Tudo com o prefixo `VITE_` é EMBUTIDO NO BUNDLE que o navegador baixa: o
+      // token apareceria em texto puro no JavaScript servido, visível em "ver código
+      // fonte" e em qualquer cache. Um token de bridge que aceita ordem não pode viajar
+      // para o cliente.
+      //
+      // Injetando no proxy, o segredo fica no processo do Vite (que roda na máquina do
+      // desenvolvedor) e o navegador nunca o vê. O `.env` já é ignorado pelo git
+      // (`.gitignore:16-17`).
+      //
+      // Para ligar:  echo 'MT5_BRIDGE_AUTH_TOKEN=...' >> .env.local   (na raiz do repo)
+      //
+      // ⚠️ Sem o token o `/health` continua respondendo (é rota aberta) e o resto devolve
+      // 401 — que o adaptador traduz para `NEGADA`. É degradação limpa: o gráfico mostra o
+      // histórico e diz que o ao vivo não foi autorizado.
+      '/mt5': {
+        target: 'http://127.0.0.1:8229',
+        changeOrigin: true,
+        rewrite: (caminho) => caminho.replace(/^\/mt5/, ''),
+        configure: (proxy) => {
+          proxy.on('proxyReq', (proxyReq) => {
+            const token = process.env['MT5_BRIDGE_AUTH_TOKEN'];
+            if (token !== undefined && token !== '') {
+              proxyReq.setHeader('Authorization', `Bearer ${token}`);
+            }
+          });
+        },
+      },
     },
   },
 });

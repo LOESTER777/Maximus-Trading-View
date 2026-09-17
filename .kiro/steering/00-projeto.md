@@ -11,6 +11,68 @@ de provedor de gráfico de terceiro.
 (conta `LOESTER777`, via **SSH**). Branch `main` com tracking. Antes o repositório
 era só local.
 
+## ⭐⭐ DUAS FONTES, UMA SÉRIE — arquivo + terminal MT5 (17/09/2026)
+
+O pedido: *"histórico é onde vc pegou + o dia atual é sempre do mt5"*. E a lacuna é
+**medida**, às 16:33 BRT de 17/09, `WIN` 5min:
+
+| fonte | barras de HOJE | de ONTEM |
+|---|---|---|
+| `bars_api` (arquivo, máquina B) | **0** | 114 |
+| bridge MT5 (`:8229`, terminal XP) | **91** (09:00→16:30) | — |
+
+O arquivo é alimentado por um top-up que roda **depois** do pregão. Logo, durante todo o
+horário de operação o gráfico ficava em D-1 — exatamente quando alguém o olha. Medido depois
+da emenda: **456 barras contínuas**, 0 duplicadas, 0 lacuna, **+22,4 h de pregão** na ponta
+direita.
+
+**A bridge:** `http://127.0.0.1:8229` (proxy `/mt5` no Vite). ⚠️ **A porta importa**: há
+quatro bridges no ar (8228 Forex e escutando em `0.0.0.0`; **8229 XP DEMO = a B3**; 8230 XP
+REAL; 8233 segunda demo). Apontar para a errada entrega cotação de outro mercado, com preço
+plausível e sem erro.
+
+⚠️⚠️ **O `timestamp` da bridge NÃO é epoch UTC — soma-se `+10800`.** Medido na mesma barra
+(16/09 14:00 BRT): arquivo `187695`, MT5 cru `187190`, MT5 `+10800` → `187705`. O cru é um
+preço **plausível** para o WIN, só três horas deslocado — ninguém percebe olhando. A correção
+é `epochRealDoMt5`, aplicada na FRONTEIRA (`parseCandlesDoMt5`), para a unidade errada não
+circular. O offset vale para `/candles`, `/historical`, `/historical-flow`; **não** foi medido
+para o WebSocket de tick nem `/orderbook` (a bridge é inconsistente entre rotas).
+
+⚠️ Os 5–10 pontos residuais entre as fontes **não** são erro: é `WINV26` (contrato, o que o
+MT5 cota) contra `WIN` (contínuo ajustado, o que o arquivo guarda). É por isso que
+`emendarSeries` proíbe misturar as duas DENTRO de uma barra — misturar fabricaria um candle
+que não existiu em mercado nenhum.
+
+⭐ **Contrato vigente pela DESCRIÇÃO, nunca por data.** `WIN$` traz
+`"IBOVESPA MINI - Por Liquidez (WINV26) - Ajuste Proporcional"` — é a corretora dizendo onde
+está a liquidez. Resolver por data deixou a origem **3.400 pontos** fora do mercado em
+12/08/2026, quando a virada veio antes do previsto. `resolverContratoVigente`.
+
+⚠️⚠️ **As duas rotas têm parâmetros DIFERENTES, e confundi-los é caro:**
+
+| rota | recorte | custo medido (WIN 5min) | agressor |
+|---|---|---|---|
+| `/candles` | `limit` | **0,7 s** / 700 barras | não |
+| `/historical-flow` | `days` (default **30**, teto 90) | **7,0 s** / 95 barras | **sim** |
+
+Mandar `limit` para `/historical-flow` faz o parâmetro ser ignorado e a rota cair em **30 dias
+de tick reclassificado** — estourou 60 s. Não dá erro, só fica lento. E o custo é do
+**terminal que alimenta o robô que opera**: por isso o polling é de **60 s** (~12% de
+ocupação), não 15 s (~47%). `from_ts`/`to_ts` existem na rota e **não funcionam** (medido nos
+dois frames de tempo: vazio em 30 ms).
+
+⚠️ **O token nunca vai para o navegador.** `VITE_*` é embutido no bundle; o proxy do Vite
+injeta `Authorization` server-side a partir de `MT5_BRIDGE_AUTH_TOKEN` no ambiente
+(`.env.local`, já coberto pelo `.gitignore`). Sem token, `/health` responde e o resto dá 401 →
+`NEGADA` → degrada para o arquivo, dizendo por quê.
+
+⭐ Só `WIN` e `WDO` têm ao vivo (é um terminal B3/futuros). `emendarSeries` declara **lacuna**
+(nunca interpola) e **barra em formação** (`parcialEm`) — indicador incremental precisa de
+`preview()`, não `update()`, na barra parcial.
+
+Camadas: `packages/datafeed/src/mt5-bridge.core.ts` (puro, 46 testes) +
+`mt5-bridge-source.ts` (I/O) + `useMesaComAoVivo` em `apps/playground/src/mesa.ts`.
+
 ## ⭐⭐ DADO REAL — o histórico da mesa está ligado (17/09/2026)
 
 O playground não é mais só sintético. Existe um serviço HTTP de leitura de barras na

@@ -41,10 +41,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   alcancouInicio,
+  bridgeConectada,
   criarFonteDeBarrasDaMesa,
+  criarFonteDeBarrasDoMt5,
+  emendarSeries,
   janelaAnterior,
   janelaDeBackfill,
+  resolverContratoDaBridge,
   rotuloDePeriodo,
+  rotuloDePeriodoMt5,
 } from '@robustus/charts-datafeed';
 import type { Bar, BarsCapability } from '@robustus/charts-datafeed';
 import type { SyntheticBundle, SyntheticCandle } from './synthetic.js';
@@ -336,4 +341,312 @@ function mensagemDeFalha(cause: string): string {
     default:
       return 'Não foi possível carregar as barras.';
   }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ O DIA CORRENTE, DO MT5 — e a emenda com o arquivo
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// O pedido: *"os dados históricos são da base de histórico, mas os dados reais do mini
+// índice tem de vir do mt5 direto. histórico é onde vc pegou + o dia atual é sempre do
+// mt5"*.
+//
+// ⭐ E a lacuna é MEDIDA. Em 17/09/2026 às 16:33 BRT, `WIN` em 5min:
+//
+// | fonte | barras de HOJE | de ONTEM |
+// |---|---|---|
+// | arquivo (`/mesa`, Postgres da máquina B) | **0** | 114 |
+// | bridge MT5 (`/mt5`, terminal XP) | **91** (09:00→16:30) | — |
+//
+// O arquivo é alimentado por um top-up que roda DEPOIS do pregão. Então durante todo o
+// horário de operação o gráfico ficava em D-1 — exatamente quando alguém olha.
+//
+// ⚠️ Este arquivo NÃO reimplementa a emenda: ela é núcleo puro (`emendarSeries`), com 43
+// testes. Aqui só acontece a costura com o ciclo do React e a tradução para a tela.
+
+/**
+ * ⭐⭐ De quanto em quanto tempo o dia corrente é repedido, em ms. **Calibrado pelo CUSTO.**
+ *
+ * ⚠️ Medido em 17/09/2026, WIN 5min, três execuções: `/historical-flow` (a rota com agressor)
+ * leva **6,3 / 6,8 / 7,3 s**. E ela roda **dentro do Wine, no mesmo terminal que alimenta o
+ * robô que opera**.
+ *
+ * Com 15 s de intervalo — o valor que eu havia escolhido antes de medir — uma consulta de 7 s
+ * ocuparia **quase metade** do tempo de um recurso compartilhado com a operação, para sempre.
+ * Não é aceitável gastar isso para desenhar uma tela.
+ *
+ * 60 s dá ~12% de ocupação e é folgado para a leitura: a barra de 5min só muda de verdade a
+ * cada 5 minutos, e a barra em formação mudando com um minuto de atraso é irrelevante para
+ * quem lê fluxo. Quem precisa de preço ao segundo usa a boleta, não o gráfico.
+ */
+const INTERVALO_AO_VIVO_MS = 60_000;
+
+/**
+ * Quantos DIAS de fluxo pedir. 1 = o dia corrente, que é exatamente o buraco a tapar.
+ *
+ * ⚠️ Não aumente sem medir: o custo cresce com o número de ticks reclassificados, e o default
+ * da rota (30 dias) estoura 60 s. Ver `montarCaminhoDeCandlesMt5`.
+ */
+const DIAS_AO_VIVO = 1;
+
+/** O que a emenda acrescenta ao estado da mesa. */
+export interface DadoDaMesaComAoVivo extends DadoDaMesa {
+  /** A bridge MT5 está de pé e o terminal conectado? */
+  readonly aoVivoLigado: boolean;
+  /** O contrato que está cotando (`WINV26`), ou `null`. */
+  readonly contratoVigente: string | null;
+  /** Tempo da primeira barra vinda do MT5, ou `null`. */
+  readonly emendaEm: number | null;
+  /** Quantas barras vieram do terminal. */
+  readonly barrasAoVivo: number;
+  /**
+   * ⚠️ Buraco entre o fim do arquivo e o começo do ao vivo, se houver.
+   *
+   * Tem de aparecer na tela: gráfico com buraco silencioso parece pregão sem negócio, e o
+   * operador tiraria conclusão de liquidez a partir de falha de coleta.
+   */
+  readonly lacuna: { readonly de: number; readonly ate: number } | null;
+  /**
+   * Tempo da barra EM FORMAÇÃO, ou `null`.
+   *
+   * ⭐ Indicador incremental não pode receber barra parcial em `update()` — o contrato é
+   * `preview()` para ela. Quem costura sabe; quem consome não teria como saber.
+   */
+  readonly parcialEm: number | null;
+  /** Por que o ao vivo não está sendo usado, em pt-BR, ou `null`. */
+  readonly avisoAoVivo: string | null;
+}
+
+/**
+ * A mesa com o dia corrente do MT5 emendado no histórico.
+ *
+ * ⭐ Envolve `useMesaBars` em vez de substituí-lo: o arquivo continua sendo o dono do
+ * passado (com backfill, caminhada para trás e critério de fim de série), e esta camada só
+ * acrescenta a ponta direita. Reescrever tudo num hook só perderia o backfill.
+ *
+ * ⚠️ **Falha do ao vivo NUNCA derruba o histórico.** Bridge fora, token recusado, contrato
+ * não resolvido: em todos os casos o gráfico mostra o arquivo e diz o que faltou. A
+ * recíproca também vale — arquivo fora com MT5 no ar desenha só o dia corrente.
+ */
+export function useMesaComAoVivo(params: {
+  readonly ligado: boolean;
+  readonly symbol: string;
+  readonly periodSeconds: number;
+  readonly baseUrl?: string;
+  /** Origem da bridge. No desenvolvimento, o proxy do Vite (`/mt5`). */
+  readonly baseUrlMt5?: string;
+  /**
+   * Ligar o ao vivo. Default `true`.
+   *
+   * ⚠️ Existe para o operador poder desligar: uma consulta a cada 15 s vai para o terminal
+   * que alimenta o robô, e quem só quer estudar histórico não deve pagar isso.
+   */
+  readonly aoVivo?: boolean;
+}): DadoDaMesaComAoVivo {
+  const { ligado, symbol, periodSeconds } = params;
+  const baseUrlMt5 = params.baseUrlMt5 ?? '/mt5';
+  const querAoVivo = params.aoVivo !== false;
+
+  // O histórico, intacto — com backfill e tudo o que ele já sabia fazer.
+  const historico = useMesaBars({
+    ligado,
+    symbol,
+    periodSeconds,
+    ...(params.baseUrl === undefined ? {} : { baseUrl: params.baseUrl }),
+  });
+
+  const [barrasAoVivo, setBarrasAoVivo] = useState<readonly Bar[]>([]);
+  const [contratoVigente, setContratoVigente] = useState<string | null>(null);
+  const [aoVivoLigado, setAoVivoLigado] = useState(false);
+  const [avisoAoVivo, setAvisoAoVivo] = useState<string | null>(null);
+
+  /**
+   * O ao vivo só vale para o que o TERMINAL cota.
+   *
+   * ⚠️ O terminal da mesa é B3/futuros: `WIN` e `WDO` cotam, `BTC` não, e ação depende de o
+   * símbolo estar habilitado. Pedir o que ele não tem devolveria vazio, que é
+   * indistinguível de "não negociou hoje" — então nem se pede.
+   */
+  const temAoVivo = useMemo(
+    () => querAoVivo && ligado && (symbol === 'WIN' || symbol === 'WDO'),
+    [querAoVivo, ligado, symbol],
+  );
+
+  const fonteMt5 = useMemo(
+    () =>
+      criarFonteDeBarrasDoMt5({
+        fetch: (url, init) => fetch(url, init),
+        baseUrl: baseUrlMt5,
+        // ⭐ `comFluxo`: pede `/historical-flow`, que traz `buy_volume`/`sell_volume`
+        // classificados pelo terminal — agressor REAL, não Lee-Ready estimado. É o insumo
+        // de delta, CVD e footprint, e o playground já sabe consumir pela barra.
+        //
+        // ⚠️ Custa 10x mais que `/candles` (7,0 s contra 0,7 s, medido). É o que justifica
+        // `INTERVALO_AO_VIVO_MS = 60_000` — ver a nota lá.
+        comFluxo: true,
+        dias: DIAS_AO_VIVO,
+        // ⚠️ O token NÃO é passado aqui: o proxy do Vite o injeta server-side, para ele
+        // nunca entrar no bundle do navegador. Ver a nota longa em `vite.config.ts`.
+        //
+        // ⚠️ 20 s de teto porque a consulta MEDIDA leva 7 s: o default de 10 s cortaria
+        // consulta legítima num dia de volume alto e o gráfico pareceria sem dado.
+        timeoutMs: 20_000,
+      }),
+    [baseUrlMt5],
+  );
+
+  // ── O contrato vigente ────────────────────────────────────────────────────
+  //
+  // ⭐ Resolvido pela DESCRIÇÃO que a corretora publica (`WIN$` → "Por Liquidez (WINV26)"),
+  // nunca por cálculo de data. Ver a nota em `resolverContratoVigente`: resolver por data
+  // deixou a origem 3.400 pontos fora do mercado quando a virada veio antes do previsto.
+  useEffect(() => {
+    if (!temAoVivo) {
+      setContratoVigente(null);
+      setAoVivoLigado(false);
+      setAvisoAoVivo(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    void (async () => {
+      const conectada = await bridgeConectada(
+        { fetch: (u, i) => fetch(u, i), baseUrl: baseUrlMt5 },
+        ctrl.signal,
+      );
+      if (ctrl.signal.aborted) return;
+      if (!conectada) {
+        setAoVivoLigado(false);
+        setAvisoAoVivo('Terminal MT5 fora do ar: mostrando só o histórico (até o pregão anterior).');
+        return;
+      }
+      const contrato = await resolverContratoDaBridge(
+        { fetch: (u, i) => fetch(u, i), baseUrl: baseUrlMt5 },
+        symbol,
+        ctrl.signal,
+      );
+      if (ctrl.signal.aborted) return;
+      if (contrato === null) {
+        setAoVivoLigado(false);
+        setAvisoAoVivo(
+          `Não foi possível descobrir o contrato vigente de ${symbol} no terminal (credencial?).`,
+        );
+        return;
+      }
+      setContratoVigente(contrato);
+      setAoVivoLigado(true);
+      setAvisoAoVivo(null);
+    })();
+    return () => ctrl.abort();
+  }, [temAoVivo, baseUrlMt5, symbol]);
+
+  // ── O dia corrente, repetido ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!temAoVivo || contratoVigente === null || !aoVivoLigado) {
+      setBarrasAoVivo([]);
+      return;
+    }
+    // ⚠️ A bridge não tem todos os períodos? Ela tem MAIS que o arquivo (1m e 30m também),
+    // então este caminho é raro — mas declarar é melhor que pedir e receber 400.
+    if (rotuloDePeriodoMt5(periodSeconds) === null) {
+      setBarrasAoVivo([]);
+      setAvisoAoVivo(`O terminal não serve o período de ${periodSeconds}s.`);
+      return;
+    }
+
+    const ctrl = new AbortController();
+    let vivo = true;
+
+    const puxar = async (): Promise<void> => {
+      // ⚠️ Sem `limit`: a rota de fluxo recorta por `days` (já configurado na fonte), e mandar
+      // `limit` foi exatamente o defeito que fazia a consulta cair no default de 30 dias.
+      const r = await fonteMt5.getBars(
+        { instrument: { symbol: contratoVigente }, periodSeconds },
+        ctrl.signal,
+      );
+      if (!vivo || ctrl.signal.aborted) return;
+      if (r.ok) {
+        setBarrasAoVivo(r.data);
+        setAvisoAoVivo(null);
+        return;
+      }
+      if (r.cause === 'CANCELADA') return;
+      // ⚠️ A série anterior é PRESERVADA numa falha intermitente. Esvaziar faria o gráfico
+      // encolher e voltar a crescer a cada soluço de rede — e o pan do operador saltaria.
+      setAvisoAoVivo(
+        r.cause === 'NEGADA'
+          ? 'O terminal recusou a consulta (token da bridge). Mostrando só o histórico.'
+          : 'Falha ao ler o dia corrente do terminal. Mostrando o que já foi carregado.',
+      );
+    };
+
+    void puxar();
+    const timer = setInterval(() => void puxar(), INTERVALO_AO_VIVO_MS);
+    return () => {
+      vivo = false;
+      ctrl.abort();
+      clearInterval(timer);
+    };
+  }, [temAoVivo, contratoVigente, aoVivoLigado, periodSeconds, fonteMt5]);
+
+  // ── A emenda ──────────────────────────────────────────────────────────────
+  return useMemo<DadoDaMesaComAoVivo>(() => {
+    // As barras do histórico voltam de `SyntheticCandle` para `Bar` — é o vocabulário que a
+    // emenda entende, e ele é o mesmo campo por campo.
+    const historicoComoBarras: Bar[] = historico.candles.map((c) => ({
+      time: c.time,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+      ...(c.volume === undefined ? {} : { volume: c.volume }),
+      ...(c.buyVolume === undefined || c.sellVolume === undefined
+        ? {}
+        : { buyVolume: c.buyVolume, sellVolume: c.sellVolume }),
+    }));
+
+    const emendado = emendarSeries(historicoComoBarras, barrasAoVivo, periodSeconds, {
+      // ⚠️ Tolerância de 4 dias: entre a última barra do arquivo (pregão anterior) e a
+      // primeira de hoje cabem fim de semana e feriado. Sem isto, toda segunda-feira
+      // reportaria uma lacuna que é só o calendário.
+      toleranciaDeSegundos: 4 * 86_400,
+    });
+
+    const candles: SyntheticCandle[] = [];
+    const volume: SyntheticBundle['volume'] = [];
+    const delta = new Map<number, number>();
+
+    for (const b of emendado.barras) {
+      candles.push({
+        time: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        ...(b.volume === undefined ? {} : { volume: b.volume }),
+        ...(b.buyVolume === undefined || b.sellVolume === undefined
+          ? {}
+          : { buyVolume: b.buyVolume, sellVolume: b.sellVolume }),
+      });
+      if (b.volume !== undefined) {
+        volume.push({ time: b.time, value: b.volume, color: b.close >= b.open ? UP : DOWN });
+      }
+      if (b.buyVolume !== undefined && b.sellVolume !== undefined) {
+        delta.set(b.time, b.buyVolume - b.sellVolume);
+      }
+    }
+
+    return {
+      ...historico,
+      candles,
+      volume,
+      delta,
+      aoVivoLigado,
+      contratoVigente,
+      emendaEm: emendado.emendaEm,
+      barrasAoVivo: emendado.doAoVivo,
+      lacuna: emendado.lacuna,
+      parcialEm: emendado.parcialEm,
+      avisoAoVivo,
+    };
+  }, [historico, barrasAoVivo, periodSeconds, aoVivoLigado, contratoVigente, avisoAoVivo]);
 }

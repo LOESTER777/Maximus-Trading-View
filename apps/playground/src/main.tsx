@@ -140,7 +140,9 @@ import {
   type SyntheticCandle,
 } from './synthetic.js';
 // ⭐ O histórico REAL da mesa. Ver `mesa.ts`: WIN desde 2005, com volume por agressor.
-import { ATIVOS_DA_MESA, PERIODOS_DA_MESA_IDS, useMesaBars } from './mesa.js';
+// ⭐⭐ E `useMesaComAoVivo`, que emenda o DIA CORRENTE vindo do terminal MT5 — o arquivo é
+// alimentado depois do pregão e fica em D-1 justamente durante o horário de operação.
+import { ATIVOS_DA_MESA, PERIODOS_DA_MESA_IDS, useMesaBars, useMesaComAoVivo } from './mesa.js';
 
 /**
  * O modo de grafico.
@@ -347,6 +349,17 @@ export function App(): JSX.Element {
    * para ela custaria espaço a toda hora para uma decisão que acontece raramente.
    */
   const [escalaDoDia, setEscalaDoDia] = useState(false);
+  /**
+   * ⭐⭐ O DIA CORRENTE vindo do terminal MT5. Nasce LIGADO.
+   *
+   * ⚠️ Ligado por default porque foi o pedido — *"o dia atual é sempre do mt5"* — e porque o
+   * contrário é o defeito: o arquivo só é alimentado depois do pregão, então sem isto o
+   * gráfico fica em D-1 durante todo o horário de operação.
+   *
+   * ⚠️ E existe o desligamento porque a consulta vai ao terminal que alimenta o robô que
+   * OPERA. Quem só quer estudar histórico não deve pagar uma requisição a cada 15 s ali.
+   */
+  const [aoVivoDaMesa, setAoVivoDaMesa] = useState(true);
   const [imaLigado, setImaLigado] = useState(false);
   const [gradeVertical, setGradeVertical] = useState(false);
   const [marcaDagua, setMarcaDagua] = useState(true);
@@ -488,15 +501,25 @@ export function App(): JSX.Element {
   const [historico, setHistorico] = useState<SyntheticCandle[]>([]);
   const [volumeHistorico, setVolumeHistorico] = useState<SyntheticBundle['volume']>([]);
 
-  // ── O histórico REAL da mesa ───────────────────────────────────────────────
+  // ── O histórico REAL da mesa + o DIA CORRENTE do terminal ──────────────────
   //
   // ⭐ Em modo mesa o período é pedido DIRETO à fonte, sem `rollupBars`: os quatro
   // períodos (5min/15min/1h/D1) são materializados lá a partir do TICK, e reagregar em
   // cima da derivada só perderia precisão.
-  const mesa = useMesaBars({
+  //
+  // ⭐⭐ **DUAS FONTES, UMA SÉRIE.** O arquivo da máquina B é alimentado por um top-up que
+  // roda DEPOIS do pregão — medido em 17/09/2026 às 16:33 BRT, ele tinha **0 barras de
+  // hoje** e 114 de ontem, enquanto o terminal tinha **91** (09:00→16:30). Ou seja:
+  // exatamente no horário em que alguém olha o gráfico, o arquivo está em D-1.
+  //
+  // Então o passado vem do arquivo (que é indexado e tem 18 anos) e o dia corrente vem do
+  // MT5 (que é o único que o tem). A emenda é `emendarSeries`, núcleo puro — e ela declara
+  // lacuna e barra em formação em vez de escondê-las. Ver `mesa.ts`.
+  const mesa = useMesaComAoVivo({
     ligado: fonte === 'mesa',
     symbol: ativoMesa,
     periodSeconds: tf.seconds,
+    aoVivo: aoVivoDaMesa,
   });
 
   /**
@@ -685,16 +708,63 @@ export function App(): JSX.Element {
         ? ''
         : ` · desde ${new Date(primeira.time * 1000).toLocaleDateString('pt-BR')}`;
     const comDelta = mesa.delta.size;
-    return [
-      {
-        fonte: 'preco',
-        linhas: [
-          `Mesa · ${mesa.candles.length} barras${desde}` +
-            (comDelta > 0 ? ` · ${comDelta} com agressor` : ' · sem agressor') +
-            (mesa.esgotado ? ' · início da série' : ''),
-        ],
-      },
+
+    const linhas: string[] = [
+      `Mesa · ${mesa.candles.length} barras${desde}` +
+        (comDelta > 0 ? ` · ${comDelta} com agressor` : ' · sem agressor') +
+        (mesa.esgotado ? ' · início da série' : ''),
     ];
+
+    // ⭐⭐ A PROCEDÊNCIA de cada barra, dita na tela.
+    //
+    // ⚠️ Não é enfeite: as duas fontes cotam instrumentos DIFERENTES — o arquivo guarda a
+    // série contínua ajustada (`WIN`) e o terminal cota o contrato (`WINV26`). Medido na
+    // mesma barra: 187.695 contra 187.705. A diferença é pequena e legítima, e o operador
+    // tem de saber que ela existe, senão comparar o gráfico com a boleta gera dúvida sobre
+    // qual dos dois está errado — quando nenhum está.
+    if (mesa.aoVivoLigado && mesa.barrasAoVivo > 0) {
+      const hora =
+        mesa.parcialEm === null
+          ? ''
+          : ` · em formação ${new Date(mesa.parcialEm * 1000).toLocaleTimeString('pt-BR', {
+              hour: '2-digit',
+              minute: '2-digit',
+            })}`;
+      linhas.push(
+        `Dia corrente do terminal · ${mesa.barrasAoVivo} barras` +
+          (mesa.contratoVigente === null ? '' : ` · ${mesa.contratoVigente}`) +
+          hora,
+      );
+    }
+
+    const notas: Array<{ fonte: string; linhas: string[]; alerta?: boolean }> = [
+      { fonte: 'preco', linhas },
+    ];
+
+    // ⚠️ A LACUNA é ALERTA, e aparece separada. Um buraco silencioso no meio da série
+    // parece um pregão sem negócio — e o operador tiraria conclusão de liquidez a partir
+    // de uma falha de coleta. Ver a decisão 3 de `emendarSeries`.
+    if (mesa.lacuna !== null) {
+      const fmt = (t: number): string =>
+        new Date(t * 1000).toLocaleString('pt-BR', {
+          day: '2-digit',
+          month: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+      notas.push({
+        fonte: 'preco',
+        linhas: [`Buraco entre o arquivo e o ao vivo: ${fmt(mesa.lacuna.de)} → ${fmt(mesa.lacuna.ate)}`],
+        alerta: true,
+      });
+    }
+
+    // O ao vivo indisponível degrada para o histórico, e DIZ por quê.
+    if (mesa.avisoAoVivo !== null) {
+      notas.push({ fonte: 'preco', linhas: [mesa.avisoAoVivo], alerta: true });
+    }
+
+    return notas;
   }, [
     fonte,
     mesa.erro,
@@ -702,6 +772,12 @@ export function App(): JSX.Element {
     mesa.candles,
     mesa.delta,
     mesa.esgotado,
+    mesa.aoVivoLigado,
+    mesa.barrasAoVivo,
+    mesa.contratoVigente,
+    mesa.parcialEm,
+    mesa.lacuna,
+    mesa.avisoAoVivo,
     ativoMesa,
     tf.label,
     quedaParaSintetico,
@@ -1444,6 +1520,15 @@ export function App(): JSX.Element {
         active: alertasLigados,
         hint: 'Vigia níveis e avisa no cruzamento, sem repetir o aviso.',
       },
+      {
+        // ⭐⭐ O dia corrente do terminal. Só aparece em modo MESA: em dado sintético não há
+        // terminal a consultar, e um controle que não afeta nada é ruído.
+        id: 'ao-vivo',
+        label: 'Dia do MT5',
+        icon: 'replay',
+        active: aoVivoDaMesa,
+        hint: 'Emenda o dia corrente vindo do terminal MT5. O arquivo só é alimentado depois do pregão, então sem isto o gráfico fica no pregão anterior.',
+      },
       ] as ToolbarToggleItem[])
         // ⚠️ O escopo do perfil só entra na barra com o perfil LIGADO: um controle que não
         // afeta nada visível é ruído, e esta barra tem a regra de não encher a tela de botões.
@@ -1452,9 +1537,11 @@ export function App(): JSX.Element {
         .filter((item) => {
           if (item.id === 'perfil-janela') return mostrarPerfil;
           if (item.id === 'escada-livro') return mostrarBookmap && !mostrarPerfil;
+          // ⚠️ O ao vivo só existe com dado da MESA: em sintético não há terminal.
+          if (item.id === 'ao-vivo') return fonte === 'mesa';
           return true;
         }),
-    [alertasLigados, mostrarBookmap, escadaDoLivro, mostrarPerfil, perfilNaJanela],
+    [alertasLigados, mostrarBookmap, escadaDoLivro, mostrarPerfil, perfilNaJanela, aoVivoDaMesa, fonte],
   );
 
   const ambiente = useMemo<ToolbarToggleItem[]>(
@@ -1499,6 +1586,7 @@ export function App(): JSX.Element {
     else if (id === 'perfil') setMostrarPerfil((v) => !v);
     else if (id === 'perfil-janela') setPerfilNaJanela((v) => !v);
     else if (id === 'alertas') setAlertasLigados((v) => !v);
+    else if (id === 'ao-vivo') setAoVivoDaMesa((v) => !v);
   }, []);
 
   const alternarAmbiente = useCallback((id: string): void => {
@@ -1600,6 +1688,7 @@ export function App(): JSX.Element {
       { id: 'env:bookmap', label: 'Alternar bookmap', group: 'Ambiente', icon: 'bookmap', run: () => setMostrarBookmap((v) => !v) },
       { id: 'env:perfil', label: 'Alternar perfil de volume', group: 'Ambiente', icon: 'volumeProfile', hint: 'Histograma por LINHA, na faixa lateral.', run: () => setMostrarPerfil((v) => !v) },
       { id: 'env:replay', label: 'Alternar replay', group: 'Ambiente', icon: 'replay', hint: 'Reproduz o pregão barra a barra.', run: () => setModoReplay((v) => !v) },
+      { id: 'env:ao-vivo', label: 'Alternar dia corrente do MT5', group: 'Ambiente', icon: 'replay', hint: 'Emenda o dia de hoje vindo do terminal. O arquivo da mesa só é alimentado depois do pregão.', run: () => setAoVivoDaMesa((v) => !v) },
       { id: 'act:png', label: 'Exportar PNG', group: 'Ações', icon: 'camera', run: exportarPng },
       { id: 'act:salvar', label: 'Salvar layout', group: 'Ações', icon: 'save', run: salvarLayout },
       { id: 'act:restaurar', label: 'Restaurar layout', group: 'Ações', icon: 'restore', run: restaurarLayout },

@@ -217,3 +217,61 @@ export {
   /** Constroi a capacidade de barras contra a API de barras da mesa. */
   criarFonteDeBarrasDaMesa as createDeskBarsSource,
 } from './robustus-bars-source.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ A bridge MT5 — o DIA CORRENTE, e a COSTURA com o histórico
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// O arquivo da mesa é alimentado por um top-up que roda DEPOIS do pregão. Medido em
+// 17/09/2026 às 16:33 BRT: arquivo = 0 barras de hoje, bridge MT5 = 91 barras (09:00 →
+// 16:30). Ou seja, exatamente durante o horário em que alguém olha o gráfico, o arquivo
+// está em D-1. Cotação ao vivo é outra capacidade, e vem do terminal.
+//
+// ⚠️ `OFFSET_CANDLES_MT5_SEGUNDOS` é o achado que mais importa aqui: o `timestamp` da
+// bridge NÃO é epoch UTC, e sem a correção o gráfico mostra preço PLAUSÍVEL três horas
+// deslocado. Ver a medição no cabeçalho de `mt5-bridge.core.ts`.
+
+export {
+  emendarSeries,
+  epochRealDoMt5,
+  epochParaMt5,
+  rotuloDePeriodoMt5,
+  periodoSuportadoPorAmbas,
+  contratoVigenteNaDescricao,
+  resolverContratoVigente,
+  montarCaminhoDeCandlesMt5,
+  parseCandlesDoMt5,
+  OFFSET_CANDLES_MT5_SEGUNDOS,
+  MAX_BARRAS_POR_CONSULTA_MT5,
+  MAX_DIAS_FLUXO_MT5,
+  PERIODOS_DA_BRIDGE_MT5,
+  /** ⭐⭐ Emenda o histórico do arquivo com o dia corrente do MT5, declarando lacuna e barra parcial. */
+  emendarSeries as spliceSeries,
+  /** Corrige o `timestamp` da bridge para epoch real — a unidade errada não deve circular. */
+  epochRealDoMt5 as mt5TimestampToEpoch,
+  /** O inverso: epoch real para o `timestamp` que a bridge entende. */
+  epochParaMt5 as epochToMt5Timestamp,
+  /** O rótulo de período da bridge (ela tem 1m e 30m, que o arquivo não tem). */
+  rotuloDePeriodoMt5 as mt5TimeframeLabel,
+  /** O período existe nas DUAS fontes? `false` significa "avise", não "recuse". */
+  periodoSuportadoPorAmbas as periodSupportedByBoth,
+  /** Resolve a raiz (`WIN`) no contrato vigente (`WINV26`) pela descrição publicada. */
+  resolverContratoVigente as resolveActiveContract,
+} from './mt5-bridge.core.js';
+
+export type { SerieEmendada, SimboloDaBridge } from './mt5-bridge.core.js';
+
+export {
+  criarFonteDeBarrasDoMt5,
+  resolverContratoDaBridge,
+  bridgeConectada,
+} from './mt5-bridge-source.js';
+export type { FonteDeBarrasDoMt5Options } from './mt5-bridge-source.js';
+export {
+  /** Constroi a capacidade de barras AO VIVO contra a bridge MT5. */
+  criarFonteDeBarrasDoMt5 as createMt5BarsSource,
+  /** Pergunta a bridge qual contrato esta negociando para uma raiz. */
+  resolverContratoDaBridge as fetchActiveContract,
+  /** A bridge esta de pe e o terminal conectado? */
+  bridgeConectada as isBridgeConnected,
+} from './mt5-bridge-source.js';
