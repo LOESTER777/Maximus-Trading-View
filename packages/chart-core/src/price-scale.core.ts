@@ -37,6 +37,18 @@ export interface PriceScaleState {
   marginBottom: number;
   /** Escala logaritmica. */
   logarithmic: boolean;
+  /**
+   * ⭐ Percentil para o TETO da autoescala quando o grupo e so de HISTOGRAMA.
+   *
+   * `undefined` (default) = teto no MAXIMO, o comportamento historico. Ver
+   * `PriceScaleOptions.histogramTopPercentile` para a medicao que motiva o recurso e para o
+   * custo declarado de ligar.
+   *
+   * ⚠️ Fica no ESTADO da escala, e nao numa opcao global do grafico, porque a decisao e por
+   * escala: a de volume quer compressao, a do preco nunca (recortar preco esconderia a maxima
+   * do dia, que e um nivel de referencia).
+   */
+  histogramTopPercentile?: number;
 }
 
 export function createPriceScaleState(marginTop = 0.08, marginBottom = 0.2): PriceScaleState {

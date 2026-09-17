@@ -333,7 +333,33 @@ export function agressorUtilizavel(
   return (compra + venda) / volume >= minimo;
 }
 
-export function parseBarrasDaMesa(body: unknown, periodSeconds?: number): readonly Bar[] | null {
+export interface OpcoesDeLeituraDaMesa {
+  /**
+   * O período pedido, em segundos. Necessário para colapsar o `D1` de dupla convenção.
+   *
+   * ⚠️ Não é inferido do dado: inferir erraria justamente na série de uma barra só, e a decisão
+   * de colapsar é irreversível.
+   */
+  readonly periodSeconds?: number;
+  /**
+   * Fração mínima do volume classificada por agressor para o delta valer.
+   * Default `COBERTURA_MINIMA_DE_AGRESSOR` (0,9).
+   *
+   * ⚠️ Parametrizado porque a qualidade da classificação é da FONTE, e outro projeto lê de outra
+   * fonte. Ver a nota longa da constante para a auditoria que fixou o default.
+   */
+  readonly coberturaMinimaDeAgressor?: number;
+}
+
+export function parseBarrasDaMesa(
+  body: unknown,
+  opcoes?: number | OpcoesDeLeituraDaMesa,
+): readonly Bar[] | null {
+  // ⚠️ Aceita `number` para não quebrar o call site antigo (`parseBarrasDaMesa(body, 300)`), que
+  // existe em consumidor e em teste. Compatibilidade explícita é melhor que uma migração
+  // silenciosa que passa o objeto onde se esperava número.
+  const periodSeconds = typeof opcoes === 'number' ? opcoes : opcoes?.periodSeconds;
+  const coberturaMinima = typeof opcoes === 'number' ? undefined : opcoes?.coberturaMinimaDeAgressor;
   if (!ehCorpoDeBarras(body)) return null;
 
   const idx = new Map<string, number>();
@@ -392,7 +418,7 @@ export function parseBarrasDaMesa(body: unknown, periodSeconds?: number): readon
     //
     // ⚠️ Os DOIS são omitidos juntos, sempre. Um lado sozinho seria o volume total disfarçado
     // de desequilíbrio, que é pior que ausência.
-    const usaAgressor = agressorUtilizavel(volume, compraCrua, vendaCrua);
+    const usaAgressor = agressorUtilizavel(volume, compraCrua, vendaCrua, coberturaMinima);
     const buyVolume = usaAgressor ? compraCrua : undefined;
     const sellVolume = usaAgressor ? vendaCrua : undefined;
 

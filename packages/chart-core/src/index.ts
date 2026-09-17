@@ -123,6 +123,30 @@ export {
 } from './price-format.core.js';
 export type { PriceFormatOptions } from './price-format.core.js';
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ O TETO da escala de histograma, por PERCENTIL
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// O volume do mini índice tem razão de 128x entre a abertura e a tarde (medido). Com o teto no
+// máximo, as barras da tarde ficam em menos de 1% da altura — corretas e ilegíveis. Ligado por
+// `priceScale(id).applyOptions({ histogramTopPercentile: 90 })`.
+//
+// ⚠️ Use `PERCENTIL_PARA_VOLUME_DE_FUTUROS` (90), não o default 99: a primeira hora inteira do
+// WIN é alta, então cortar 1% deixa doze barras dominando a escala. A medição está no núcleo.
+export {
+  tetoPorPercentil,
+  pisoPorPercentil,
+  amostrasMinimasParaPercentil,
+  PERCENTIL_DE_TETO_DEFAULT,
+  PERCENTIL_PARA_VOLUME_DE_FUTUROS,
+  MIN_AMOSTRAS_PARA_PERCENTIL,
+  /** O teto da escala por percentil dos valores positivos da janela. */
+  tetoPorPercentil as histogramTopByPercentile,
+  /** O piso, espelho para histograma que oscila em torno do zero. */
+  pisoPorPercentil as histogramBottomByPercentile,
+} from './histogram-scale.core.js';
+export type { TetoDeHistograma } from './histogram-scale.core.js';
+
 // Transformacoes de serie de velas: Heikin-Ashi e Renko produzem CandlestickData
 // derivado (plotado como 'Candlestick'); barras OHLC sao o SeriesType 'Bar' no
 // motor. `brickSizeAutomatico` deriva um tamanho de tijolo do proprio dado.

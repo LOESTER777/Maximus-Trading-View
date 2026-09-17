@@ -11,6 +11,62 @@ de provedor de gráfico de terceiro.
 (conta `LOESTER777`, via **SSH**). Branch `main` com tracking. Antes o repositório
 era só local.
 
+## ⭐⭐ PARAMETRIZAÇÃO — a biblioteca serve OUTRA fonte sem editar código
+
+Auditado em 17/09/2026 depois da pergunta *"em outros projetos os dados vão vir de outras
+fontes, isso está bem parametrizado?"*. A resposta era **não**, e havia quatro amarras. Todas
+desfeitas, com bancada que reprova se voltarem
+(`packages/datafeed/src/__tests__/parametrizacao.spec.ts`).
+
+⭐ O critério usado é exigente: **um consumidor com outra fonte obtém o comportamento correto
+passando ARGUMENTO, sem tocar no fonte da biblioteca.** Default bom não basta — default é palpite
+calibrado com UMA fonte, e a fonte do próximo projeto não participou dessa calibração.
+
+| era | virou |
+|---|---|
+| `emendarSeries` dentro de `mt5-bridge.core.ts` | **`splice-series.core.ts`**, agnóstico de fonte |
+| offset de fuso em constante de módulo | `OpcoesDeLeituraMt5.offsetSegundos` |
+| cobertura de agressor fixa nos parsers | `coberturaMinimaDeAgressor` nos dois |
+| `symbol === 'WIN' \|\| symbol === 'WDO'` no hook | `AtivoDaMesa.temAoVivo` no catálogo |
+
+⭐⭐ **A emenda virou núcleo próprio.** Ela não tinha uma linha de MT5 — recebe duas listas de
+`Bar` e devolve uma. Morando no adaptador, outro projeto que emende arquivo com Cedro, PNT,
+Binance ou WebSocket próprio teria de importar `mt5-bridge.core` e herdaria por tabela o dialeto,
+o offset e o vocabulário de período daquela bridge. `OpcoesDaEmenda` expõe o que é decisão do
+consumidor: `precedencia` (`'CORTE'` | `'AO_VIVO_VENCE'` | `'ARQUIVO_VENCE'`),
+`toleranciaDeSegundos` (calendário é do mercado) e `alinhamentoPorBalde` (fontes que viram o dia
+em fusos diferentes).
+
+⚠️ **E há a fronteira do que NÃO deve ser configurável**, registrada em teste: tempo
+estritamente crescente e "os dois lados do agressor ou nenhum". Não são preferências de fonte —
+são gráfico embaralhado e delta com sinal inventado. Ficam dentro da biblioteca, sem chave.
+
+## ⭐⭐ ESCALA DO HISTOGRAMA por percentil — a tarde era ilegível
+
+`packages/chart-core/src/histogram-scale.core.ts` (20 testes). Ligado por
+`priceScale(id).applyOptions({ histogramTopPercentile: 90 })` ou, no engine,
+`ChartEngineOptions.volumeTopPercentile`.
+
+⚠️ **Medido no pregão de 16/09/2026, `WIN` 5min:** a abertura tem 323.151 contratos e as 17:50
+têm 2.532 — razão de **128x**. Com o teto no máximo (o que todo gráfico de volume faz, e o que
+este motor fazia) a tarde inteira ocupa **menos de 1 %** da altura: correta e ilegível, no
+horário em que o operador precisa comparar barras vizinhas para ler absorção. A mesma lição já
+estava aplicada na escala de cor do bookmap e não tinha chegado ao histograma.
+
+⭐⭐ **Use `90`, não o default 99** (`PERCENTIL_PARA_VOLUME_DE_FUTUROS`). O p99 corta o 1 % mais
+alto e só funciona se o extremo FOR 1 % da amostra — no WIN a primeira hora inteira é alta (~13
+de 114 barras). Medido: ganho de altura de **1,34x com p90** contra **1,08x com p99**. E p75 é
+demais: 28 de 114 estourando faz o estouro deixar de significar "fora do comum".
+
+⚠️ `amostrasMinimasParaPercentil(p)` = `100/(100−p)`: o p99 exige ~100 amostras para ficar abaixo
+do máximo. Com o gráfico muito ampliado o recurso se desliga e informa (`usouPercentil: false`)
+em vez de fingir que comprimiu.
+
+⚠️ Custo declarado: a barra acima do teto **estoura** e deixa de ser proporcional. Vale porque a
+pergunta do histograma é RELATIVA, e porque barra estourada comunica "fora de escala"
+(informação) enquanto barra de 1 px comunica "não houve volume" (mentira). Default ausente =
+comportamento antigo, byte a byte.
+
 ## ⭐⭐ DUAS FONTES, UMA SÉRIE — arquivo + terminal MT5 (17/09/2026)
 
 O pedido: *"histórico é onde vc pegou + o dia atual é sempre do mt5"*. E a lacuna é

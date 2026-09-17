@@ -38,6 +38,9 @@ import {
   type TimeScaleAnimation,
 } from './animation.core.js';
 import { createCanvasTarget } from './canvas-target.js';
+// ⭐ O TETO por percentil da autoescala de histograma. Nucleo PURO: a decisao de escala e
+// testavel sem canvas, e e onde a medicao do volume do WIN esta registrada.
+import { pisoPorPercentil, tetoPorPercentil } from './histogram-scale.core.js';
 import type {
   ChartOptions,
   CrosshairSeriesData,
@@ -947,6 +950,16 @@ export class RobustusChartCore implements IChartApi {
           alvo.marginBottom = o.scaleMargins.bottom;
         }
         if (o.mode !== undefined) alvo.logarithmic = o.mode === 'logarithmic';
+        // ⭐ O teto por percentil da autoescala de histograma. Ver
+        // `PriceScaleOptions.histogramTopPercentile`.
+        //
+        // ⚠️ `undefined` explícito DESLIGA (volta ao teto no máximo), e é por isso que a
+        // verificação é `'histogramTopPercentile' in o` e não `!== undefined`: sem isso, não
+        // haveria como desfazer a opção depois de ligada.
+        if ('histogramTopPercentile' in o) {
+          if (o.histogramTopPercentile === undefined) delete alvo.histogramTopPercentile;
+          else alvo.histogramTopPercentile = o.histogramTopPercentile;
+        }
         self.scheduleRender();
       },
       width: () => {
@@ -2960,7 +2973,27 @@ export class RobustusChartCore implements IChartApi {
     // (`escalas-de-overlay.spec.ts`) mede exatamente esse caso e segue valendo.
     const soHistograma = series.every((s) => s.model.type === 'Histogram');
     if (soHistograma) {
-      autoScale(escala, Math.min(0, min), Math.max(0, max));
+      // ⭐⭐ TETO POR PERCENTIL, quando pedido. Ver `PriceScaleOptions.histogramTopPercentile`:
+      // o volume do WIN tem razão de 128x entre a abertura e a tarde, e com o teto no máximo as
+      // barras da tarde ficam em menos de 1% da altura — ilegíveis, embora corretas.
+      //
+      // ⚠️ Ausente ⇒ caminho ANTIGO, byte a byte. É o que garante que nenhum gráfico existente
+      // muda de escala por atualização da biblioteca.
+      const pct = escala.histogramTopPercentile;
+      let tetoEfetivo = max;
+      let pisoEfetivo = min;
+      if (pct !== undefined) {
+        const amostras = this.amostrasDeHistograma(series, lr);
+        const t = tetoPorPercentil(amostras, pct);
+        if (t.usouPercentil) tetoEfetivo = t.teto;
+        // ⚠️ O piso só é comprimido se HOUVER negativo. Num histograma de volume o piso é o
+        // zero, e mexer nele abriria faixa de volume negativo que não existe.
+        if (min < 0) {
+          const p = pisoPorPercentil(amostras, pct);
+          if (p.usouPercentil) pisoEfetivo = p.teto;
+        }
+      }
+      autoScale(escala, Math.min(0, pisoEfetivo), Math.max(0, tetoEfetivo));
       // Grandeza que nunca é negativa (volume): cola a base no zero em vez de deixar a
       // folga simétrica abrir uma faixa de volume negativo que não existe.
       if (min >= 0) escala.bottomPrice = 0;
@@ -2968,6 +3001,29 @@ export class RobustusChartCore implements IChartApi {
     }
 
     autoScale(escala, min, max);
+  }
+
+  /**
+   * Os valores de histograma da janela visivel, para a estatistica do percentil.
+   *
+   * ⚠️ Coletados numa passada SEPARADA e so quando o percentil e pedido: o laco da autoescala
+   * roda a cada quadro e nao deve alocar um array por escala sem necessidade. Com a opcao
+   * ausente este metodo nem e chamado.
+   */
+  private amostrasDeHistograma(
+    series: readonly SeriesImpl<SeriesType>[],
+    lr: { from: number; to: number },
+  ): number[] {
+    const out: number[] = [];
+    for (const s of series) {
+      const d = s.model.data;
+      const { de, ate } = this.faixaVisivelDaSerie(d, lr);
+      for (let i = de; i <= ate; i++) {
+        const v = (d[i] as { value?: number } | undefined)?.value;
+        if (v !== undefined && Number.isFinite(v)) out.push(v);
+      }
+    }
+    return out;
   }
 
   /**

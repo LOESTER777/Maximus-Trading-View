@@ -923,7 +923,18 @@ export function App(): JSX.Element {
     // ⭐ Animação LIGADA aqui de propósito: o playground existe para ver a
     // biblioteca funcionando, e a transição de "Reenquadrar" é onde ela aparece.
     // O default da biblioteca é DESLIGADO — ver `ChartOptions.animation`.
-    options: { withVolume: true, animation: { enabled: true } },
+    // ⭐⭐ `volumeTopPercentile: 90` — o teto da escala do volume é o p90 da janela, não o máximo.
+    //
+    // ⚠️ Medido no WIN em 5min: a abertura tem 323.151 contratos e as 17:50 têm 2.532 — razão de
+    // 128x. Com o teto no máximo, a tarde inteira fica em menos de 1% da altura, e o operador
+    // não consegue comparar o volume de uma barra com a vizinha, que é a leitura de absorção.
+    //
+    // ⚠️ 90 e não 99: a primeira HORA do WIN é alta (~13 de 114 barras), então cortar 1% deixa
+    // doze barras dominando a escala. Ganho medido: 1,34x com p90 contra 1,08x com p99.
+    //
+    // ⚠️ O custo é a barra de abertura ESTOURAR (deixa de ser proporcional). O número absoluto
+    // continua no crosshair, e barra estourada comunica "fora de escala" — que é informação.
+    options: { withVolume: true, volumeTopPercentile: 90, animation: { enabled: true } },
     candles: velasExibidas,
     volume: volumeExibido,
     // ⭐ Perfil de volume: o histograma por LINHA, em faixa própria à direita.

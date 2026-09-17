@@ -96,6 +96,23 @@ export interface ChartEngineOptions {
    * `scaleMargins` numa escala de overlay — nao um sub-painel de verdade.
    */
   readonly withVolume?: boolean;
+  /**
+   * ⭐⭐ Percentil para o TETO da escala do histograma de volume. Ausente ⇒ teto no MÁXIMO.
+   *
+   * ⚠️ **Medido:** no `WIN` em 5 min, a barra de abertura tem 323.151 contratos e a das 17:50
+   * tem 2.532 — razão de **128x**. Com o teto no máximo, as barras da tarde ocupam menos de 1 %
+   * da altura: existem, estão corretas, e são ilegíveis justamente no horário em que o operador
+   * precisa comparar volume entre barras vizinhas.
+   *
+   * ⭐ Use **90** (`PERCENTIL_PARA_VOLUME_DE_FUTUROS`) e não 99: a primeira HORA do WIN é alta
+   * (~13 de 114 barras), então cortar 1 % deixa doze barras dominando a escala. Com p90 o ganho
+   * de altura é de 1,34x; com p99, de 1,08x.
+   *
+   * ⚠️ O custo é declarado: as barras acima do teto **estouram** e deixam de ser proporcionais.
+   * A troca vale porque a pergunta do histograma é relativa, e porque uma barra estourada
+   * comunica "fora de escala" enquanto uma barra de 1 px comunica "não houve volume".
+   */
+  readonly volumeTopPercentile?: number;
   /** Espacamento inicial entre barras, em px. */
   readonly barSpacing?: number;
   /**
@@ -234,6 +251,15 @@ export class ChartEngine {
       // Empurra o volume para a faixa inferior do MESMO painel. Nao e sub-painel.
       chart.priceScale(VOLUME_SCALE_ID).applyOptions({
         scaleMargins: { top: 0.85, bottom: 0 },
+        // ⭐⭐ O TETO por percentil, quando o consumidor pede. Ver
+        // `ChartEngineOptions.volumeTopPercentile` e a medicao no nucleo: no WIN a razao entre a
+        // abertura e a tarde e de 128x, e com o teto no maximo a tarde fica ilegivel.
+        //
+        // ⚠️ Ausente ⇒ teto no MAXIMO, o comportamento historico. Ninguem deve ter a escala do
+        // grafico alterada por atualizar a biblioteca.
+        ...(opts.volumeTopPercentile === undefined
+          ? {}
+          : { histogramTopPercentile: opts.volumeTopPercentile }),
       });
     } else {
       this.volumeSeries = null;

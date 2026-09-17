@@ -281,6 +281,39 @@ export interface PriceScaleOptions {
   /** Escala logaritmica. `false` = linear. */
   readonly mode: 'normal' | 'logarithmic';
   readonly visible: boolean;
+  /**
+   * ⭐⭐ Percentil para o TETO da autoescala de histograma. Ausente ⇒ teto no MÁXIMO.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O PROBLEMA QUE ISTO RESOLVE, MEDIDO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * O volume do mini índice é concentrado na abertura. No pregão de 16/09/2026, `WIN` em 5 min:
+   * a barra das 09:00 tem 323.151 contratos e a das 17:50 tem 2.532 — razão de **128x**. Com o
+   * teto no máximo, as barras da tarde ocupam **menos de 1 %** da altura: existem, estão
+   * corretas e são ilegíveis. E o operador precisa justamente comparar o volume das 15:00 com o
+   * das 16:00 para ler absorção.
+   *
+   * Com `99`, o teto passa a ser o p99 da janela visível e a barra de abertura **estoura** (é
+   * recortada pela pane). As outras ganham quase o dobro de altura.
+   *
+   * ⚠️ **O custo, declarado:** a barra estourada deixa de ser proporcional, e quem olhar a
+   * altura dela subestima o volume. A troca vale porque a pergunta do histograma é RELATIVA, e
+   * porque uma barra estourada comunica "fora de escala" (informação) enquanto uma barra de
+   * 1 px comunica "não houve volume" (mentira). O número absoluto continua no crosshair.
+   *
+   * ⚠️ **Ausente é o comportamento ANTIGO, de propósito.** Ninguém deve ter a escala do gráfico
+   * alterada por atualizar a biblioteca, e há usos legítimos do teto no máximo — comparar dois
+   * dias, medir o pico de uma notícia.
+   *
+   * ⚠️ Só afeta escala cujas séries são TODAS histograma (a de volume, a de um oscilador em
+   * sub-painel). Numa escala com preço, o teto continua sendo a máxima da vela: recortar preço
+   * seria esconder a máxima do dia, que é um nível de referência.
+   *
+   * ⚠️ Ignorado com menos de 20 amostras na janela — ali o p99 é o próprio máximo. Ver
+   * `MIN_AMOSTRAS_PARA_PERCENTIL`.
+   */
+  readonly histogramTopPercentile?: number;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -73,17 +73,38 @@ export interface AtivoDaMesa {
   readonly inicio: number;
   /** Casa de preço, para o formato do eixo. */
   readonly tickSize: number;
+  /**
+   * ⭐⭐ Este ativo tem cotação AO VIVO na fonte de tempo real?
+   *
+   * ⚠️ Existe porque a versão anterior decidia isso com `symbol === 'WIN' || symbol === 'WDO'`
+   * escrito no meio do hook — uma lista de símbolos embutida na lógica. Além de ser o tipo de
+   * coisa que se esquece de atualizar, ela dizia a coisa ERRADA: o critério não é "quais
+   * símbolos são estes", é **"a fonte ao vivo cota este instrumento"**. São perguntas
+   * diferentes, e a segunda muda com a fonte.
+   *
+   * Aqui é `true` para os futuros porque o terminal medido é de B3/futuros. Uma montagem
+   * apontada para uma corretora de ações, ou para uma exchange de cripto, marcaria outros — e
+   * é uma linha de dado, não uma condição em código.
+   */
+  readonly temAoVivo?: boolean;
 }
 
 export const ATIVOS_DA_MESA: readonly AtivoDaMesa[] = [
-  { symbol: 'WIN', label: 'WIN · mini índice', inicio: 1_108_692_000, tickSize: 5 },
-  { symbol: 'WDO', label: 'WDO · mini dólar', inicio: 1_620_010_800, tickSize: 0.5 },
+  { symbol: 'WIN', label: 'WIN · mini índice', inicio: 1_108_692_000, tickSize: 5, temAoVivo: true },
+  { symbol: 'WDO', label: 'WDO · mini dólar', inicio: 1_620_010_800, tickSize: 0.5, temAoVivo: true },
+  // ⚠️ Sem ao vivo: o terminal medido é de B3/futuros e não cota estes. Pedir devolveria vazio,
+  // que é indistinguível de "não negociou hoje" — então nem se pede.
   { symbol: 'BTC', label: 'BTC', inicio: 1_502_928_000, tickSize: 1 },
   { symbol: 'PETR4', label: 'PETR4', inicio: 1_625_108_400, tickSize: 0.01 },
   { symbol: 'VALE3', label: 'VALE3', inicio: 1_625_108_400, tickSize: 0.01 },
   { symbol: 'ITUB4', label: 'ITUB4', inicio: 1_625_108_400, tickSize: 0.01 },
   { symbol: 'BBAS3', label: 'BBAS3', inicio: 1_625_108_400, tickSize: 0.01 },
 ];
+
+/** O ativo tem cotação ao vivo? Consulta o CATÁLOGO, não uma lista embutida em código. */
+export function ativoTemAoVivo(symbol: string): boolean {
+  return ATIVOS_DA_MESA.find((a) => a.symbol === symbol)?.temAoVivo === true;
+}
 
 /**
  * Os períodos que a MESA tem, casados com os ids do vocabulário de timeframe.
@@ -636,7 +657,9 @@ export function useMesaComAoVivo(params: {
    * indistinguível de "não negociou hoje" — então nem se pede.
    */
   const temAoVivo = useMemo(
-    () => querAoVivo && ligado && (symbol === 'WIN' || symbol === 'WDO'),
+    // ⭐ Do CATÁLOGO, não de uma lista de símbolos embutida aqui. Ver `AtivoDaMesa.temAoVivo`:
+    // a pergunta certa é "a fonte ao vivo cota este instrumento", e a resposta muda com a fonte.
+    () => querAoVivo && ligado && ativoTemAoVivo(symbol),
     [querAoVivo, ligado, symbol],
   );
 

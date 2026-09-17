@@ -241,8 +241,31 @@ export {
 // bridge NÃO é epoch UTC, e sem a correção o gráfico mostra preço PLAUSÍVEL três horas
 // deslocado. Ver a medição no cabeçalho de `mt5-bridge.core.ts`.
 
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ A EMENDA de duas fontes — AGNÓSTICA de quem são elas
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⭐ Vive em `splice-series.core.ts` e não tem uma linha de MT5. A pergunta que ela responde é
+// geral: *"tenho um ARQUIVO com o passado e uma fonte AO VIVO com o presente; como faço UMA
+// série sem mentir?"*. Vale para Cedro, PNT, Binance, WebSocket próprio ou qualquer par.
+//
+// ⚠️ Tudo que é decisão do consumidor entra por parâmetro: `precedencia` (quem manda no empate),
+// `toleranciaDeSegundos` (calendário é do mercado) e `alinhamentoPorBalde` (fontes que viram o
+// dia em fusos diferentes).
 export {
   emendarSeries,
+  UM_DIA_EM_SEGUNDOS,
+  /** ⭐⭐ Emenda duas fontes numa série única, declarando lacuna e barra em formação. */
+  emendarSeries as spliceSeries,
+} from './splice-series.core.js';
+
+export type {
+  SerieEmendada,
+  OpcoesDaEmenda,
+  PrecedenciaDaEmenda,
+} from './splice-series.core.js';
+
+export {
   epochRealDoMt5,
   epochParaMt5,
   rotuloDePeriodoMt5,
@@ -255,8 +278,6 @@ export {
   MAX_BARRAS_POR_CONSULTA_MT5,
   MAX_DIAS_FLUXO_MT5,
   PERIODOS_DA_BRIDGE_MT5,
-  /** ⭐⭐ Emenda o histórico do arquivo com o dia corrente do MT5, declarando lacuna e barra parcial. */
-  emendarSeries as spliceSeries,
   /** Corrige o `timestamp` da bridge para epoch real — a unidade errada não deve circular. */
   epochRealDoMt5 as mt5TimestampToEpoch,
   /** O inverso: epoch real para o `timestamp` que a bridge entende. */
@@ -269,7 +290,9 @@ export {
   resolverContratoVigente as resolveActiveContract,
 } from './mt5-bridge.core.js';
 
-export type { SerieEmendada, SimboloDaBridge } from './mt5-bridge.core.js';
+// ⚠️ `SerieEmendada` NÃO sai daqui: ela pertence a `splice-series.core.js`, que é agnóstico de
+// fonte. Reexportá-la pelo adaptador do MT5 sugeriria que a emenda é um recurso dele.
+export type { SimboloDaBridge, OpcoesDeLeituraMt5 } from './mt5-bridge.core.js';
 
 export {
   criarFonteDeBarrasDoMt5,
