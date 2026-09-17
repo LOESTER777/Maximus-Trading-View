@@ -106,3 +106,38 @@ export type {
   FootprintLayerInput,
   VolumeProfileLayerInput,
 } from './types.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Templates de layout NOMEADOS — os setups do operador
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ Nucleo PURO: nenhuma persistencia aqui. O armazenamento e injetado pelo consumidor
+// (localStorage, IndexedDB, servidor) e o relogio entra por parametro.
+
+export {
+  salvarTemplate,
+  removerTemplate,
+  renomearTemplate,
+  acharTemplate,
+  ordenarParaExibicao,
+  normalizarNome,
+  nomeDeExibicao,
+  serializarTemplates,
+  desserializarTemplates,
+  TEMPLATES_SCHEMA_VERSION,
+  MAX_TEMPLATES,
+  MAX_NOME,
+  /** Salva (ou sobrescreve, RELATANDO) um template. */
+  salvarTemplate as saveLayoutTemplate,
+  /** Le a colecao de um valor desconhecido. NUNCA lanca; descarta item invalido com aviso. */
+  desserializarTemplates as parseLayoutTemplates,
+} from './layout-templates.core.js';
+export type {
+  TemplateDeLayout,
+  ColecaoDeTemplates,
+  DocumentoDeLayout,
+  DocumentoDeTemplates,
+  LeituraDeTemplates,
+  ResultadoDeTemplate,
+  MotivoDeRecusa,
+} from './layout-templates.core.js';

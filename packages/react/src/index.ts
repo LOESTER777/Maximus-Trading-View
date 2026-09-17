@@ -217,3 +217,7 @@ export type {
 // ⭐ A arvore de OBJETOS do grafico (indicadores, desenhos, alertas) — ver `ObjectTree.tsx`.
 export { ObjectTree } from './ObjectTree.js';
 export type { ObjectTreeProps, ObjectTreeGroup, ObjectTreeItem } from './ObjectTree.js';
+
+// ⭐ A janela visivel em TEMPO — insumo do "perfil da janela visivel". Ver `useVisibleTimeRange.ts`.
+export { useVisibleTimeRange } from './useVisibleTimeRange.js';
+export type { FaixaDeTempoVisivel, UseVisibleTimeRangeParams } from './useVisibleTimeRange.js';

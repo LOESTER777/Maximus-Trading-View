@@ -82,6 +82,7 @@ import {
   type ToolbarActionItem,
   AssetReadout,
   ObjectTree,
+  useVisibleTimeRange,
 } from '@robustus/charts-react';
 // ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
 // que já estão na tela, sem requisição nova.
@@ -183,6 +184,8 @@ function App(): JSX.Element {
   const [ativoMesa, setAtivoMesa] = useState('WIN');
   const [mostrarBookmap, setMostrarBookmap] = useState(true);
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
+  /** O perfil segue a JANELA VISÍVEL (default) ou agrega o dia inteiro. */
+  const [perfilNaJanela, setPerfilNaJanela] = useState(true);
   const [imaLigado, setImaLigado] = useState(false);
   const [gradeVertical, setGradeVertical] = useState(false);
   const [marcaDagua, setMarcaDagua] = useState(true);
@@ -222,10 +225,6 @@ function App(): JSX.Element {
   // ⚠️ Agregado AQUI, não na camada. É o consumidor que decide o escopo: este playground
   // usa o dia inteiro do grid. Para "perfil da janela visível", reagregue com
   // `{ janela: { tsDe, tsAte } }` quando a janela mudar.
-  const perfil = useMemo(
-    () => (mostrarPerfil && grid !== null ? agregarPerfilDeVolume(grid) : null),
-    [mostrarPerfil, grid],
-  );
 
   // ── Histórico carregado sob demanda (backfill) ─────────────────────────────
   //
@@ -470,10 +469,15 @@ function App(): JSX.Element {
     // ⚠️ `mostrarLegenda: false` NÃO silencia a informação: a camada continua PUBLICANDO
     // as linhas, e elas aparecem na trilha da `ChartLegend` (ver `useLayerLegends`). O
     // que sai é só o texto desenhado no canvas — que era o que colidia.
-    volumeProfile:
-      perfil === null
-        ? null
-        : { perfil, larguraFracao: 0.16, margemInferiorFracao: 0.15, mostrarLegenda: false },
+    // ⭐⭐ `null` na CRIAÇÃO, e a camada é dona de um efeito — por causa de um CICLO.
+    //
+    // ⚠️ O perfil da janela visível depende da janela, que só existe depois de o motor
+    // existir; e o motor nascia recebendo o perfil. Passar o perfil aqui e também atualizá-lo
+    // pelo efeito daria DOIS donos escrevendo na mesma camada, e a ordem entre eles dependeria
+    // da ordem de declaração dos hooks — o tipo de acoplamento que quebra ao mover uma linha.
+    //
+    // Um dono só: o efeito abaixo (`// ── Perfil de volume`). Aqui a camada nasce desligada.
+    volumeProfile: null,
     bookmap:
       mostrarBookmap && grid !== null
         ? {
@@ -494,6 +498,48 @@ function App(): JSX.Element {
           }
         : null,
   });
+
+  /**
+   * ⭐ PERFIL DA JANELA VISÍVEL, e não do dia inteiro.
+   *
+   * ⚠️ A diferença é a razão de o perfil existir: o perfil do dia inteiro é história, e o da
+   * janela visível é onde o preço está negociando AGORA. Um operador que dá zoom nas últimas
+   * duas horas quer o POC dessas duas horas — o POC do dia inteiro fica em outro preço e o
+   * levaria a operar contra um nível que já não é referência.
+   *
+   * ⚠️ A tolerância é METADE de uma barra do período em uso. A guarda existe porque o motor
+   * emite mudança de janela a cada quadro do arrasto (60 vezes por segundo): sem ela, cada
+   * emissão reagregaria milhares de células e o pan travaria no gesto mais usado do gráfico.
+   * Meia barra é o limiar em que o perfil muda de forma perceptível.
+   *
+   * ⚠️ `perfilNaJanela` desligado devolve o perfil do dia inteiro (`janela` ausente), que é o
+   * comportamento anterior — a leitura clássica de perfil de sessão continua a um clique.
+   */
+  const faixaVisivel = useVisibleTimeRange({ engine, toleranciaSegundos: tf.seconds / 2 });
+  const perfil = useMemo(() => {
+    if (!mostrarPerfil || grid === null) return null;
+    if (!perfilNaJanela || faixaVisivel === null) return agregarPerfilDeVolume(grid);
+    // ⚠️ O núcleo recorta em MILISSEGUNDOS (é a unidade do grid de profundidade), e a faixa
+    // visível vem em segundos (a unidade do eixo de tempo). As duas convivem na biblioteca de
+    // propósito, e cada fronteira declara a sua — converter aqui é a fronteira.
+    return agregarPerfilDeVolume(grid, {
+      janela: { tsDe: faixaVisivel.de * 1000, tsAte: faixaVisivel.ate * 1000 },
+    });
+  }, [mostrarPerfil, grid, perfilNaJanela, faixaVisivel]);
+
+  // ── Perfil de volume: o efeito é o ÚNICO dono da camada ────────────────────
+  //
+  // ⚠️ Ver a nota em `volumeProfile: null` na criação do motor: o perfil da janela visível
+  // depende da janela, que depende do motor. Um dono só evita duas escritas concorrentes na
+  // mesma camada.
+  useEffect(() => {
+    if (engine === null || engine.isDisposed) return;
+    engine.setVolumeProfileLayer(
+      perfil === null
+        ? null
+        : { perfil, larguraFracao: 0.16, margemInferiorFracao: 0.15, mostrarLegenda: false },
+    );
+  }, [engine, perfil]);
 
   // Tipo de serie no motor. Preserva a viewport — nao e salto de camera.
   useEffect(() => {
@@ -758,7 +804,8 @@ function App(): JSX.Element {
   // informacao de mercado, grade nao. Misturar os dois e o que produz parede de
   // botao sem significado.
   const camadas = useMemo<ToolbarToggleItem[]>(
-    () => [
+    () =>
+      ([
       {
         id: 'bookmap',
         label: 'Bookmap',
@@ -771,7 +818,19 @@ function App(): JSX.Element {
         label: 'Perfil',
         icon: 'volumeProfile',
         active: mostrarPerfil,
-        hint: 'Histograma por LINHA: quanto negociou em cada preço, com POC e área de valor.',
+        hint: 'Histograma por LINHA: quanto negociou em cada preço, com POC e área de valor. Segue a janela visível.',
+      },
+      {
+        // ⭐ O ESCOPO do perfil como chave própria, e não como um segundo botão "Perfil":
+        // são duas perguntas diferentes — "eu quero perfil?" e "de que recorte?". Fundir as
+        // duas num só controle obrigaria a desligar o perfil para trocar o escopo.
+        //
+        // ⚠️ Só aparece com o perfil LIGADO: um controle que não afeta nada visível é ruído.
+        id: 'perfil-janela',
+        label: 'Perfil da janela',
+        icon: 'volumeProfile',
+        active: perfilNaJanela,
+        hint: 'Liga: o perfil reagrega no que está na tela (o POC é o da janela). Desliga: agrega o dia inteiro, a leitura clássica de sessão.',
       },
       {
         id: 'alertas',
@@ -780,8 +839,11 @@ function App(): JSX.Element {
         active: alertasLigados,
         hint: 'Vigia níveis e avisa no cruzamento, sem repetir o aviso.',
       },
-    ],
-    [alertasLigados, mostrarBookmap, mostrarPerfil],
+      ] as ToolbarToggleItem[])
+        // ⚠️ O escopo do perfil só entra na barra com o perfil LIGADO: um controle que não
+        // afeta nada visível é ruído, e esta barra tem a regra de não encher a tela de botões.
+        .filter((item) => item.id !== 'perfil-janela' || mostrarPerfil),
+    [alertasLigados, mostrarBookmap, mostrarPerfil, perfilNaJanela],
   );
 
   const ambiente = useMemo<ToolbarToggleItem[]>(
@@ -823,6 +885,7 @@ function App(): JSX.Element {
   const alternarCamada = useCallback((id: string): void => {
     if (id === 'bookmap') setMostrarBookmap((v) => !v);
     else if (id === 'perfil') setMostrarPerfil((v) => !v);
+    else if (id === 'perfil-janela') setPerfilNaJanela((v) => !v);
     else if (id === 'alertas') setAlertasLigados((v) => !v);
   }, []);
 
