@@ -142,7 +142,13 @@ import {
 // ⭐ O histórico REAL da mesa. Ver `mesa.ts`: WIN desde 2005, com volume por agressor.
 // ⭐⭐ E `useMesaComAoVivo`, que emenda o DIA CORRENTE vindo do terminal MT5 — o arquivo é
 // alimentado depois do pregão e fica em D-1 justamente durante o horário de operação.
-import { ATIVOS_DA_MESA, PERIODOS_DA_MESA_IDS, useMesaBars, useMesaComAoVivo } from './mesa.js';
+import {
+  ATIVOS_DA_MESA,
+  PERIODOS_DA_MESA_IDS,
+  PERIODOS_DO_TERMINAL_IDS,
+  useMesaBars,
+  useMesaComAoVivo,
+} from './mesa.js';
 
 /**
  * O modo de grafico.
@@ -465,12 +471,24 @@ export function App(): JSX.Element {
   /** Todos os períodos alcançáveis a partir da base, sem filtro de fonte. */
   const tfsTodos = useMemo(() => timeframesAgregaveisDe(TF_BASE), [TF_BASE]);
   const tfsDisponiveis = useMemo(() => {
+    if (fonte !== 'mesa') return tfsTodos;
     // ⚠️ Em modo mesa só os períodos MATERIALIZADOS são oferecidos. A base não tem M1, e
     // oferecer para depois mostrar tela vazia é pior que não oferecer.
-    return fonte === 'mesa'
-      ? tfsTodos.filter((x) => PERIODOS_DA_MESA_IDS.includes(x.id))
-      : tfsTodos;
-  }, [tfsTodos, fonte]);
+    //
+    // ⭐⭐ MAS o TERMINAL tem mais que o arquivo: M1 e M30 existem no MT5 (ele calcula do
+    // próprio feed, sem depender de materialização). Com o ao vivo ligado eles passam a ser
+    // alcançáveis — e M1 é o período que mais se usa para operar o mini índice.
+    //
+    // ⚠️ O custo é declarado, não escondido: nesses períodos NÃO há passado, só o dia corrente.
+    // A trilha diz isso (ver `notasDaFonte`), porque um gráfico com uma sessão só e sem
+    // explicação parece defeito da ferramenta.
+    const doArquivo = tfsTodos.filter((x) => PERIODOS_DA_MESA_IDS.includes(x.id));
+    if (!aoVivoDaMesa) return doArquivo;
+    const soDoTerminal = tfsTodos.filter(
+      (x) => !PERIODOS_DA_MESA_IDS.includes(x.id) && PERIODOS_DO_TERMINAL_IDS.includes(x.id),
+    );
+    return [...doArquivo, ...soDoTerminal].sort((a, b) => a.seconds - b.seconds);
+  }, [tfsTodos, fonte, aoVivoDaMesa]);
   /**
    * O período corrente vem da ABA, e a busca é por SEGUNDOS.
    *
@@ -764,6 +782,30 @@ export function App(): JSX.Element {
       notas.push({ fonte: 'preco', linhas: [mesa.avisoAoVivo], alerta: true });
     }
 
+    // ⭐⭐ A guarda de GRADE, dita na tela. Em regime é 0 e nada aparece; diferente de zero é
+    // um lote de outro período que chegou e foi barrado — e o operador tem de ver, porque foi
+    // exatamente por ser silencioso que "as barras não respeitam o TF" chegou até a tela.
+    if (mesa.foraDaGrade > 0) {
+      notas.push({
+        fonte: 'preco',
+        linhas: [`${mesa.foraDaGrade} barras de outro período foram descartadas (grade de ${tf.label}).`],
+        alerta: true,
+      });
+    }
+
+    // ⭐ Período que SÓ o terminal serve (M1, M30, H4). Sem esta linha, escolher M1 mostra
+    // poucas horas e nada mais, e a leitura natural é "está quebrado".
+    //
+    // ⚠️ A redação evita afirmar "só o dia corrente", que seria IMPRECISO: medido, o terminal
+    // traz 5 h em M1 e 3 SEMANAS em M30 com o mesmo lote de 300 barras. O que é verdade em
+    // todos os casos é que não há o arquivo por trás — o alcance é o do lote, e nada mais.
+    if (mesa.soDoTerminal) {
+      notas.push({
+        fonte: 'preco',
+        linhas: [`${tf.label} vem só do terminal (o arquivo não tem): sem backfill, o alcance é o do lote.`],
+      });
+    }
+
     return notas;
   }, [
     fonte,
@@ -778,6 +820,8 @@ export function App(): JSX.Element {
     mesa.parcialEm,
     mesa.lacuna,
     mesa.avisoAoVivo,
+    mesa.foraDaGrade,
+    mesa.soDoTerminal,
     ativoMesa,
     tf.label,
     quedaParaSintetico,

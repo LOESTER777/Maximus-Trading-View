@@ -329,7 +329,7 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
     expect(b.low).toBe(187_510);
   });
 
-  it('⭐ DECISÃO 2: no empate de tempo o AO VIVO vence, e conta como sobreposta', () => {
+  it('⭐ DECISÃO 2: no balde do CORTE o terminal vence (a barra pode estar em formação)', () => {
     const hist = [barra(1000, 100), barra(1300, 101)];
     const vivo = [barra(1300, 999), barra(1600, 102)];
     const r = emendarSeries(hist, vivo, P);
@@ -339,6 +339,29 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
     expect(r.doAoVivo).toBe(1);
     expect(r.doHistorico).toBe(2);
     expect(r.barras.length).toBe(3);
+  });
+
+  it('⭐⭐ DECISÃO 2: ANTES do corte o ARQUIVO é canônico — evita o degrau de preço', () => {
+    // Medido: o terminal responde as N últimas barras e sobrepõe dias que o arquivo já tem
+    // (117 barras em 15min com lote de 400). Aceitá-las reescreveria o passado com o preço do
+    // contrato em vez do contínuo, e a junção apareceria como degrau.
+    const hist = [barra(1000, 100), barra(1300, 101), barra(1600, 102)];
+    const vivo = [barra(1000, 555), barra(1300, 666), barra(1600, 777), barra(1900, 103)];
+    const r = emendarSeries(hist, vivo, P);
+
+    // As duas primeiras do terminal foram descartadas: o arquivo manda no passado.
+    expect(r.barras.find((b) => b.time === 1000)?.close).toBe(100);
+    expect(r.barras.find((b) => b.time === 1300)?.close).toBe(101);
+    expect(r.descartadasPeloCorte).toBe(2);
+    // O balde do corte foi substituído (pode estar em formação).
+    expect(r.barras.find((b) => b.time === 1600)?.close).toBe(777);
+    expect(r.sobrepostas).toBe(1);
+    // E a ponta nova entrou.
+    expect(r.doAoVivo).toBe(1);
+    // ⚠️ A emenda começa no balde do CORTE (1600), não na primeira barra inédita (1900): é
+    // dali que o terminal passa a mandar no conteúdo. Apontar para 1900 diria que 1600 veio do
+    // arquivo, e ela não veio.
+    expect(r.emendaEm).toBe(1600);
   });
 
   it('⭐ a emenda é IDEMPOTENTE: rodar com arquivo mais completo não duplica', () => {
@@ -351,8 +374,10 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
       P,
     );
     expect(depois.barras.length).toBe(antes.barras.length);
-    expect(depois.sobrepostas).toBe(2);
     expect(depois.doAoVivo).toBe(0);
+    // A de 1600 caiu pelo corte; a de 1900 substituiu o balde do corte.
+    expect(depois.descartadasPeloCorte).toBe(1);
+    expect(depois.sobrepostas).toBe(1);
   });
 
   it('⭐⭐ DECISÃO 3: a LACUNA é devolvida, e nenhuma barra é inventada', () => {
@@ -418,6 +443,161 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
     const r = emendarSeries([], [], P);
     expect(r.barras).toEqual([]);
     expect(r.parcialEm).toBeNull();
+  });
+
+  describe('⭐⭐ DECISÃO 5: a grade de período — "as barras não respeitam o TF"', () => {
+    const H = 3600;
+
+    it('⭐⭐ MECANISMO: barras de 5min NÃO entram numa série de 1h', () => {
+      // Reprodução do defeito relatado, com as proporções medidas contra os serviços reais:
+      // o operador troca para 1h, o histórico vem em 1h, e o terminal ainda responde 5min
+      // porque a consulta nova leva 7 s.
+      const hist1h = [barra(0, 100), barra(3600, 101), barra(7200, 102)];
+      const vivo5m = Array.from({ length: 12 }, (_, i) => barra(10_800 + i * 300, 200 + i));
+
+      const r = emendarSeries(hist1h, vivo5m, H);
+
+      // Só as que caem na grade de 1h sobrevivem — no caso, a de 10:800 (múltiplo de 3600).
+      expect(r.foraDaGrade).toBeGreaterThan(0);
+      // E a invariante que o defeito violava: nenhum par consecutivo mais próximo que 1 h.
+      for (let i = 1; i < r.barras.length; i += 1) {
+        expect(r.barras[i]!.time - r.barras[i - 1]!.time).toBeGreaterThanOrEqual(H);
+      }
+    });
+
+    it('⭐ lote INTEIRO de outro período degrada para o histórico puro', () => {
+      const hist1h = [barra(0, 100), barra(3600, 101)];
+      // Todas desalinhadas da grade de 1h.
+      const vivo5m = [barra(7500, 200), barra(7800, 201), barra(8100, 202)];
+
+      const r = emendarSeries(hist1h, vivo5m, H);
+
+      expect(r.barras.map((b) => b.time)).toEqual([0, 3600]);
+      expect(r.doAoVivo).toBe(0);
+      expect(r.foraDaGrade).toBe(3);
+      // ⚠️ E nada de parcial: não há barra do terminal na série.
+      expect(r.parcialEm).toBeNull();
+      expect(r.emendaEm).toBeNull();
+    });
+
+    it('⚠️ a grade CERTA passa inteira — a guarda não é um filtro cego', () => {
+      const hist1h = [barra(0, 100), barra(3600, 101)];
+      const vivo1h = [barra(7200, 102), barra(10_800, 103)];
+
+      const r = emendarSeries(hist1h, vivo1h, H);
+
+      expect(r.foraDaGrade).toBe(0);
+      expect(r.doAoVivo).toBe(2);
+      expect(r.barras.map((b) => b.time)).toEqual([0, 3600, 7200, 10_800]);
+    });
+
+    it('⭐ SALTO legítimo (fim de semana, feriado, leilão) NÃO é descartado', () => {
+      // A invariante é "nunca MAIS PRÓXIMO que um período" — nunca "espaçamento uniforme",
+      // que reprovaria qualquer série real.
+      const hist = [barra(0, 100), barra(3600, 101)];
+      const vivo = [barra(3 * 86_400, 102), barra(3 * 86_400 + 3600, 103)];
+
+      const r = emendarSeries(hist, vivo, H, { toleranciaDeSegundos: 4 * 86_400 });
+
+      expect(r.foraDaGrade).toBe(0);
+      expect(r.doAoVivo).toBe(2);
+      expect(r.lacuna).toBeNull();
+    });
+
+    it('⚠️ o alinhamento vem da MODA do histórico, não da primeira barra', () => {
+      // O `D1` do arquivo tem duas convenções de virada de dia; a primeira barra pode ser a
+      // exceção. Aqui a maioria está alinhada em 0 e a primeira em 1800.
+      const hist = [barra(1800, 99), barra(3600, 100), barra(7200, 101), barra(10_800, 102)];
+      const vivo = [barra(14_400, 103)];
+
+      const r = emendarSeries(hist, vivo, H);
+      expect(r.foraDaGrade).toBe(0);
+      expect(r.doAoVivo).toBe(1);
+    });
+
+    it('⚠️ com histórico VAZIO a grade é aferida contra o próprio ao vivo', () => {
+      // Uma intrusa entre barras boas: 3600, 3900 (intrusa de 5min), 7200.
+      const r = emendarSeries([], [barra(3600, 1), barra(3900, 2), barra(7200, 3)], H);
+      expect(r.foraDaGrade).toBe(1);
+      expect(r.barras.map((b) => b.time)).toEqual([3600, 7200]);
+    });
+
+    it('⚠️ intrusa rejeitada NÃO arrasta as barras boas seguintes', () => {
+      // O critério compara com a última ACEITA, não com a anterior do lote.
+      const r = emendarSeries([], [barra(0, 1), barra(300, 2), barra(3600, 3), barra(7200, 4)], H);
+      expect(r.barras.map((b) => b.time)).toEqual([0, 3600, 7200]);
+      expect(r.foraDaGrade).toBe(1);
+    });
+
+    it('período inválido não aplica a guarda (nem lança)', () => {
+      const r = emendarSeries([barra(0, 1)], [barra(300, 2)], 0);
+      expect(r.foraDaGrade).toBe(0);
+      expect(r.barras.length).toBe(2);
+    });
+
+    describe('⭐⭐ D1: as fontes DISCORDAM do rótulo, e a identidade é o dia', () => {
+      const D = 86_400;
+      // Medido em 17/09/2026: o pregão de 16/09 é rotulado 16/09 00:00 UTC pelo arquivo e
+      // 16/09 03:00 UTC pelo terminal. `floor(t/86400)` dá 20712 para os dois.
+      const ARQ_16 = 1_789_516_800;
+      const MT5_16 = 1_789_527_600;
+      const MT5_17 = 1_789_614_000;
+
+      it('MECANISMO: a guarda por RESTO descartaria o dia corrente — por dia, não', () => {
+        // Os restos divergem (0 contra 10800): é o que quebrava.
+        expect(ARQ_16 % D).toBe(0);
+        expect(MT5_16 % D).toBe(10_800);
+        // E a chave de dia coincide: é a identidade certa.
+        expect(Math.floor(ARQ_16 / D)).toBe(Math.floor(MT5_16 / D));
+
+        const r = emendarSeries([barra(ARQ_16, 187_600)], [barra(MT5_17, 187_780)], D);
+        expect(r.foraDaGrade).toBe(0);
+        expect(r.doAoVivo).toBe(1);
+        expect(r.barras.length).toBe(2);
+      });
+
+      it('⭐⭐ o MESMO pregão não vira DUAS barras (o estrago que envenena correlação)', () => {
+        const r = emendarSeries([barra(ARQ_16, 187_600)], [barra(MT5_16, 187_600)], D);
+        expect(r.barras.length).toBe(1);
+        expect(r.sobrepostas).toBe(1);
+        expect(r.doAoVivo).toBe(0);
+      });
+
+      it('⚠️ em D1 o RÓTULO do histórico é preservado (o eixo e os desenhos dependem dele)', () => {
+        const r = emendarSeries([barra(ARQ_16, 187_600)], [barra(MT5_16, 999_999)], D);
+        const b = r.barras[0]!;
+        // Conteúdo do ao vivo (mais fresco), tempo do arquivo (convenção dominante).
+        expect(b.close).toBe(999_999);
+        expect(b.time).toBe(ARQ_16);
+      });
+
+      it('em período INTRADIÁRIO o rótulo do ao vivo vence (as fontes concordam da grade)', () => {
+        const r = emendarSeries([barra(3600, 1)], [barra(3600, 999)], 3600);
+        expect(r.barras[0]!.close).toBe(999);
+        expect(r.barras[0]!.time).toBe(3600);
+      });
+
+      it('dia novo do terminal entra, e a série fica com um dia a mais', () => {
+        const r = emendarSeries(
+          [barra(ARQ_16 - D, 100), barra(ARQ_16, 187_600)],
+          [barra(MT5_16, 187_600), barra(MT5_17, 187_780)],
+          D,
+        );
+        expect(r.barras.length).toBe(3);
+        expect(r.doAoVivo).toBe(1);
+        expect(r.sobrepostas).toBe(1);
+        expect(r.parcialEm).toBe(MT5_17);
+      });
+    });
+
+    it('a soma por fonte continua fechando com a guarda ativa', () => {
+      const r = emendarSeries(
+        [barra(0, 1), barra(3600, 2)],
+        [barra(3900, 9), barra(7200, 3)],
+        H,
+      );
+      expect(r.doHistorico + r.doAoVivo).toBe(r.barras.length);
+    });
   });
 
   it('período inválido não lança nem inventa lacuna', () => {

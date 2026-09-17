@@ -400,13 +400,38 @@ export interface SerieEmendada {
   readonly doHistorico: number;
   readonly doAoVivo: number;
   /**
-   * Barras do ao vivo DESCARTADAS por já existirem no histórico.
+   * ⭐⭐ Barras DESCARTADAS por não pertencerem ao período pedido.
    *
-   * ⭐ Não é ruído de diagnóstico: se isto cresce dia após dia, o top-up do arquivo passou a
-   * cobrir o dia corrente e a emenda está fazendo trabalho duplicado — sinal de que a
-   * configuração pode simplificar. Zero é o esperado durante o pregão.
+   * ⚠️ **Existe por causa de um defeito real e visível.** Ver a nota de `emendarSeries` sobre
+   * a grade de período: trocar o TF de 5min para 1h deixava as barras de 5min do terminal
+   * emendadas no histórico de 1h, e o gráfico desenhava as duas grades juntas. Medido contra
+   * os serviços reais: com 1h escolhido, **101 pares de barras consecutivas a 5 min de
+   * distância**.
+   *
+   * Se isto for maior que zero de forma persistente, há corrida de período em algum lugar do
+   * consumidor — o número é o que torna o defeito VISÍVEL em vez de silencioso.
+   */
+  readonly foraDaGrade: number;
+  /**
+   * Barras do terminal que SUBSTITUÍRAM a barra do arquivo no balde do corte.
+   *
+   * ⭐ Em regime é 0 ou 1: só o último balde do arquivo pode ser substituído (ele pode estar em
+   * formação). Ver a decisão 2.
    */
   readonly sobrepostas: number;
+  /**
+   * ⭐⭐ Barras do terminal DESCARTADAS por serem anteriores ao fim do arquivo.
+   *
+   * ⚠️ **Não é desperdício, é a proteção contra um degrau de preço.** O terminal responde as N
+   * últimas barras, então ele sempre traz passado que o arquivo já tem — medido, 117 barras em
+   * 15min com um lote de 400. Aceitá-las reescreveria dias de série com o preço do CONTRATO
+   * (`WINV26`) no lugar do CONTÍNUO (`WIN`), e a junção apareceria como um degrau no meio do
+   * gráfico.
+   *
+   * Um número alto aqui é NORMAL e saudável. Ele é útil como sinal do contrário: se cair a
+   * zero e `doAoVivo` for grande, o arquivo ficou muito atrás (top-up parado).
+   */
+  readonly descartadasPeloCorte: number;
   /**
    * ⚠️ Há um BURACO entre o fim do histórico e o começo do ao vivo?
    *
@@ -442,12 +467,28 @@ export interface SerieEmendada {
  * fabricaria um candle que não existiu em mercado nenhum, com pavio inventado. Pior: o valor
  * mudaria conforme a ordem de chegada das respostas.
  *
- * **2. No empate de tempo, o AO VIVO vence.**
+ * **2. O arquivo é CANÔNICO no passado; o terminal completa a ponta.**
  *
- * O arquivo é atualizado por um top-up depois do pregão. No dia em que ele passar a cobrir
- * parte do dia corrente, as duas fontes terão a mesma barra — e a mais fresca é a do
- * terminal. A regra também torna a emenda idempotente: rodar de novo com um arquivo mais
- * completo não duplica nada, só reduz `doAoVivo`.
+ * ⭐⭐ **Medido, e é o que corrigiu um degrau de preço:** o terminal responde as N últimas
+ * barras, e com 400 barras de 15min ele cobre ~4 dias — sobrepondo **117 barras** que o
+ * arquivo já tinha. Deixar o terminal vencer todas elas reescreveria quatro dias de série com
+ * o preço do CONTRATO (`WINV26`) no lugar do CONTÍNUO (`WIN`), e a junção apareceria como um
+ * degrau no meio do gráfico.
+ *
+ * A regra, que é a mesma que o cockpit de origem usa no SQL (um corte por `MAX(tempo)` do
+ * arquivo, com o complemento só acima dele):
+ *
+ * | balde da barra do terminal | destino |
+ * |---|---|
+ * | **antes** do último do arquivo | descartada — o arquivo é a fonte canônica do passado |
+ * | **igual** ao último do arquivo | substitui — essa pode estar em formação no arquivo |
+ * | **depois** do último do arquivo | entra — é o que o arquivo não tem |
+ *
+ * ⚠️ O balde IGUAL precisa ser substituído: se o top-up rodar no meio do pregão, o arquivo
+ * guarda uma barra parcial, e mantê-la congelaria a ponta do gráfico no minuto em que o
+ * top-up rodou.
+ *
+ * ⭐ A emenda continua IDEMPOTENTE: com o arquivo completo, o terminal não acrescenta nada.
  *
  * **3. A LACUNA é detectada e devolvida, nunca fechada por interpolação.**
  *
@@ -464,9 +505,40 @@ export interface SerieEmendada {
  * assume tempo estritamente crescente em três lugares; violar isso não dá erro, dá gráfico
  * embaralhado.
  *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⭐⭐ DECISÃO 5 — A GRADE DE PERÍODO, E O DEFEITO QUE ELA CORRIGE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ **Relato:** *"quando muda o TF as barras não estão se ajustando conforme o TF"*.
+ *
+ * **A causa:** as barras do terminal viviam num estado sem carimbo de período. Trocar o TF
+ * disparava uma consulta nova, mas ela é ASSÍNCRONA — e a rota com agressor leva 7 s. Durante
+ * esse tempo (e **indefinidamente**, se a consulta falhasse, porque a série anterior é
+ * preservada de propósito para não piscar) o gráfico emendava barras de 5min num histórico de
+ * 1h e desenhava as **duas grades juntas**.
+ *
+ * **Medido contra os serviços reais**, com 1h escolhido: 31 barras de 1h do arquivo + 102 de
+ * 5min do terminal ⇒ série com **quatro espaçamentos diferentes** e **101 pares consecutivos
+ * a 5 min de distância**. O sintoma na tela é o da foto: metade do gráfico com densidade
+ * diferente da outra.
+ *
+ * ⭐ **A invariante que resolve, e por que ela é a certa:** duas barras do mesmo período nunca
+ * podem estar MAIS PRÓXIMAS que um período. Distância MAIOR é legítima e frequente (fim de
+ * semana, feriado, leilão, ativo sem negócio); distância MENOR é impossível — é outra grade.
+ * Então a guarda é `distância >= periodo`, e não "espaçamento uniforme", que reprovaria
+ * qualquer série real.
+ *
+ * ⚠️ Quem é descartado é o **ao vivo**, nunca o histórico: o histórico é a referência de
+ * grade (ele foi pedido no período certo e é o dono do passado), e na dúvida é melhor a tela
+ * mostrar só o arquivo — que é o comportamento anterior, correto e sem surpresa — do que uma
+ * série de grade dupla.
+ *
+ * ⚠️ E a guarda vale ATÉ COM O HISTÓRICO VAZIO: aí a grade é aferida contra o próprio ao
+ * vivo, o que pega a barra intrusa vinda de um lote de outro período.
+ *
  * @param historico barras do arquivo (passado profundo). Pode vir vazio.
  * @param aoVivo barras do MT5 (dia corrente), **já com fuso corrigido** por `parseCandlesDoMt5`.
- * @param periodSeconds duração da barra, para medir contiguidade.
+ * @param periodSeconds duração da barra: mede contiguidade E valida a grade.
  * @param opcoes `toleranciaDeSegundos` amplia o limiar de lacuna (fim de semana, feriado).
  */
 export function emendarSeries(
@@ -486,26 +558,91 @@ export function emendarSeries(
       doHistorico: historico.length,
       doAoVivo: 0,
       sobrepostas: 0,
+      descartadasPeloCorte: 0,
+      foraDaGrade: 0,
+      lacuna: null,0,
       lacuna: null,
       parcialEm: null,
     };
   }
 
-  const porTempo = new Map<number, Bar>();
-  for (const b of historico) porTempo.set(b.time, b);
+  // ── Decisão 5: o ao vivo tem de estar na MESMA grade do período pedido ────
+  //
+  // ⚠️ A aferição é feita ANTES do merge. Depois de misturar não há como separar: os tempos
+  // já estariam no mesmo mapa, e a grade dupla viraria "a série".
+  const aoVivoNaGrade = periodo > 0 ? filtrarNaGrade(historico, aoVivo, periodo) : aoVivo;
+  const foraDaGrade = aoVivo.length - aoVivoNaGrade.length;
+
+  // Descartou tudo? Então o lote era de outro período por inteiro (o caso da troca de TF).
+  // Degrada para o histórico puro, que é o comportamento correto e conhecido.
+  if (aoVivoNaGrade.length === 0) {
+    return {
+      barras: [...historico].sort((a, b) => a.time - b.time),
+      emendaEm: null,
+      doHistorico: historico.length,
+      doAoVivo: 0,
+      sobrepostas: 0,
+      foraDaGrade,
+      lacuna: null,
+      parcialEm: null,
+    };
+  }
+
+  // ⭐⭐ A identidade é o BALDE, não o instante — e em D1 isso é o que impede o mesmo pregão de
+  // virar DUAS barras. Medido: o arquivo rotula o pregão de 16/09 às 00:00 UTC e o terminal às
+  // 03:00 UTC; deduplicar por tempo produziria dois "dias 16" lado a lado, com o retorno entre
+  // eles sendo ruído puro. É o mesmo estrago que `parseBarrasDaMesa` já combate dentro do
+  // arquivo, e que envenenou a correlação PETR4/VALE3 para −0,04.
+  //
+  // ⚠️ Para período intradiário o balde é equivalente ao tempo (as barras já estão alinhadas na
+  // grade), então o caminho é um só e não há ramo especial a manter em sincronia.
+  const porBalde = new Map<number, Bar>();
+  const chave = (b: Bar): number => (periodo > 0 ? chaveDeBalde(b.time, periodo) : b.time);
+  for (const b of historico) porBalde.set(chave(b), b);
+
+  // ⭐⭐ O CORTE (decisão 2): o último balde que o arquivo alcança. O terminal só manda daqui
+  // para frente. `null` = arquivo vazio, e aí o terminal manda em tudo.
+  let corte: number | null = null;
+  for (const b of historico) {
+    const k = chave(b);
+    if (corte === null || k > corte) corte = k;
+  }
 
   let sobrepostas = 0;
   let doAoVivo = 0;
-  for (const b of aoVivo) {
-    // Decisão 2: o ao vivo vence o empate.
-    if (porTempo.has(b.time)) sobrepostas += 1;
-    else doAoVivo += 1;
-    porTempo.set(b.time, b);
+  let descartadasPeloCorte = 0;
+  for (const b of aoVivoNaGrade) {
+    const k = chave(b);
+
+    // Antes do corte: o arquivo é canônico. Descartar evita reescrever o passado com o preço
+    // do contrato e produzir um degrau na junção.
+    if (corte !== null && k < corte) {
+      descartadasPeloCorte += 1;
+      continue;
+    }
+
+    if (porBalde.has(k)) {
+      // O balde do corte: substitui, porque a barra do arquivo pode estar em formação.
+      //
+      // ⚠️ RESSALVA DE RÓTULO: em período diário o TEMPO do histórico é preservado, porque ele
+      // é a convenção dominante da série (ver `UM_DIA_EM_SEGUNDOS`). Trocar o rótulo de uma
+      // barra existente deslocaria o eixo e qualquer desenho ancorado nela.
+      const anterior = porBalde.get(k)!;
+      sobrepostas += 1;
+      porBalde.set(k, periodo >= UM_DIA_EM_SEGUNDOS ? { ...b, time: anterior.time } : b);
+      continue;
+    }
+
+    doAoVivo += 1;
+    porBalde.set(k, b);
   }
 
-  const barras = [...porTempo.values()].sort((a, b) => a.time - b.time);
+  const barras = [...porBalde.values()].sort((a, b) => a.time - b.time);
 
-  const primeiraAoVivo = aoVivo.reduce((min, b) => (b.time < min ? b.time : min), Infinity);
+  // ⚠️ Só as barras que EFETIVAMENTE entraram contam para a emenda — as descartadas pelo corte
+  // não estão na série, e apontar a emenda para uma delas faria a trilha mentir.
+  const usadas = aoVivoNaGrade.filter((b) => corte === null || chave(b) >= corte);
+  const primeiraAoVivo = usadas.reduce((min, b) => (b.time < min ? b.time : min), Infinity);
   const emendaEm = Number.isFinite(primeiraAoVivo) ? primeiraAoVivo : null;
 
   // Decisão 3: a lacuna. Medida contra a última barra do histórico que fica ANTES da emenda —
@@ -524,9 +661,15 @@ export function emendarSeries(
   }
 
   // Decisão 4 + a barra parcial: a última barra é em formação SÓ se ela veio do ao vivo.
+  //
+  // ⚠️ Compara por BALDE e não por tempo, por causa da ressalva de rótulo do D1: ali a barra
+  // fica com o tempo do arquivo, então comparar tempo diria "não é do ao vivo" e a barra em
+  // formação passaria por fechada — e um indicador a alimentaria com `update()`.
   const ultima = barras[barras.length - 1];
   const parcialEm =
-    ultima !== undefined && aoVivo.some((b) => b.time === ultima.time) ? ultima.time : null;
+    ultima !== undefined && usadas.some((b) => chave(b) === chave(ultima))
+      ? ultima.time
+      : null;
 
   return {
     barras,
@@ -534,9 +677,105 @@ export function emendarSeries(
     doHistorico: barras.length - doAoVivo,
     doAoVivo,
     sobrepostas,
+    descartadasPeloCorte,
+    foraDaGrade,
     lacuna,
     parcialEm,
   };
+}
+
+/**
+ * ⭐⭐ Um dia (ou mais) por barra? A partir daí as duas fontes DISCORDAM do rótulo.
+ *
+ * ⚠️ **Medido em 17/09/2026, e é o achado que separa este caminho do outro.** O pregão de
+ * 16/09 (verdade apurada somando as barras de 1h: open 188.165, close 187.600):
+ *
+ * | fonte | rótulo | em BRT | close |
+ * |---|---|---|---|
+ * | arquivo | `16/09 00:00 UTC` | 15/09 **21:00** | 187.600 ✓ |
+ * | terminal | `16/09 03:00 UTC` | 16/09 **00:00** | 187.600 ✓ |
+ *
+ * O MESMO pregão, com 3 h de diferença no rótulo: o arquivo vira o dia à meia-noite **UTC**, o
+ * terminal à meia-noite **de Brasília**. Nenhum está errado — é vocabulário diferente, e o
+ * `parseBarrasDaMesa` já registra que o próprio arquivo tem as duas convenções internamente.
+ *
+ * ⭐ Consequência: em D1 a identidade da barra é o **dia de calendário**, não o instante.
+ * `floor(t / 86400)` dá 20712 para os dois rótulos acima — a mesma chave. Comparar por resto
+ * da divisão, como se faz nos períodos intradiários, descartaria o dia corrente inteiro (foi o
+ * que a guarda fez na primeira versão, e a medição pegou).
+ *
+ * ⚠️ Abaixo de um dia as duas fontes CONCORDAM (medido: resto 0 em 5min, 15min e 1h nas duas),
+ * então lá o alinhamento é sinal legítimo de grade e vale usá-lo.
+ */
+const UM_DIA_EM_SEGUNDOS = 86_400;
+
+/**
+ * A chave de IDENTIDADE de uma barra: o balde a que ela pertence.
+ *
+ * ⭐ É o que faz "a mesma barra" ser reconhecida entre fontes que rotulam diferente. Usada
+ * tanto na validação de grade quanto na deduplicação, para as duas não poderem divergir.
+ */
+function chaveDeBalde(time: number, periodo: number): number {
+  return Math.floor(time / periodo);
+}
+
+/**
+ * Filtra o ao vivo para o que pertence à grade do período. Ver a decisão 5 de `emendarSeries`.
+ *
+ * Duas verificações, e cada uma pega um caso que a outra não pega:
+ *
+ * 1. **Alinhamento** (só abaixo de um dia — ver `UM_DIA_EM_SEGUNDOS`): o resto da divisão pelo
+ *    período é estável dentro de uma grade. Barra de 5min às 09:05 tem resto diferente de
+ *    barra de 1h. É assim que a intrusa é pega mesmo sem vizinha próxima para comparar.
+ *
+ * 2. **Balde distinto**: 09:00 é múltiplo de 5min E de 1h, então uma barra de 5min na hora
+ *    cheia passaria pelo teste de resto. O que a pega é cair no MESMO balde que a anterior
+ *    aceita — duas barras da mesma grade nunca compartilham balde.
+ *
+ * ⚠️ Compara com a última ACEITA, não com a anterior do lote: comparar com a anterior faria uma
+ * intrusa rejeitada deslocar o critério e arrastar as barras boas seguintes.
+ */
+function filtrarNaGrade(
+  historico: readonly Bar[],
+  aoVivo: readonly Bar[],
+  periodo: number,
+): readonly Bar[] {
+  const ordenado = [...aoVivo].sort((a, b) => a.time - b.time);
+
+  // O alinhamento esperado, tirado do histórico. `null` = não se aplica: ou o histórico está
+  // vazio, ou o período é diário e as duas fontes usam convenções diferentes de virada.
+  let alinhamento: number | null = null;
+  if (historico.length > 0 && periodo < UM_DIA_EM_SEGUNDOS) {
+    // ⚠️ A MODA e não a primeira barra: o `D1` do arquivo tem duas convenções de virada de dia
+    // (ver `parseBarrasDaMesa`), e a mesma prudência vale para qualquer série com exceção na
+    // ponta.
+    const contagem = new Map<number, number>();
+    for (const b of historico) {
+      const r = ((b.time % periodo) + periodo) % periodo;
+      contagem.set(r, (contagem.get(r) ?? 0) + 1);
+    }
+    let melhor = -1;
+    for (const [r, n] of contagem) {
+      if (n > melhor) {
+        melhor = n;
+        alinhamento = r;
+      }
+    }
+  }
+
+  const aceitas: Bar[] = [];
+  let ultimoBalde: number | null = null;
+  for (const b of ordenado) {
+    if (alinhamento !== null) {
+      const resto = ((b.time % periodo) + periodo) % periodo;
+      if (resto !== alinhamento) continue;
+    }
+    const balde = chaveDeBalde(b.time, periodo);
+    if (ultimoBalde !== null && balde <= ultimoBalde) continue;
+    aceitas.push(b);
+    ultimoBalde = balde;
+  }
+  return aceitas;
 }
 
 /**

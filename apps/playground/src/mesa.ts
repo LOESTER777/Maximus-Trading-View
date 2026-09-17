@@ -93,6 +93,23 @@ export const ATIVOS_DA_MESA: readonly AtivoDaMesa[] = [
  */
 export const PERIODOS_DA_MESA_IDS: readonly string[] = ['M5', 'M15', 'H1', 'D1'];
 
+/**
+ * ⭐⭐ Os períodos que o TERMINAL serve — e ele tem MAIS que o arquivo.
+ *
+ * O MT5 calcula período a partir do próprio feed, então não depende da materialização da base:
+ * **M1 e M30 existem lá e não existem aqui**. Com o ao vivo ligado eles ficam alcançáveis, e M1
+ * é justamente o período que mais se usa para operar o mini índice.
+ *
+ * ⚠️ O custo é DECLARADO: nesses períodos não há passado, só o dia corrente. Quem escolher M1 vê
+ * uma sessão, e a trilha diz por quê — gráfico com uma sessão só e sem explicação parece defeito.
+ */
+export const PERIODOS_DO_TERMINAL_IDS: readonly string[] = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
+
+/** O arquivo tem este período? `false` ⇒ ele só pode vir do terminal. */
+export function periodoExisteNoArquivo(id: string): boolean {
+  return PERIODOS_DA_MESA_IDS.includes(id);
+}
+
 /** Quantas barras cada lote de backfill pede. */
 const LOTE_BARRAS = 400;
 
@@ -157,10 +174,37 @@ export function useMesaBars(params: {
     [baseUrl],
   );
 
-  const [barras, setBarras] = useState<readonly Bar[]>([]);
+  /**
+   * ⭐⭐ As barras, CARIMBADAS com o período e o símbolo a que pertencem.
+   *
+   * ⚠️ Mesmo defeito e mesma correção do ao vivo (ver `aoVivoCarimbado`): a busca é assíncrona,
+   * e enquanto o lote novo não chega o estado guarda o lote ANTIGO. Aqui é pior num ponto — o
+   * backfill faz `[...novas, ...atuais]`, ou seja **PREPENDE**: um `carregarMaisAntigo` em vôo
+   * quando o TF troca costurava barras do período novo na frente das do período velho, e nenhum
+   * `setBarras` posterior desfazia isso.
+   *
+   * O carimbo torna a corrida inexprimível: a leitura descarta o que não casa com o pedido
+   * corrente, sem depender de ordem de efeito.
+   */
+  const [carimbadas, setCarimbadas] = useState<{
+    readonly periodSeconds: number;
+    readonly symbol: string;
+    readonly barras: readonly Bar[];
+  } | null>(null);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [esgotado, setEsgotado] = useState(false);
+
+  /** As barras que valem para o pedido CORRENTE. `[]` enquanto o lote novo não chegou. */
+  const barras = useMemo<readonly Bar[]>(
+    () =>
+      carimbadas !== null &&
+      carimbadas.periodSeconds === periodSeconds &&
+      carimbadas.symbol === symbol
+        ? carimbadas.barras
+        : [],
+    [carimbadas, periodSeconds, symbol],
+  );
 
   /**
    * A borda esquerda JÁ PEDIDA — e não o tempo da barra mais antiga recebida.
@@ -233,14 +277,14 @@ export function useMesaBars(params: {
   // Primeira carga: do agora para trás.
   useEffect(() => {
     if (!ligado) {
-      setBarras([]);
+      setCarimbadas(null);
       setErro(null);
       setEsgotado(false);
       bordaRef.current = null;
       return;
     }
     if (rotuloDePeriodo(periodSeconds) === null) {
-      setBarras([]);
+      setCarimbadas(null);
       setErro(`A mesa não tem o período de ${periodSeconds}s (só 5min, 15min, 1h e D1).`);
       return;
     }
@@ -256,7 +300,8 @@ export function useMesaBars(params: {
 
     void caminharParaTras(agora, LOTES_INICIAIS, ctrl.signal).then((r) => {
       if (ctrl.signal.aborted) return;
-      setBarras(r.barras);
+      // O carimbo vai no MESMO `setState` das barras: separá-los reabriria a corrida.
+      setCarimbadas({ periodSeconds, symbol, barras: r.barras });
       bordaRef.current = r.borda;
       setEsgotado(r.esgotou);
       setErro(r.erro);
@@ -277,10 +322,21 @@ export function useMesaBars(params: {
     bordaRef.current = r.borda;
     if (r.esgotou) setEsgotado(true);
     if (r.erro !== null) setErro(r.erro);
-    if (r.barras.length > 0) setBarras((atual) => [...r.barras, ...atual]);
+    // ⭐⭐ O backfill PREPENDE, e é aqui que o carimbo mais importa: sem ele, um lote em vôo
+    // quando o TF troca costurava barras do período novo na frente das do período velho, e
+    // nenhum `setState` posterior desfazia. Agora o acréscimo só acontece se o carimbo do
+    // estado ainda for o do pedido que originou este lote.
+    if (r.barras.length > 0) {
+      setCarimbadas((atual) => {
+        if (atual === null || atual.periodSeconds !== periodSeconds || atual.symbol !== symbol) {
+          return atual;
+        }
+        return { periodSeconds, symbol, barras: [...r.barras, ...atual.barras] };
+      });
+    }
     setCarregando(false);
     return r.barras.length;
-  }, [caminharParaTras, esgotado, ligado]);
+  }, [caminharParaTras, esgotado, ligado, periodSeconds, symbol]);
 
   return useMemo<DadoDaMesa>(() => {
     if (!ligado) return { ...VAZIO, carregarMaisAntigo };
@@ -415,6 +471,30 @@ export interface DadoDaMesaComAoVivo extends DadoDaMesa {
   readonly parcialEm: number | null;
   /** Por que o ao vivo não está sendo usado, em pt-BR, ou `null`. */
   readonly avisoAoVivo: string | null;
+  /**
+   * ⭐ Este período existe SÓ no terminal (M1, M30, H4) — então não há passado.
+   *
+   * ⚠️ Tem de aparecer na tela. Sem isso, escolher M1 mostra uma sessão e nenhum histórico, e
+   * a leitura natural é "a ferramenta está quebrada" — quando na verdade é o arquivo que nunca
+   * materializou esse período.
+   */
+  readonly soDoTerminal: boolean;
+  /**
+   * ⭐⭐ Barras do terminal descartadas por não pertencerem à grade do período.
+   *
+   * ⚠️ Deve ser **0** em regime. Diferente de zero significa que um lote de outro período
+   * chegou — a guarda o barrou, mas o número tem de ficar VISÍVEL: foi justamente por ser
+   * silencioso que o defeito "as barras não respeitam o TF" chegou até a tela do operador.
+   */
+  readonly foraDaGrade: number;
+  /**
+   * Barras do terminal descartadas por serem anteriores ao fim do arquivo.
+   *
+   * ⭐ Número ALTO é normal e saudável (o terminal sempre traz passado que o arquivo já tem, e
+   * o arquivo é a fonte canônica). Serve como sinal do contrário: 0 com muitas barras novas
+   * significa que o arquivo ficou muito atrás.
+   */
+  readonly descartadasPeloCorte: number;
 }
 
 /**
@@ -447,18 +527,73 @@ export function useMesaComAoVivo(params: {
   const baseUrlMt5 = params.baseUrlMt5 ?? '/mt5';
   const querAoVivo = params.aoVivo !== false;
 
+  /**
+   * ⭐ O arquivo tem este período? Se não (M1, M30, H4), ele nem é consultado.
+   *
+   * ⚠️ Não consultar é diferente de consultar e falhar: pedir M1 ao arquivo devolve
+   * `INDISPONIVEL`, que a trilha mostraria como ERRO em vermelho. Mas não é erro — é um período
+   * que só o terminal serve, e isso é informação, não falha.
+   */
+  const soDoTerminal = useMemo(
+    () => rotuloDePeriodo(periodSeconds) === null && rotuloDePeriodoMt5(periodSeconds) !== null,
+    [periodSeconds],
+  );
+
   // O histórico, intacto — com backfill e tudo o que ele já sabia fazer.
   const historico = useMesaBars({
-    ligado,
+    // ⚠️ Desligado quando o período só existe no terminal: evita a consulta que só pode falhar.
+    ligado: ligado && !soDoTerminal,
     symbol,
     periodSeconds,
     ...(params.baseUrl === undefined ? {} : { baseUrl: params.baseUrl }),
   });
 
-  const [barrasAoVivo, setBarrasAoVivo] = useState<readonly Bar[]>([]);
+  /**
+   * ⭐⭐ As barras do terminal, CARIMBADAS com o período e o símbolo a que pertencem.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O DEFEITO QUE O CARIMBO CORRIGE
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ⚠️ **Relato:** *"quando muda o TF as barras não estão se ajustando conforme o TF"*.
+   *
+   * Antes isto era `readonly Bar[]` puro. Trocar o TF disparava consulta nova, mas ela é
+   * ASSÍNCRONA e a rota com agressor leva **7 s**. Durante esse tempo o estado ainda continha
+   * as barras do período ANTIGO, e elas eram emendadas no histórico do período NOVO — o
+   * gráfico desenhava as duas grades juntas.
+   *
+   * ⚠️ E não era só uma janela de 7 s: numa falha de rede a série anterior é **preservada de
+   * propósito** (esvaziar faria o gráfico encolher e o pan saltar a cada soluço). Então as
+   * barras erradas podiam ficar na tela **indefinidamente**.
+   *
+   * ⭐ O carimbo torna a corrida INEXPRIMÍVEL: a leitura compara com o que está pedido AGORA e
+   * descarta o que não casa. Não depende de ordem de efeito, de tempo de resposta nem de
+   * limpeza correta — que é justamente o que falhou. O mesmo vale para o SÍMBOLO: trocar de
+   * WIN para WDO tinha o mesmo problema, com preço de outro instrumento.
+   */
+  const [aoVivoCarimbado, setAoVivoCarimbado] = useState<{
+    readonly periodSeconds: number;
+    readonly symbol: string;
+    readonly barras: readonly Bar[];
+  } | null>(null);
   const [contratoVigente, setContratoVigente] = useState<string | null>(null);
   const [aoVivoLigado, setAoVivoLigado] = useState(false);
   const [avisoAoVivo, setAvisoAoVivo] = useState<string | null>(null);
+
+  /**
+   * As barras do ao vivo que valem para o pedido CORRENTE. `[]` enquanto o novo período não
+   * chegou — e `[]` é a resposta certa: melhor a tela mostrar só o histórico (comportamento
+   * conhecido) do que uma série de grade dupla.
+   */
+  const barrasAoVivo = useMemo<readonly Bar[]>(
+    () =>
+      aoVivoCarimbado !== null &&
+      aoVivoCarimbado.periodSeconds === periodSeconds &&
+      aoVivoCarimbado.symbol === symbol
+        ? aoVivoCarimbado.barras
+        : [],
+    [aoVivoCarimbado, periodSeconds, symbol],
+  );
 
   /**
    * O ao vivo só vale para o que o TERMINAL cota.
@@ -542,13 +677,13 @@ export function useMesaComAoVivo(params: {
   // ── O dia corrente, repetido ──────────────────────────────────────────────
   useEffect(() => {
     if (!temAoVivo || contratoVigente === null || !aoVivoLigado) {
-      setBarrasAoVivo([]);
+      setAoVivoCarimbado(null);
       return;
     }
     // ⚠️ A bridge não tem todos os períodos? Ela tem MAIS que o arquivo (1m e 30m também),
     // então este caminho é raro — mas declarar é melhor que pedir e receber 400.
     if (rotuloDePeriodoMt5(periodSeconds) === null) {
-      setBarrasAoVivo([]);
+      setAoVivoCarimbado(null);
       setAvisoAoVivo(`O terminal não serve o período de ${periodSeconds}s.`);
       return;
     }
@@ -565,7 +700,10 @@ export function useMesaComAoVivo(params: {
       );
       if (!vivo || ctrl.signal.aborted) return;
       if (r.ok) {
-        setBarrasAoVivo(r.data);
+        // ⭐ O carimbo é gravado JUNTO com as barras, no mesmo `setState`. Gravar em dois
+        // estados separados reabriria a corrida: haveria um render com barras novas e carimbo
+        // velho, que é exatamente o defeito.
+        setAoVivoCarimbado({ periodSeconds, symbol, barras: r.data });
         setAvisoAoVivo(null);
         return;
       }
@@ -586,7 +724,7 @@ export function useMesaComAoVivo(params: {
       ctrl.abort();
       clearInterval(timer);
     };
-  }, [temAoVivo, contratoVigente, aoVivoLigado, periodSeconds, fonteMt5]);
+  }, [temAoVivo, contratoVigente, aoVivoLigado, periodSeconds, symbol, fonteMt5]);
 
   // ── A emenda ──────────────────────────────────────────────────────────────
   return useMemo<DadoDaMesaComAoVivo>(() => {
@@ -647,6 +785,9 @@ export function useMesaComAoVivo(params: {
       lacuna: emendado.lacuna,
       parcialEm: emendado.parcialEm,
       avisoAoVivo,
+      foraDaGrade: emendado.foraDaGrade,
+      descartadasPeloCorte: emendado.descartadasPeloCorte,
+      soDoTerminal,
     };
-  }, [historico, barrasAoVivo, periodSeconds, aoVivoLigado, contratoVigente, avisoAoVivo]);
+  }, [historico, barrasAoVivo, periodSeconds, aoVivoLigado, contratoVigente, avisoAoVivo, soDoTerminal]);
 }

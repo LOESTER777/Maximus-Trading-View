@@ -67,8 +67,47 @@ injeta `Authorization` server-side a partir de `MT5_BRIDGE_AUTH_TOKEN` no ambien
 `NEGADA` → degrada para o arquivo, dizendo por quê.
 
 ⭐ Só `WIN` e `WDO` têm ao vivo (é um terminal B3/futuros). `emendarSeries` declara **lacuna**
-(nunca interpola) e **barra em formação** (`parcialEm`) — indicador incremental precisa de
-`preview()`, não `update()`, na barra parcial.
+(nunca interpola) e **barra em formação** (`parcialEm`).
+
+⚠️ Verificado: a barra parcial **não** corrompe indicador. `IndicatorPlotter.desenharPlot` chama
+`warmup(history)` do zero a cada atualização, sem estado acumulado entre chamadas — o risco de
+`update()` incremental sobre barra parcial não se aplica a este caminho.
+
+### ⭐⭐ "As barras não respeitam o TF" — quatro defeitos numa linha (17/09/2026)
+
+Relato do operador, com sintoma visível na tela. Medido: com **1h** escolhido, a série tinha
+**101 pares consecutivos a 5 min de distância**.
+
+1. **Corrida de período.** As barras do terminal viviam em estado sem carimbo. Trocar o TF
+   disparava consulta nova, mas ela é assíncrona e leva **7 s** — e numa falha a série anterior
+   é preservada de propósito (para não piscar), então as barras erradas podiam ficar
+   **indefinidamente**. Correção: `{periodSeconds, symbol, barras}` num só `setState`, e a
+   leitura descarta o que não casa com o pedido corrente. Torna a corrida inexprimível em vez de
+   depender de ordem de efeito. **O mesmo vale para o histórico**, onde é pior: o backfill
+   *prepende*, então um lote em vôo costurava período novo na frente do velho.
+2. **Grade não validada.** `emendarSeries` ganhou a decisão 5: duas barras do mesmo período nunca
+   podem estar MAIS PRÓXIMAS que um período (maior é legítimo — fim de semana, feriado, leilão).
+   Quem é descartado é o ao vivo, nunca o histórico. `foraDaGrade` sai no resultado e na tela.
+3. ⚠️⚠️ **D1: as fontes DISCORDAM do rótulo.** O pregão de 16/09 (verdade apurada somando 1h:
+   open 188.165, close 187.600) é rotulado `16/09 00:00 UTC` pelo arquivo e `16/09 03:00 UTC`
+   pelo terminal — meia-noite UTC contra meia-noite de Brasília. A guarda por resto da divisão
+   **descartava o dia corrente inteiro** em D1. Correção: a identidade é o **balde**
+   (`floor(t/periodo)`), que dá a mesma chave para os dois; o alinhamento só é exigido **abaixo
+   de um dia**, onde as fontes concordam (medido: resto 0 em 5min/15min/1h). Em D1 o **rótulo do
+   arquivo é preservado** (é a convenção dominante; trocá-lo deslocaria eixo e desenhos).
+4. ⚠️ **Degrau de preço por sobreposição.** O terminal responde as N últimas barras, então
+   sobrepõe dias que o arquivo já tem — medido, **117 barras** em 15min com lote de 400. Aceitá-
+   las reescreveria dias com o preço do CONTRATO no lugar do CONTÍNUO. Correção (a mesma regra
+   do SQL da origem): **corte** no último balde do arquivo — antes dele o arquivo é canônico,
+   nele o terminal substitui (pode estar em formação), depois dele o terminal entra.
+   `descartadasPeloCorte` é ALTO e saudável. Efeito medido em 15min: 404 barras → **156**.
+
+⭐ **Melhoria da mesma rodada:** o terminal tem **M1 e M30**, que o arquivo nunca materializou.
+Com o ao vivo ligado eles passam a ser oferecidos (M1 é o período que mais se usa para operar o
+mini índice). O arquivo **não é consultado** nesses períodos — pedir devolveria vazio e a trilha
+mostraria erro que não é erro. A nota diz "vem só do terminal: sem backfill, o alcance é o do
+lote", e evita afirmar "só o dia corrente" porque seria impreciso: medido, o mesmo lote de 300
+barras dá 5 h em M1 e 3 semanas em M30.
 
 Camadas: `packages/datafeed/src/mt5-bridge.core.ts` (puro, 46 testes) +
 `mt5-bridge-source.ts` (I/O) + `useMesaComAoVivo` em `apps/playground/src/mesa.ts`.
