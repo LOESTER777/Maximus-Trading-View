@@ -273,6 +273,66 @@ function numeroOuAusente(v: number | null | undefined): number | undefined {
  */
 const FOLGA_MINIMA_D1 = 12 * 3600;
 
+/**
+ * ⭐⭐ Fração MÍNIMA do volume que precisa estar classificada por agressor para o delta valer.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O DEFEITO DE DADO QUE ISTO BARRA, E A MEDIÇÃO QUE ESCOLHEU O NÚMERO
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A invariante honesta de uma barra com agressor é `buy_vol + sell_vol ≈ volume`. Uma folga de
+ * 1 a 2 % é normal e esperada (leilão, cruzamento direto, negócio sem agressor identificável).
+ *
+ * ⚠️ Auditado contra o serviço da mesa em 17/09/2026 (`scripts/auditoria-de-dados.mjs`), e o
+ * resultado separa claramente o dado bom do dado quebrado:
+ *
+ * | período | cobertura mínima | p5 | barras abaixo de 90 % |
+ * |---|---|---|---|
+ * | `5min` | **100 %** | 100 % | **0** de 1.137 |
+ * | `15min` | **100 %** | 100 % | **0** de 714 |
+ * | `1h` | **0,1 %** | 3,1 % | **96** de 459 (21 %) |
+ * | `D1` | 0,3 % | 96,4 % | 33 de 740 (4,5 %) |
+ *
+ * ⭐ O tick é PERFEITO; quem quebra é a AGREGAÇÃO da base para os períodos maiores — ela soma o
+ * `volume` de todos os negócios mas só parte do `buy_vol`/`sell_vol`. Em junho de 2026 a
+ * cobertura média em D1 caiu para **37,8 %**: o delta daqueles dias estava sendo calculado
+ * sobre um TERÇO do volume.
+ *
+ * ⚠️ **E o gráfico exibia isso como delta legítimo.** Um delta apurado sobre 37 % do volume não
+ * é uma medida imprecisa, é outra medida — e ela inverte de sinal com facilidade, porque a
+ * parte não classificada não é neutra. Para quem lê fluxo, isso aponta na direção errada.
+ *
+ * ⭐ **90 % é o limiar, e ele foi escolhido pela distribuição, não por gosto:** não recusa NADA
+ * em 5min e 15min (onde o dado é íntegro) e barra exatamente as barras arruinadas de 1h e D1.
+ * Um limiar de 98 % recusaria 20 % das barras diárias boas (o p50 é 98,6 %); um de 80 % deixaria
+ * passar barra com 85 % de cobertura, onde o delta já pode inverter.
+ *
+ * ⚠️ Recusar significa **omitir** `buyVolume`/`sellVolume`, e o indicador de delta devolve
+ * `null` naquela barra. É a disciplina do projeto: `null` é *"não sei"*, e é infinitamente
+ * melhor que um número errado numa tela de decisão. O `volume` total continua íntegro e
+ * continua sendo desenhado — o que se perde é só a divisão por agressor, que é o que estava
+ * quebrado.
+ */
+export const COBERTURA_MINIMA_DE_AGRESSOR = 0.9;
+
+/**
+ * O par compra/venda é utilizável para esta barra?
+ *
+ * ⚠️ Sem `volume` para comparar, ACEITA: não há como aferir, e recusar por falta de referência
+ * jogaria fora dado possivelmente bom. O que não se pode é aceitar quando a aferição REPROVA.
+ */
+export function agressorUtilizavel(
+  volume: number | undefined,
+  compra: number | undefined,
+  venda: number | undefined,
+  minimo: number = COBERTURA_MINIMA_DE_AGRESSOR,
+): boolean {
+  if (compra === undefined || venda === undefined) return false;
+  if (compra < 0 || venda < 0) return false;
+  if (volume === undefined || !(volume > 0)) return true;
+  return (compra + venda) / volume >= minimo;
+}
+
 export function parseBarrasDaMesa(body: unknown, periodSeconds?: number): readonly Bar[] | null {
   if (!ehCorpoDeBarras(body)) return null;
 
@@ -322,8 +382,19 @@ export function parseBarrasDaMesa(body: unknown, periodSeconds?: number): readon
     ultimoTempo = time;
 
     const volume = iVolume === undefined ? undefined : numeroOuAusente(linha[iVolume]);
-    const buyVolume = iCompra === undefined ? undefined : numeroOuAusente(linha[iCompra]);
-    const sellVolume = iVenda === undefined ? undefined : numeroOuAusente(linha[iVenda]);
+    const compraCrua = iCompra === undefined ? undefined : numeroOuAusente(linha[iCompra]);
+    const vendaCrua = iVenda === undefined ? undefined : numeroOuAusente(linha[iVenda]);
+
+    // ⭐⭐ O agressor só passa se COBRIR o volume. Ver `COBERTURA_MINIMA_DE_AGRESSOR`: a
+    // agregação de 1h e D1 da base soma o volume inteiro mas só parte da classificação, e em
+    // junho de 2026 isso chegou a 37,8 % de cobertura — delta apurado sobre um terço do
+    // volume, exibido como se fosse bom.
+    //
+    // ⚠️ Os DOIS são omitidos juntos, sempre. Um lado sozinho seria o volume total disfarçado
+    // de desequilíbrio, que é pior que ausência.
+    const usaAgressor = agressorUtilizavel(volume, compraCrua, vendaCrua);
+    const buyVolume = usaAgressor ? compraCrua : undefined;
+    const sellVolume = usaAgressor ? vendaCrua : undefined;
 
     barras.push({
       time,

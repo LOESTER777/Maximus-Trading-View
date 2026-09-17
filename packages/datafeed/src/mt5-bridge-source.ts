@@ -65,15 +65,35 @@ export interface FonteDeBarrasDoMt5Options {
    */
   readonly token?: () => string;
   /**
-   * ⭐ Pedir `/historical-flow` (com `buy_volume`/`sell_volume`) em vez de `/candles`.
+   * Pedir `/historical-flow` em vez de `/candles`. **Ausente ⇒ `true`.**
    *
-   * O fluxo é o insumo de delta, CVD e footprint — e o terminal classifica agressor de
-   * verdade, não por Lee-Ready estimado por nós.
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ⚠️⚠️ O DEFAULT É `true` PORQUE `/candles` MENTE SOBRE O VOLUME
+   * ═══════════════════════════════════════════════════════════════════════════
    *
-   * ⚠️⚠️ **Custa 10x mais, e o custo é do TERMINAL QUE OPERA.** Medido no WIN 5min:
-   * `/candles` = 0,7 s para 700 barras; `/historical-flow` = 7,0 s para 95 barras. A bridge
-   * roda dentro do Wine, no mesmo processo que alimenta o robô. Quem liga isto **precisa**
-   * espaçar o polling — ver `INTERVALO_AO_VIVO_MS` no consumidor.
+   * ⭐ **Auditado em 17/09/2026** (`scripts/auditoria-de-dados.mjs`), WIN 5min, mesma barra:
+   *
+   * | rota | `volume` | `tick_count` | é |
+   * |---|---|---|---|
+   * | `/candles` | **4.104** | — | número de NEGÓCIOS |
+   * | `/historical-flow` | **36.819** | 4.436 | CONTRATOS |
+   *
+   * O `volume` de `/candles` é praticamente igual ao `tick_count` — ou seja, ele devolve **tick
+   * volume**, não contratos. A razão contra o arquivo (que grava contratos) é de **9 a 10x**.
+   *
+   * ⚠️ E o estrago é silencioso: emendar `/candles` com o arquivo produz um histograma com
+   * degrau de uma ordem de grandeza na junção, sem nenhum erro. Numa tela de decisão isso é
+   * pior que não desenhar volume — o operador leria "o volume secou" onde ele apenas mudou de
+   * unidade. Fora que `/candles` **não traz agressor nenhum**, então delta, CVD e footprint
+   * ficam mudos.
+   *
+   * ⭐ Por isso o default é a rota CORRETA, não a barata. O custo é real e medido —
+   * `/historical-flow` leva 7,0 s contra 0,7 s, e roda dentro do Wine no mesmo processo que
+   * alimenta o robô que opera — mas ele é do consumidor administrar espaçando o polling (ver
+   * `INTERVALO_AO_VIVO_MS`), e não motivo para desenhar número errado por padrão.
+   *
+   * ⚠️ `false` continua disponível para quem quer só a FORMA da vela (OHLC), que é idêntica nas
+   * duas rotas. Quem escolhe assume que o volume está em outra unidade.
    */
   readonly comFluxo?: boolean;
   /**
@@ -90,7 +110,10 @@ export interface FonteDeBarrasDoMt5Options {
 /** Constrói a capacidade de barras contra a bridge MT5. */
 export function criarFonteDeBarrasDoMt5(opts: FonteDeBarrasDoMt5Options): BarsCapability {
   const base = opts.baseUrl.replace(/\/+$/, '');
-  const comFluxo = opts.comFluxo === true;
+  // ⚠️ Ausente ⇒ `true`: o default é a rota que devolve volume em CONTRATOS e traz agressor.
+  // Ver a nota longa em `comFluxo` — `/candles` devolve tick volume, e emendá-lo com o arquivo
+  // produz um degrau de 10x no histograma, sem erro nenhum.
+  const comFluxo = opts.comFluxo !== false;
   const rota = { comFluxo, ...(opts.dias === undefined ? {} : { dias: opts.dias }) };
 
   const cabecalhos = (): Record<string, string> => {

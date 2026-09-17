@@ -29,22 +29,41 @@ function barra(time: number, close: number, extra?: Partial<Bar>): Bar {
   return { time, open: close, high: close, low: close, close, ...extra };
 }
 
-describe('fuso — a correção medida contra as duas fontes', () => {
-  it('o offset é 10800 s (3 h), e é o que casa as duas fontes na mesma barra', () => {
-    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBe(10_800);
+describe('fuso — a correção aferida por correlação cruzada', () => {
+  it('⭐⭐ o offset é NEGATIVO: a bridge está 3 h À FRENTE do epoch real', () => {
+    // ⚠️ Este teste já existiu com `+10800`, e passava — porque foi escrito a partir de uma
+    // medição de TRÊS barras que casou por coincidência. A aferição correta é correlação
+    // cruzada sobre o pregão inteiro (114 barras): −10800 dá erro de 12 pts, o segundo melhor
+    // dá 140 pts, e `+10800` dá 195 pts. Ver `OFFSET_CANDLES_MT5_SEGUNDOS`.
+    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBe(-10_800);
+    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBeLessThan(0);
   });
 
-  it('⭐⭐ MECANISMO: sem a correção, a barra sai 3 h no passado com preço PLAUSÍVEL', () => {
-    // Medição real de 16/09/2026 14:00 BRT (epoch verdadeiro 1789578000).
-    const epochVerdadeiro = 1_789_578_000;
-    const timestampQueABridgeEnvia = 1_789_567_200;
+  it('⭐⭐ a ABERTURA do pregão prova o sinal: 09:00 BRT = 12:00 UTC', () => {
+    // Referência independente e verificável: o WIN abre às 09:00 BRT, e o arquivo (que usa
+    // epoch UTC correto) rotula essa barra como 1789560000 = 12:00 UTC = 09:00 BRT.
+    const aberturaReal = 1_789_560_000;
+    // A bridge, 3 h à frente, envia este número para a MESMA barra.
+    const oQueABridgeEnvia = aberturaReal + 10_800;
+    expect(epochRealDoMt5(oQueABridgeEnvia)).toBe(aberturaReal);
 
-    // O defeito: usar o timestamp cru.
-    expect(timestampQueABridgeEnvia).not.toBe(epochVerdadeiro);
-    expect(epochVerdadeiro - timestampQueABridgeEnvia).toBe(10_800);
+    // E o horário resultante é a abertura, em BRT.
+    const emBRT = new Date(epochRealDoMt5(oQueABridgeEnvia) * 1000).toLocaleTimeString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    expect(emBRT).toBe('09:00');
+  });
 
-    // A correção.
-    expect(epochRealDoMt5(timestampQueABridgeEnvia)).toBe(epochVerdadeiro);
+  it('⚠️ o sinal ERRADO desloca SEIS horas — e o preço continua plausível', () => {
+    const aberturaReal = 1_789_560_000;
+    const oQueABridgeEnvia = aberturaReal + 10_800;
+    // O que a versão errada produzia:
+    const comSinalErrado = oQueABridgeEnvia + 10_800;
+    expect(comSinalErrado - aberturaReal).toBe(21_600); // 6 h de erro
+    // E o certo:
+    expect(epochRealDoMt5(oQueABridgeEnvia)).toBe(aberturaReal);
   });
 
   it('epochParaMt5 é o inverso exato de epochRealDoMt5', () => {
@@ -55,10 +74,10 @@ describe('fuso — a correção medida contra as duas fontes', () => {
 
   it('⭐ a correção acontece na FRONTEIRA: parseCandlesDoMt5 já devolve epoch real', () => {
     const b = parseCandlesDoMt5([
-      { timestamp: 1_789_567_200, open: 187_700, high: 187_750, low: 187_650, close: 187_705 },
+      { timestamp: 1_789_570_800, open: 187_700, high: 187_750, low: 187_650, close: 187_705 },
     ]);
     expect(b).not.toBeNull();
-    expect(b?.[0]?.time).toBe(1_789_578_000);
+    expect(b?.[0]?.time).toBe(1_789_560_000);
   });
 });
 

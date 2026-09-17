@@ -196,7 +196,17 @@ export {
   periodosDisponiveis,
   rotuloDePeriodo,
   simboloAceito,
+  agressorUtilizavel,
+  COBERTURA_MINIMA_DE_AGRESSOR,
   PERIODOS_DA_MESA,
+  /**
+   * ⭐⭐ O par compra/venda cobre o volume o suficiente para o delta valer?
+   *
+   * Auditado contra o serviço da mesa: 5min e 15min têm 100% de cobertura, mas a agregação de
+   * 1h e D1 soma o volume inteiro e só parte do agressor — em junho de 2026, 37,8% de
+   * cobertura em D1. Delta apurado sobre um terço do volume inverte de sinal.
+   */
+  agressorUtilizavel as aggressorIsUsable,
   /** Monta o caminho da consulta de barras; `null` quando o pedido nao e atendivel. */
   montarCaminhoDeBarras as buildDeskBarsPath,
   /** Le o corpo colunar da API; `null` = contrato quebrado. */

@@ -24,28 +24,27 @@
  * ⚠️⚠️ O DEFEITO QUE ESTE ARQUIVO EXISTE PARA NÃO COMETER: O FUSO
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * A bridge devolve `timestamp` que **NÃO é epoch UTC**. Medido contra a mesma barra nas duas
- * fontes — janela BRT de 16/09 14:00..14:15, `WIN` em 5min:
+ * A bridge devolve `timestamp` que **NÃO é epoch UTC** — é o frame do servidor da corretora, e
+ * ele está **3 h à frente**. A correção é `OFFSET_CANDLES_MT5_SEGUNDOS = −10800`, aferida por
+ * correlação cruzada sobre um pregão inteiro (114 barras) e confirmada pela razão de volume
+ * entre as fontes ser exatamente **1,000**.
  *
- * ```
- * bars_api (referência)          14:00 → 187695   14:05 → 187660   14:10 → 187745
- * MT5, timestamp CRU                    187190           187225           187225   ⇠ ERRADO
- * MT5, timestamp + 10800                187705           187670           187740   ⇠ casa
- * ```
+ * ⭐ **É o pior tipo de defeito: o preço no horário errado é PLAUSÍVEL.** Um valor deslocado
+ * seis horas continua sendo um preço possível para o WIN — só não é o daquele instante. Nada
+ * lança, nada fica vazio, e a única coisa que denuncia é cruzar as duas fontes.
  *
- * ⭐ **É o pior tipo de defeito: o preço cru é PLAUSÍVEL.** 187.190 é um valor perfeitamente
- * possível para o WIN — só não é o valor daquele horário. Sem esta correção o gráfico mostra
- * um mercado que existiu, deslocado três horas, e ninguém percebe olhando. O que denuncia é
- * cruzar as duas fontes na mesma barra, que é o que a medição acima faz.
+ * ⚠️⚠️ **E este arquivo já errou o SINAL dessa constante.** A primeira medição usou três barras
+ * e casou por coincidência. Leia a nota de `OFFSET_CANDLES_MT5_SEGUNDOS` antes de mexer em
+ * qualquer coisa relacionada a tempo aqui: a lição de método vale mais que o número.
  *
- * A diferença residual de 5 a 10 pontos entre as colunas corrigidas **não** é erro: é
- * `WINV26` (contrato com vencimento, o que o MT5 cota) contra `WIN` (série contínua ajustada,
- * o que o arquivo guarda). Ver a nota de `emendarSeries` sobre por que isso proíbe misturar
- * as duas fontes DENTRO de uma barra.
+ * A diferença residual de ~12 a 19 pontos entre as fontes alinhadas **não** é erro: é `WINV26`
+ * (contrato com vencimento, o que o MT5 cota) contra `WIN` (série contínua ajustada, o que o
+ * arquivo guarda). Ver a decisão 2 de `emendarSeries` sobre por que isso proíbe usar o terminal
+ * para passado profundo.
  *
- * ⚠️ O sentido do offset difere por rota na bridge (o stream de tick e o REST de candles não
- * concordam entre si), e é por isso que a constante aqui declara a ROTA que mediu. Não
- * generalize para o WebSocket sem medir de novo.
+ * ⚠️ Medido para `/candles`, `/historical` e `/historical-flow`. **Não** foi medido para o
+ * stream WebSocket de tick nem para `/orderbook` — a bridge pode ser inconsistente entre rotas,
+ * e afirmar sem medir é exactamente como este defeito nasceu.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * PURO, E O QUE ISSO CUSTOU DE PROPÓSITO
@@ -57,28 +56,58 @@
  */
 
 import type { Bar, BarsRequest } from './contracts.js';
+import { agressorUtilizavel } from './robustus-bars.core.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // O fuso
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * ⭐⭐ Segundos a SOMAR no `timestamp` do REST de candles da bridge para obter epoch real.
+ * ⭐⭐ Segundos a somar no `timestamp` do REST da bridge para obter epoch real. É **NEGATIVO**.
  *
- * ⚠️ **MEDIDO, não deduzido do fuso de Brasília.** O número coincide com 3 h, mas a causa é o
- * frame de tempo do servidor da corretora, não o fuso do operador — então ele **não** segue
- * horário de verão nem muda se o navegador estiver noutro país. Tratar isto como "fuso do
- * Brasil" e derivar de `Intl` produziria um deslocamento novo no dia em que qualquer um dos
- * dois mudasse.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⚠️⚠️ O SINAL JÁ ESTEVE INVERTIDO AQUI, E A LIÇÃO IMPORTA MAIS QUE O NÚMERO
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * A medição está no cabeçalho do arquivo: com `+10800` as duas fontes descrevem o mesmo
- * preço na mesma barra; sem, erram por ~500 pontos no WIN.
+ * A primeira versão usava `+10800`, medida assim: peguei UMA janela de 15 minutos, comparei
+ * TRÊS barras com o arquivo, e o fechamento casou dentro de 10 pontos. Parecia prova.
  *
- * ⚠️ Vale para `/candles`, `/historical` e `/historical-flow`. **Não** foi medido para o
- * stream WebSocket de tick nem para `/orderbook` — a bridge é inconsistente entre rotas, e
- * afirmar sem medir é como este defeito nasce.
+ * **Era coincidência.** O WIN oscilou pouco naquele dia, e barras separadas por seis horas
+ * tinham preço parecido. Uma amostra de três não distingue isso de um alinhamento correto.
+ *
+ * ⭐ A medição honesta é **correlação cruzada sobre a série inteira** — 114 barras do pregão de
+ * 16/09/2026, testando todo deslocamento múltiplo de 5 min entre −6 h e +6 h
+ * (`scripts/auditoria-de-dados.mjs`):
+ *
+ * | rota | melhor offset | erro de fechamento | 2º melhor |
+ * |---|---|---|---|
+ * | `/candles` | **−10800** | **12,0 pts** | −11100 → 140,5 pts |
+ * | `/historical-flow` | **−10800** | **19,0 pts** | −11100 → 148,1 pts |
+ *
+ * O valor errado (`+10800`) aparece em 4º lugar, com **195,4 pts** — dez vezes pior.
+ *
+ * ⭐⭐ **E a prova que não admite coincidência: alinhado em −10800, a razão de volume entre as
+ * fontes é exatamente 1,000.** Volume idêntico só acontece na MESMA barra. Com `+10800` a razão
+ * dava 9,002, e eu cheguei a interpretar isso como "as fontes usam unidades diferentes de
+ * volume" — quando era o desalinhamento se disfarçando de problema de unidade.
+ *
+ * ⚠️ O erro que isso produzia na tela: o gráfico desenhava o pregão **seis horas deslocado**
+ * (três para o lado errado). Preço plausível, hora errada, nenhum erro — e uma leitura de
+ * abertura, de fechamento ou de horário de notícia completamente falsa.
+ *
+ * ── O QUE APRENDER ────────────────────────────────────────────────────────
+ *
+ * ⛔ **Nunca afira alinhamento de tempo com uma amostra pequena.** Duas séries de preço
+ * concordam por acaso com frequência. O que não concorda por acaso é a série INTEIRA, e
+ * principalmente o **volume**: ele é uma assinatura, e razão 1,000 é assinatura idêntica.
+ *
+ * ⚠️ O número coincide com 3 h mas **não é o fuso de Brasília** — é o frame do servidor da
+ * corretora. Não derive de `Intl` nem aplique horário de verão.
+ *
+ * ⚠️ Vale para `/candles`, `/historical` e `/historical-flow` (as três foram medidas). **Não**
+ * foi medido para o WebSocket de tick nem para `/orderbook`.
  */
-export const OFFSET_CANDLES_MT5_SEGUNDOS = 10_800;
+export const OFFSET_CANDLES_MT5_SEGUNDOS = -10_800;
 
 /**
  * Converte o `timestamp` da bridge em epoch real (segundos).
@@ -367,8 +396,22 @@ export function parseCandlesDoMt5(
     ultimoTempo = time;
 
     const volume = numeroOuAusente(c['volume']);
-    const buyVolume = numeroOuAusente(c['buy_volume']);
-    const sellVolume = numeroOuAusente(c['sell_volume']);
+    const compraCrua = numeroOuAusente(c['buy_volume']);
+    const vendaCrua = numeroOuAusente(c['sell_volume']);
+
+    // ⭐⭐ A MESMA guarda de cobertura do adaptador do arquivo, e pelo mesmo motivo: delta
+    // apurado sobre parte do volume não é uma medida imprecisa, é outra medida — e ela inverte
+    // de sinal, porque a parte não classificada não é neutra. Ver
+    // `COBERTURA_MINIMA_DE_AGRESSOR` em `robustus-bars.core.ts` para a auditoria que fixou o
+    // limiar.
+    //
+    // ⚠️ Aplicada aqui TAMBÉM, e não só no arquivo, porque a classificação do terminal é
+    // Lee-Ready sobre o tape e pode degradar do mesmo jeito num dia de leilão longo ou de
+    // feed instável. Uma guarda que vale para uma fonte e não para a outra é uma guarda que
+    // vai ser esquecida na próxima fonte.
+    const usaAgressor = agressorUtilizavel(volume, compraCrua, vendaCrua);
+    const buyVolume = usaAgressor ? compraCrua : undefined;
+    const sellVolume = usaAgressor ? vendaCrua : undefined;
 
     barras.push({
       time,
@@ -489,6 +532,29 @@ export interface SerieEmendada {
  * top-up rodou.
  *
  * ⭐ A emenda continua IDEMPOTENTE: com o arquivo completo, o terminal não acrescenta nada.
+ *
+ * ⚠️⚠️ **E HÁ UM MOTIVO MAIOR QUE O DEGRAU, medido em 17/09/2026: o CONTRATO TEM HISTÓRICO
+ * PRÓPRIO, e ele não é o contínuo.** Fechamento diário, arquivo (`WIN`, contínuo ajustado)
+ * contra terminal (`WINV26`, o contrato vigente hoje):
+ *
+ * | dia | arquivo | terminal | erro |
+ * |---|---|---|---|
+ * | 14/04/2026 | 201.720 | 210.250 | **+4,23 %** |
+ * | 14/06/2026 | 173.860 | 177.800 | +2,27 % |
+ * | 23/08/2026 | 174.715 | 174.715 | 0,00 % |
+ * | 07/09/2026 | 190.025 | 190.025 | 0,00 % |
+ *
+ * ⭐ A divergência não é ruído: ela DECRESCE até zerar em 23/08, que é quando `WINV26` passou a
+ * ser o contrato vigente. Antes disso ele era um futuro de vencimento distante, e futuro
+ * distante negocia acima do índice à vista — é a estrutura a termo, não erro de dado.
+ *
+ * ⚠️ Em WIN, 4,23 % são cerca de **8.000 pontos**. Um gráfico que desenhasse isso poria suporte
+ * e resistência em preços onde o mercado nunca esteve, e toda leitura técnica de níveis sairia
+ * errada. O corte é o que garante que o passado venha da série contínua, que é a única
+ * comparável ao longo do tempo.
+ *
+ * ⛔ **Não "otimize" removendo o corte** para aproveitar as barras que o terminal já trouxe. Ele
+ * não está lá por economia de dado; está lá porque as duas séries só coincidem no presente.
  *
  * **3. A LACUNA é detectada e devolvida, nunca fechada por interpolação.**
  *
