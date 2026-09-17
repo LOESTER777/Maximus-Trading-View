@@ -221,6 +221,15 @@ function App(): JSX.Element {
    */
   const [alturaOsciladores, setAlturaOsciladores] = useState<number | null>(0.11);
   /**
+   * ⭐⭐ O ARRANJO dos sub-painéis: empilhado (1), em colunas, ou automático.
+   *
+   * ⚠️ `'auto'` é o default AQUI, e não no motor. No motor o default é `1` (empilhado) porque
+   * ninguém deve ter o layout reorganizado por atualizar a biblioteca. Neste playground o
+   * `'auto'` é seguro e demonstra o recurso: com um sub-painel só ele resolve para 1 coluna,
+   * que é exatamente o que se via antes — a grade só aparece quando há o que arranjar.
+   */
+  const [colunasDeSubpainel, setColunasDeSubpainel] = useState<number | 'auto'>('auto');
+  /**
    * ⭐ O ativo do INSET de correlação. `null` = inset fechado.
    *
    * ⚠️ Só faz sentido com dado da mesa: correlacionar o sintético com ele mesmo produziria 1,00
@@ -769,6 +778,7 @@ function App(): JSX.Element {
     engine,
     plots: indicadores.plots,
     paneHeights: alturasDeIndicador,
+    paneColumns: colunasDeSubpainel,
     bars: velasExibidas,
     colors: indicadores.colors,
     visibility: indicadores.visibility,
@@ -952,6 +962,38 @@ function App(): JSX.Element {
     }
   });
   const [nomeDoTemplate, setNomeDoTemplate] = useState('');
+
+  /**
+   * ⭐ O que o ARRANJO dos sub-painéis ficou de fato na tela, ou `null` quando não informa nada.
+   *
+   * ⚠️ Existe porque o pedido é RECORTADO pelo que cabe: pedir 4 colunas numa janela estreita
+   * entrega 3, e um recorte silencioso faria o operador achar que o controle não funciona. Com
+   * um sub-painel só, "empilhado · 1 linha" é ruído — então some.
+   */
+  const arranjoNaTela = useMemo<string | null>(() => {
+    if (engine === null) return null;
+    let g: { colunas: number; linhas: number };
+    try {
+      g = engine.api.paneGrid();
+    } catch {
+      return null;
+    }
+    if (g.linhas <= 1 && g.colunas <= 1) return null;
+    const col = g.colunas === 1 ? 'empilhado' : `${g.colunas} col`;
+    return `${col} · ${g.linhas} linha${g.linhas === 1 ? '' : 's'}`;
+    // ⚠️ `tick` na dependência de propósito: o arranjo também muda ao REDIMENSIONAR a janela
+    // (o modo automático deriva da largura), e redimensionar não re-renderiza o React por si.
+    // O efeito abaixo é quem incrementa o `tick` nesse caso.
+  }, [engine, colunasDeSubpainel, indicadores.plots.length, tick]);
+
+  // ⚠️ Sem este ouvinte o rótulo do arranjo ficaria PARADO depois de redimensionar a janela: o
+  // motor recalcularia a grade (ele observa o container) e a interface continuaria mostrando a
+  // contagem anterior — a interface discordando da tela, que é pior que não mostrar nada.
+  useEffect(() => {
+    const aoRedimensionar = (): void => setTick((n) => n + 1);
+    window.addEventListener('resize', aoRedimensionar);
+    return () => window.removeEventListener('resize', aoRedimensionar);
+  }, []);
 
   /**
    * O documento de estado corrente. É o que "salvar setup" guarda E o que a ABA grava ao
@@ -1717,6 +1759,51 @@ function App(): JSX.Element {
                 <option value="0.18">Média</option>
                 <option value="auto">Automática</option>
               </select>
+            </label>
+            {/*
+              ⭐⭐ O ARRANJO dos sub-painéis. Fica ao lado da altura de propósito: as duas
+              respondem à mesma pergunta do operador — *"quanto da tela os indicadores tomam"*.
+              Altura encolhe cada faixa; colunas reduzem a QUANTIDADE de faixas, que é a
+              economia grande (quatro osciladores em duas colunas = duas faixas em vez de
+              quatro, e o preço recupera o resto).
+
+              ⚠️ O rótulo diz o que ESTÁ na tela quando o efetivo difere do pedido: pedir 4
+              colunas numa janela estreita entrega 3, e o recorte silencioso faria o operador
+              achar que o controle não funciona. Ver `resolverColunas`.
+            */}
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 11,
+                marginBottom: 8,
+              }}
+            >
+              <span style={{ opacity: 0.7 }}>Arranjo dos sub-painéis</span>
+              <select
+                value={colunasDeSubpainel === 'auto' ? 'auto' : String(colunasDeSubpainel)}
+                onChange={(e) =>
+                  setColunasDeSubpainel(e.target.value === 'auto' ? 'auto' : Number(e.target.value))
+                }
+                style={{
+                  background: 'rgba(15,23,42,0.6)',
+                  color: '#cbd5e1',
+                  border: '1px solid rgba(148,163,184,0.28)',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  padding: '2px 4px',
+                }}
+              >
+                <option value="1">Empilhado</option>
+                <option value="2">2 colunas</option>
+                <option value="3">3 colunas</option>
+                <option value="4">4 colunas</option>
+                <option value="auto">Automático</option>
+              </select>
+              {arranjoNaTela !== null && (
+                <span style={{ fontSize: 10, opacity: 0.65, whiteSpace: 'nowrap' }}>{arranjoNaTela}</span>
+              )}
             </label>
             {/* ⭐ `openIndicator` vem do clique NO GRÁFICO: a linha clicada abre as
                 propriedades dela aqui, sem o operador ter de procurar na lista. */}

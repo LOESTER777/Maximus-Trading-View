@@ -128,8 +128,10 @@ describe('divisoria de pane arrastavel', () => {
     // arrastar ali nao redistribui nada: nao ha pane abaixo para ceder altura.
     canvas.dispatchEvent(ponteiro('pointermove', { clientX: 300, clientY: UTIL }));
     expect(canvas.style.cursor).toBe('');
-    const interno = chart as unknown as { paneBoundaryAt: (y: number) => number | null };
-    expect(interno.paneBoundaryAt(UTIL)).toBeNull();
+    // ⚠️ A consulta ganhou X: numa grade duas panes dividem a mesma faixa de Y, e a
+    // fronteira vertical de uma linha nao existe na outra. Ver `pane-grid.core.ts`.
+    const interno = chart as unknown as { fronteiraHorizontalEm: (x: number, y: number) => unknown };
+    expect(interno.fronteiraHorizontalEm(100, UTIL)).toBeNull();
   });
 
   it('o cursor vira `ns-resize` sobre a fronteira entre duas panes', () => {
@@ -147,11 +149,11 @@ describe('divisoria de pane arrastavel', () => {
   it('a faixa sensivel e de ~4 px para cada lado, nao um pixel exato', () => {
     chart.addPane();
     const y = yDaFronteira(chart);
-    const interno = chart as unknown as { paneBoundaryAt: (y: number) => number | null };
-    expect(interno.paneBoundaryAt(y - 4)).toBe(0);
-    expect(interno.paneBoundaryAt(y + 4)).toBe(0);
-    expect(interno.paneBoundaryAt(y - 12)).toBeNull();
-    expect(interno.paneBoundaryAt(y + 12)).toBeNull();
+    const interno = chart as unknown as { fronteiraHorizontalEm: (x: number, y: number) => unknown };
+    expect(interno.fronteiraHorizontalEm(100, y - 4)).not.toBeNull();
+    expect(interno.fronteiraHorizontalEm(100, y + 4)).not.toBeNull();
+    expect(interno.fronteiraHorizontalEm(100, y - 12)).toBeNull();
+    expect(interno.fronteiraHorizontalEm(100, y + 12)).toBeNull();
   });
 
   it('arrastar para BAIXO da altura a pane de cima e tira da de baixo', () => {
@@ -278,7 +280,7 @@ describe('divisoria de pane arrastavel', () => {
     const y = yDaFronteira(chart);
     canvas.dispatchEvent(ponteiro('pointerdown', { button: 0, clientX: 300, clientY: y }));
     canvas.dispatchEvent(ponteiro('pointerleave', { clientX: 300, clientY: y }));
-    const interno = chart as unknown as { resizingBoundary: number | null };
+    const interno = chart as unknown as { resizingBoundary: unknown };
     expect(interno.resizingBoundary).toBeNull();
     expect(canvas.style.cursor).toBe('');
   });

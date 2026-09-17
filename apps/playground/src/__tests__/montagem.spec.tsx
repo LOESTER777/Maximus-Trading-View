@@ -225,6 +225,25 @@ describe('os controles que a rodada mexeu respondem', () => {
     expect(screen.getAllByRole('tab')).toHaveLength(1);
   });
 
+  it('⭐⭐ o arranjo dos sub-painéis troca sem derrubar a tela', async () => {
+    await montarPlayground();
+    clicar(screen.getByRole('button', { name: /caixa de indicadores|indicadores/i }));
+
+    const seletor = await waitFor(() => screen.getByLabelText(/arranjo dos sub-painéis/i));
+    expect((seletor as HTMLSelectElement).value).toBe('auto');
+
+    // ⚠️ O que se mede aqui é a MONTAGEM sobrevivendo à troca de arranjo — a geometria em si
+    // é medida contra o motor real em `grade-de-subpaineis.spec.ts`, com quatro sub-painéis.
+    // Aqui o playground tem um só, então `auto` resolve para uma coluna: é exatamente a
+    // decisão de a grade só aparecer quando há o que arranjar.
+    for (const valor of ['2', '3', '4', '1', 'auto']) {
+      fireEvent.change(seletor, { target: { value: valor } });
+      await waitFor(() => expect((seletor as HTMLSelectElement).value).toBe(valor));
+      // A tela continua de pé a cada troca.
+      expect(screen.getByText('Robustus')).toBeTruthy();
+    }
+  });
+
   it('o painel de replay diz QUE série está na tela', async () => {
     await montarPlayground();
 

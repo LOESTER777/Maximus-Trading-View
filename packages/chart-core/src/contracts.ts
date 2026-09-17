@@ -317,6 +317,38 @@ export interface PaneSize {
   readonly height: number;
 }
 
+/**
+ * O RETANGULO de uma pane na tela, em pixel logico relativo ao canvas.
+ *
+ * ⭐ Existe porque `PaneSize` nao tem ORIGEM, e sem origem nenhum consumidor externo consegue
+ * se alinhar a uma pane que nao comeca em (0,0). Enquanto toda pane ocupava a largura inteira
+ * e o topo era a soma das anteriores, o consumidor podia deduzir; com a grade de sub-paineis
+ * em colunas, deduzir e impossivel.
+ *
+ * `row` e `-1` para a pane principal (ela nunca entra na grade) e para as colapsadas.
+ */
+export interface PaneRect {
+  readonly left: number;
+  readonly top: number;
+  readonly width: number;
+  readonly height: number;
+  /** Linha na grade de sub-paineis. `-1` = fora da grade. */
+  readonly row: number;
+  /** Coluna na linha. `0` quando fora da grade. */
+  readonly column: number;
+}
+
+/** Colunas de sub-painel por linha: um numero, ou `'auto'` (deriva da largura). */
+export type PaneGridColumns = number | 'auto';
+
+/** O arranjo corrente da grade: o PEDIDO, o EFETIVO, e quantas linhas. */
+export interface PaneGridInfo {
+  readonly pedido: PaneGridColumns;
+  /** Colunas EFETIVAS — ja recortadas pela largura da janela e pelo teto de leitura. */
+  readonly colunas: number;
+  readonly linhas: number;
+}
+
 /** Opcoes de rolagem (pan). Togglaveis — o desenho desliga durante o arrasto. */
 export interface HandleScrollOptions {
   readonly mouseWheel: boolean;
@@ -497,6 +529,34 @@ export interface IChartApi extends IChartApiBase {
   setPaneHeightFraction(index: number, fracao: number | null): void;
   /** A fracao FIXADA para um sub-painel, ou `null` quando ele divide o que sobra. */
   paneHeightFraction(index: number): number | null;
+  /**
+   * ⭐⭐ Quantas COLUNAS de sub-painel por linha. `1` = empilhado (o default). `'auto'` deriva
+   * da largura da janela.
+   *
+   * Atende *"um modo de visualizacao um abaixo do outro ou um ao lado do outro e podermos
+   * configurar a quantidade de colunas por linha"*. Com quatro osciladores empilhados o preco
+   * perdia quase metade da tela; em duas colunas eles ocupam duas faixas em vez de quatro.
+   *
+   * ⚠️ O CUSTO, declarado: a coluna mostra a MESMA janela em menos pixel, entao a
+   * correspondencia com o painel de preco passa a ser PROPORCIONAL em vez de pixel-a-pixel. O
+   * crosshair continua marcando o mesmo instante em cada pane, e e ele que costura a leitura.
+   *
+   * ⚠️ O pedido e RECORTADO pelo que cabe. Consulte `paneGrid()` para o valor EFETIVO.
+   */
+  setPaneGridColumns(colunas: PaneGridColumns): void;
+  /** O arranjo corrente da grade. Ver `PaneGridInfo`. */
+  paneGrid(): PaneGridInfo;
+  /**
+   * ⭐ O PESO da largura de um sub-painel dentro da linha dele. `null` = participacao igual.
+   *
+   * Par horizontal de `setPaneHeightFraction`, e o que a divisoria VERTICAL arrastavel grava.
+   * Ignorado na pane principal e no modo empilhado (nao ha com quem dividir a linha).
+   */
+  setPaneWidthFraction(index: number, peso: number | null): void;
+  /** O peso de largura fixado, ou `null` quando a coluna divide por igual. */
+  paneWidthFraction(index: number): number | null;
+  /** O RETANGULO de uma pane na tela. Ver `PaneRect`. */
+  paneRectOf(index: number): PaneRect;
   subscribeClick(handler: (param: MouseEventParams) => void): void;
   subscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
   /**
@@ -565,4 +625,17 @@ export interface MouseEventParams {
    * O/H/L/C sem o motor precisar conhecer legenda.
    */
   readonly seriesData?: CrosshairSeriesData;
+  /**
+   * Indice da pane sob o cursor. Ausente quando o ponto nao cai em nenhuma pane (a tira do
+   * eixo de tempo, ou fora do canvas).
+   *
+   * ⭐ Faltava, e a falta so ficou grave com a grade: com sub-paineis EMPILHADOS o consumidor
+   * podia deduzir a pane pelo Y; em COLUNAS, dois sub-paineis dividem a mesma faixa de Y e a
+   * deducao passa a ser impossivel.
+   *
+   * ⚠️ `time` e `logical` continuam sendo do eixo GLOBAL — o motor converte a posicao da
+   * coluna para o instante equivalente antes de emitir. Assim o evento fala do mesmo instante
+   * esteja o cursor no painel de preco ou numa coluna comprimida.
+   */
+  readonly paneIndex?: number;
 }

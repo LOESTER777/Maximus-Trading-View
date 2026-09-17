@@ -408,16 +408,18 @@ describe('setPaneVisible — colapsar sub-painel sem destruir nada', () => {
    * ou pega e nada se move.
    */
   it('a divisoria da pane colapsada nao e agarravel', () => {
-    const interno = chart as unknown as { paneBoundaryAt: (y: number) => number | null };
+    const interno = chart as unknown as {
+      fronteiraHorizontalEm: (x: number, y: number) => unknown;
+    };
 
     // Com as duas visiveis existe fronteira em algum Y.
     const alturaPrincipal = paneDe(chart, 0).priceScale.height;
-    expect(interno.paneBoundaryAt(alturaPrincipal)).not.toBeNull();
+    expect(interno.fronteiraHorizontalEm(100, alturaPrincipal)).not.toBeNull();
 
     chart.setPaneVisible(paneOsc, false);
     // Sobrou UMA pane visivel: nao existe fronteira entre duas panes.
-    expect(interno.paneBoundaryAt(alturaPrincipal)).toBeNull();
-    expect(interno.paneBoundaryAt(paneDe(chart, 0).priceScale.height)).toBeNull();
+    expect(interno.fronteiraHorizontalEm(100, alturaPrincipal)).toBeNull();
+    expect(interno.fronteiraHorizontalEm(100, paneDe(chart, 0).priceScale.height)).toBeNull();
   });
 
   /**
@@ -431,10 +433,11 @@ describe('setPaneVisible — colapsar sub-painel sem destruir nada', () => {
     chart.addSeries('Line', {}, segunda).setData(linhaAlta(50, 20) as never);
     chart.setPaneVisible(paneOsc, false);
 
-    const interno = chart as unknown as { paneAtY: (y: number) => PaneInterna | null };
+    // ⚠️ `paneAtY` virou `paneAt(x, y)`: numa grade, Y sozinho nao identifica a pane.
+    const interno = chart as unknown as { paneAt: (x: number, y: number) => PaneInterna | null };
     const alturaPrincipal = paneDe(chart, 0).priceScale.height;
     // Exatamente na fronteira, onde a colapsada casaria.
-    const achada = interno.paneAtY(alturaPrincipal);
+    const achada = interno.paneAt(100, alturaPrincipal);
     expect(achada?.collapsed).not.toBe(true);
   });
 });

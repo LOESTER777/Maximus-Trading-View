@@ -68,6 +68,23 @@ export interface UseIndicatorsParams {
    */
   readonly paneHeights?: Readonly<Record<string, number>>;
   /**
+   * ⭐⭐ Quantas COLUNAS de sub-painel por linha. `1` = empilhado. `'auto'` deriva da largura.
+   *
+   * Atende *"um modo de visualizacao um abaixo do outro ou um ao lado do outro e podermos
+   * configurar a quantidade de colunas por linha"*. Com quatro osciladores empilhados o preco
+   * perde quase metade da tela; em duas colunas eles ocupam duas faixas em vez de quatro.
+   *
+   * ⚠️ Canal SEPARADO de `plots`, como `colors`, `visibility` e `paneHeights`: mudar o arranjo
+   * nao pode recriar serie nem recalcular indicador. `setPlots` destroi e recria tudo, a tela
+   * pisca e as panes perdem o tamanho que o operador arrastou.
+   *
+   * ⚠️ E uma propriedade do GRAFICO, nao de um indicador — por isso e um valor, e nao um mapa
+   * por `plot.id`. Um arranjo por indicador nao existe: a linha e compartilhada.
+   *
+   * Ausente = este consumidor nao controla o arranjo (o motor fica no default, empilhado).
+   */
+  readonly paneColumns?: number | 'auto';
+  /**
    * ⭐ Chamado quando o operador CLICA num indicador dentro do gráfico.
    *
    * Recebe o `id` do plot e a chave da saída clicada (`'value'`, `'%D'`, ...). É o que
@@ -129,7 +146,17 @@ export interface UseIndicatorsResult {
  * });
  */
 export function useIndicators(params: UseIndicatorsParams): UseIndicatorsResult {
-  const { engine, plots, bars, colors, visibility, paneHeights, onIndicatorClick, clickTolerancePx } =
+  const {
+    engine,
+    plots,
+    bars,
+    colors,
+    visibility,
+    paneHeights,
+    paneColumns,
+    onIndicatorClick,
+    clickTolerancePx,
+  } =
     params;
   const plotterRef = useRef<IndicatorPlotter | null>(null);
 
@@ -206,6 +233,25 @@ export function useIndicators(params: UseIndicatorsParams): UseIndicatorsResult 
       if (atual !== desejada) plotter.setPaneHeight(plot.id, desejada);
     }
   }, [plots, paneHeights, engine]);
+
+  // ── ⭐⭐ O ARRANJO das panes de sub-painel: empilhado ou em grade ──
+  //
+  // ⚠️ Fala DIRETO com o motor (`engine.api`), e nao pelo plotter: o arranjo e do grafico e
+  // vale para toda pane, inclusive as que outro consumidor tenha criado. Passar pelo plotter
+  // sugeriria que a grade e dos indicadores dele.
+  //
+  // ⚠️ Depois dos efeitos de conjunto e de altura, pela mesma razao: o arranjo e calculado
+  // sobre as panes que EXISTEM e as fracoes que elas tem.
+  useEffect(() => {
+    if (engine === null || paneColumns === undefined) return;
+    try {
+      engine.api.setPaneGridColumns(paneColumns);
+    } catch {
+      // Motor sem o metodo (versao anterior do chart-core) ou em descarte: no-op. O arranjo
+      // fica no default empilhado, que e o comportamento historico — degradar para "como era"
+      // e melhor que derrubar a montagem por um recurso de layout.
+    }
+  }, [engine, paneColumns, plots]);
 
   // ── Cores: nem recria, nem recalcula ──
   useEffect(() => {

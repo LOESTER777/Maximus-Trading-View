@@ -85,9 +85,73 @@ duplicadas.
 - ⭐ **Replay sobre dado REAL** — e a ligação achou um defeito no `useReplay` (ver
   `20-armadilhas.md`): ele reiniciava por IDENTIDADE do array de barras.
 
-⛔ **Duas coisas NÃO existem, e a ausência é declarada:** grade de sub-painéis em COLUNAS
-(exige eixo de tempo por pane e deixa de alinhar com o preço — decisão pendente) e estrutura a
-termo de volatilidade implícita (exige cadeia de opções, que nenhuma base tem).
+⛔ **UMA coisa NÃO existe, e a ausência é declarada:** estrutura a termo de volatilidade
+implícita (exige cadeia de opções, que nenhuma base tem).
+
+## ⭐⭐ Grade de sub-painéis em COLUNAS — e a invariante que a tornou possível
+
+Era declarada como impossível sem quebrar o eixo. Existe desde 18/09/2026, e o que a
+viabilizou foi trocar a pergunta.
+
+`packages/chart-core/src/pane-grid.core.ts` (PURO) + a interação no motor.
+`chart.setPaneGridColumns(1 | 2 | 3 | 4 | 'auto')`, ou `useIndicators({ paneColumns })` no React.
+
+**O pedido:** quatro osciladores empilhados tomavam ~44% da tela. Em duas colunas tomam duas
+faixas em vez de quatro, e o preço recupera o resto — sem nenhum indicador encolher.
+
+⭐⭐ **A INVARIANTE:** *toda pane mostra a MESMA JANELA LÓGICA; a coluna só muda a escala
+GEOMÉTRICA.* Uma coluna de largura `w` recebe `barSpacing` escalado por `w / larguraTotal`.
+A conta fecha por construção:
+
+```
+janela = width / barSpacing = (W·k) / (bs·k) = W / bs    ← idêntica, para todo k
+```
+
+Consequências, e é por isso que a mudança é pequena onde importa:
+
+- **Não há eixo nem janela por coluna.** Continua UM `ts`, um `leftLogical`, um `times`
+  (compartilhado por referência). `getVisibleLogicalRange()` não muda de significado, e
+  pan/zoom em qualquer pane movem o gráfico inteiro.
+- ⭐ **Com UMA coluna tudo degenera no empilhamento histórico** — `k = 1`. É o que fez as 299
+  bancadas de chart-core passarem com 4 chamadas renomeadas e **zero asserção alterada**.
+- ⚠️ **O CUSTO, declarado:** a correspondência com o painel de preço deixa de ser
+  pixel-a-pixel e passa a ser PROPORCIONAL. Não se encosta mais uma régua vertical do preço
+  até a coluna. O que substitui é o **crosshair, que viaja por TEMPO**: `crosshairInPane`
+  resolve o instante sob o cursor e pergunta a cada pane onde aquele instante cai NELA. O
+  vínculo temporal continua visível, só não é mais uma linha reta contínua.
+
+Decisões que valem lembrar:
+
+- ⚠️ **A pane de PREÇO nunca entra na grade** — sempre largura cheia. As ferramentas de
+  desenho ancoram em `paneSize()` (sem índice ⇒ pane 0) e em `timeToCoordinate`; bookmap,
+  footprint e perfil calculam faixa lateral e recorte sobre essa largura. Uma pane 0 estreita
+  deslocaria toda linha de tendência já salva. E o pedido é sobre a *seção do histograma*.
+- **Altura da LINHA = MÁXIMO das frações dos membros.** Todos recebem a altura da linha (senão
+  sobra buraco de canvas ao lado do mais baixo), e o maior pedido é honrado.
+- **A última linha incompleta ESTICA.** Rejeitado deixar o buraco: canvas vazio não informa, e
+  a pane larga é mais legível. Custo declarado: a compressão dela difere das outras.
+- ⚠️ **O pedido é RECORTADO pelo que cabe** (mínimo 180 px por coluna, teto 4) e o EFETIVO sai
+  em `paneGrid()`. Recorte silencioso faria o operador achar que o controle não funciona.
+- `'auto'` deriva de 420 px por coluna confortável (56 são do eixo de preço da coluna).
+
+**Ajuste manual, nos dois eixos** — e ele fechou um defeito antigo:
+
+- Divisória HORIZONTAL move a LINHA INTEIRA (`acima`/`abaixo` são listas de pane).
+- Divisória VERTICAL (`ew-resize`) redistribui largura entre colunas vizinhas, com piso de
+  120 px.
+- ⭐⭐ As duas gravam a **INTENÇÃO** (`heightFractionFixa` / `widthFractionFixa`), então
+  **sobrevivem a ligar outro indicador**. Antes o arrasto mexia só no resultado e o próximo
+  `rebalancePanes` apagava: o operador ajustava, ligava o RSI, e perdia o ajuste.
+- ⚠️ **A divisória vertical VENCE o eixo de preço** (a horizontal não). Na grade o eixo de uma
+  coluna ocupa os 56 px finais DELA, e a divisória cai exatamente sobre a borda direita da
+  coluna da esquerda — dentro do eixo dela. Uma tem de ganhar: a divisória, porque o alvo dela
+  é de 8 px e o eixo mantém os outros 52. O inverso a deixaria INALCANÇÁVEL.
+
+Contrato novo: `PaneRect` (com origem — `PaneSize` não tinha, e sem origem nenhum consumidor
+se alinha a uma pane que não começa em 0,0), `paneRectOf`, `setPaneGridColumns`, `paneGrid`,
+`setPaneWidthFraction`/`paneWidthFraction`, e **`paneIndex` em `MouseEventParams`** (com panes
+empilhadas o consumidor deduzia pelo Y; em colunas, dois sub-painéis dividem a mesma faixa de Y
+e deduzir é impossível).
 
 ## ⭐⭐ Abas por ativo — uma aba é um DOCUMENTO
 
@@ -163,7 +227,7 @@ cosmética.
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test            # 1868 testes, 96 arquivos
+npm test            # 1949 testes, 99 arquivos
 npm run build       # todos os pacotes
 npm run verify      # ⭐ typecheck + typecheck:playground + check ESM + testes
 npm run smoke:consumo  # empacota, instala FORA do workspace e importa em Node ESM puro

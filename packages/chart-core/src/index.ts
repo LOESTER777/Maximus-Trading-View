@@ -93,6 +93,9 @@ export type {
   LogicalRange,
   MouseEventParams,
   PaneSize,
+  PaneRect,
+  PaneGridColumns,
+  PaneGridInfo,
   PriceLineOptions,
   PriceScaleOptions,
   PrimitiveHoveredItem,
@@ -148,3 +151,31 @@ export {
   animationWorthwhile,
 } from './animation.core.js';
 export type { TimeScaleAnimation } from './animation.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ A GEOMETRIA das panes — nucleo PURO da grade de sub-paineis
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ A invariante que sustenta a grade esta no cabecalho de `pane-grid.core.ts`: toda pane
+// mostra a MESMA janela logica, e a coluna so muda a escala GEOMETRICA (`barSpacing` escalado
+// por `larguraDaPane / larguraTotal`). Com uma coluna, tudo degenera no empilhamento historico.
+export {
+  calcularArranjo,
+  resolverColunas,
+  fatorDeCompressao,
+  paneNoPonto,
+  retanguloDe,
+  /** Calcula os retangulos de todas as panes e as fronteiras arrastaveis. */
+  calcularArranjo as computePaneLayout,
+  /** O fator `larguraDaPane / larguraTotal` — o que escala `barSpacing` numa coluna. */
+  fatorDeCompressao as paneCompressionFactor,
+} from './pane-grid.core.js';
+export type {
+  PaneParaArranjo,
+  OpcoesDeArranjo,
+  RetanguloDePane,
+  ArranjoDeGrade,
+  ColunasPorLinha,
+  FronteiraHorizontal,
+  FronteiraVertical,
+} from './pane-grid.core.js';

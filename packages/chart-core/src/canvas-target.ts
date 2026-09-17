@@ -88,6 +88,26 @@ export function createCanvasTarget(
   mediaH: number,
   dprX: number,
   dprY: number,
+  /**
+   * ⭐⭐ ORIGEM da area, em pixel LOGICO — e ela corrige um defeito latente.
+   *
+   * ⚠️ `useBitmapCoordinateSpace` faz `setTransform(1,0,0,1,0,0)`, que DESCARTA qualquer
+   * `translate` que o chamador tenha aplicado. Para a camada isso e o contrato (ela recebe um
+   * contexto sem escala e multiplica a geometria a mao), mas tem um efeito colateral que
+   * passou anos invisivel: a origem da pane sumia junto.
+   *
+   * Invisivel porque toda primitive existente (bookmap, footprint, perfil de volume) e
+   * anexada a serie da pane PRINCIPAL, onde a origem e (0,0) — descartar zero nao muda nada.
+   * Uma primitive anexada a serie de um sub-painel ja desenhava em Y absoluto errado, e seria
+   * engolida pelo recorte da pane. Com a grade em COLUNAS, erraria X tambem.
+   *
+   * ⚠️ Passada por DADO e reaplicada DENTRO do escopo, e nao deixada na transformacao de
+   * fora: e a unica forma que sobrevive ao `setTransform` que o proprio contrato exige.
+   *
+   * Default `0,0` — a pane principal continua byte-identica.
+   */
+  originX = 0,
+  originY = 0,
 ): CanvasRenderingTarget2D {
   const mediaSize = { width: mediaW, height: mediaH } as const;
   const bitmapSize = {
@@ -103,7 +123,10 @@ export function createCanvasTarget(
         // e assim que o `fancy-canvas` opera e como as camadas esperam — elas
         // multiplicam a geometria por `hpr`/`vpr` a mao. Aplicar a escala aqui
         // faria a camada multiplicar duas vezes.
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        //
+        // ⭐ A ORIGEM entra na propria matriz, em pixel de BITMAP (a camada desenha em
+        // bitmap aqui). Com origem (0,0) e exatamente o `setTransform` de antes.
+        ctx.setTransform(1, 0, 0, 1, originX * dprX, originY * dprY);
         fn({
           context: ctx,
           bitmapSize,
@@ -120,8 +143,10 @@ export function createCanvasTarget(
       ctx.save();
       try {
         // Em espaco de media a escala do dpr E aplicada, para a camada desenhar em
-        // pixel logico e o resultado sair nitido no bitmap.
-        ctx.setTransform(dprX, 0, 0, dprY, 0, 0);
+        // pixel logico e o resultado sair nitido no bitmap. A origem entra em bitmap
+        // tambem — `setTransform` define a matriz inteira, e o deslocamento e o par
+        // (e, f) dela, sempre no espaco de destino.
+        ctx.setTransform(dprX, 0, 0, dprY, originX * dprX, originY * dprY);
         fn({ context: ctx, mediaSize });
       } finally {
         ctx.restore();

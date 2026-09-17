@@ -11,7 +11,7 @@ anotações — sem depender de provedor de gráfico de terceiro.
 
 ```bash
 npm install
-npm test              # 1880 testes, 97 arquivos
+npm test              # 1949 testes, 99 arquivos
 npm run build         # compila todos os pacotes
 npm run verify        # typecheck + typecheck do playground + extensão ESM + testes
 npm run smoke:consumo # ⭐ prova que o pacote PUBLICADO instala e importa
@@ -31,7 +31,7 @@ projeto](#consumindo-em-outro-projeto).
 | `@robustus/charts-alerts` | Motor puro de alerta de preço, máquina ARMED→TRIGGERED sem repique | **não** |
 | `@robustus/charts-replay` | Replay de mercado determinístico, relógio injetado, pausa no fim | **não** |
 | `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados: dia de mercado, HTTP bars/depth, WS ao vivo com reconexão, agregador de timeframes | tipos¹ |
-| `@robustus/chart-core` | **Motor de renderização próprio** em canvas: eixo de tempo com sessão irregular, autoescala por escala de preço, pan/zoom, pinça em touch, crosshair com rótulos, sub-painéis, marcadores com forma, banda, formatação de preço por tick, exportar imagem | sim |
+| `@robustus/chart-core` | **Motor de renderização próprio** em canvas: eixo de tempo com sessão irregular, autoescala por escala de preço, pan/zoom, pinça em touch, crosshair com rótulos, sub-painéis em **grade** (empilhados ou em colunas), marcadores com forma, banda, formatação de preço por tick, exportar imagem | sim |
 | `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive`, `VolumeProfilePrimitive` | sim |
 | `@robustus/charts-drawings` | 13 ferramentas de desenho, hit-test priorizado, ímã ao OHLC, desfazer/refazer, persistência versionada | sim |
 | `@robustus/charts-engine` | Motor sem framework + persistência de layout (`serializeChartState`) + setups nomeados (`layout-templates.core`) + **abas por ativo** (`chart-workspace.core`) | sim |
@@ -73,7 +73,7 @@ devolve **403**. Escolha um caminho:
 - **B (imediato, sem registry):** consumir por **tarball local** — funciona
   hoje, sem conta, sem token, sem rede. Ver [Caminho B](#caminho-b--tarball-local-funciona-hoje).
 - **C (evitar):** renomear o escopo para `@loester777`. Mexe em import de
-  centenas de arquivos e nos 1880 testes, só para satisfazer uma regra de
+  centenas de arquivos e nos 1949 testes, só para satisfazer uma regra de
   registry.
 
 Escopo privado em `npmjs.org` é pago; o repositório já é privado em
@@ -277,6 +277,10 @@ importam `vitest` e `fast-check`, que não são dependência dos pacotes. O
 - **Tipos de gráfico:** velas, barras OHLC, linha, área, Heikin-Ashi e Renko.
 - **Indicadores incrementais** (`warmup`+`update`+`preview` O(1)): sobre o preço
   ou em sub-painel próprio, com bandas preenchidas (Bollinger, Keltner).
+- ⭐ **Sub-painéis em GRADE:** empilhados ou lado a lado, com colunas por linha
+  configuráveis (ou automáticas pela largura). Quatro osciladores em duas colunas
+  ocupam duas faixas em vez de quatro, e o preço recupera o resto. Altura e largura
+  ajustáveis à mão pelas divisórias, e o ajuste sobrevive a ligar outro indicador.
 - **Ferramentas de desenho:** 13 delas — linha, raio, reta, horizontal, raio
   horizontal, vertical, retângulo, seta, régua, retração e extensão de Fibonacci,
   e posição de compra/venda com risco-retorno — todas com ímã ao OHLC, seleção,

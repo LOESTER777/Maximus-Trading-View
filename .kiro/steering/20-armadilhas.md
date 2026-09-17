@@ -600,3 +600,71 @@ Resolvido com duas refs (`capturarDaTela`, `aplicarNaTela`) preenchidas por efei
 do perfil de volume (`volumeProfile: null` na criação + um efeito como único dono): quando duas
 coisas se precisam, uma delas passa a ser preenchida depois — e nunca as duas em ordem
 dependente da declaração dos hooks.
+
+## ⭐⭐ Geometria de pane: `ts.width` era a ÚNICA largura do sistema
+
+Ao mexer em layout de pane, o mapa é este. A suposição "uma pane ocupa a largura inteira" não
+estava num lugar só, mas tinha **uma raiz**: não existia geometria horizontal por pane, e toda
+vez que alguém precisava de "a largura de uma pane" lia `this.ts.width` (a largura do
+container). Os pontos que ela alcançava:
+
+| Onde | O que assumia |
+|---|---|
+| `paneTop(index)` | topo = soma das alturas anteriores (só vale numa pilha) |
+| `render` | `ctx.translate(0, topo)` — **sem componente X** |
+| `renderPane` | `const w = ts.width` — a largura da pane É a do eixo |
+| `paneSize()` | devolvia `ts.width` sempre |
+| `isOnPriceAxis(x)` | uma faixa só, na borda direita do GRÁFICO |
+| `paneAtY(y)` | resolvia pane só por Y |
+| `paneBoundaryAt(y)` | fronteiras horizontais entre vizinhos consecutivos do array |
+| `crosshairInPane` | devolvia `x` CRU |
+| `seriesAt` | convertia Y para o espaço da pane e **X não** |
+| pan / roda / pinça | `dx` e âncora em X absoluto de canvas |
+
+⭐ A correção que manteve tudo isso pequeno foi passar o eixo **DERIVADO** para o renderer em
+vez de mudar o renderer: `renderPane` lê `ts.width` como a largura da área, então com um `ts`
+de `width` da coluna, grade vertical, séries, eixo de preço e crosshair caem no lugar de graça.
+`renderer.ts` não precisou de **uma linha** de mudança.
+
+⚠️ **`createCanvasTarget` descartava a origem da pane, e isso era um defeito LATENTE.**
+`useBitmapCoordinateSpace` faz `setTransform(1,0,0,1,0,0)` — o contrato exige (a camada
+multiplica por `hpr`/`vpr` à mão), mas o efeito colateral é que o `translate` do laço de render
+morre ali. Invisível porque bookmap, footprint e perfil são anexados à série da pane 0, onde a
+origem é (0,0). Uma primitive num sub-painel já desenhava em Y errado. A origem passou a ser
+parâmetro (`originX`/`originY`) e é reaplicada DENTRO do escopo — a única forma que sobrevive ao
+`setTransform`.
+
+⚠️ **Série CONSTANTE degenera a autoescala** (`min == max`) e `priceToCoordinate` devolve
+coordenada fora da pane. Não é defeito da grade, mas custou um teste: bancada de geometria com
+série constante mede a coisa errada. Faça o valor variar.
+
+⚠️ **`ts.times` só existe depois de um `render`.** Bancada que chame `seriesAt`,
+`coordinateToTime` ou leia `time` de um evento sem forçar um quadro mede "sem tempo" e passa
+por VACUIDADE. O `render` é agendado por `requestAnimationFrame`; em teste, chame-o direto.
+
+## ⚠️ Na grade, a divisória de coluna cai DENTRO do eixo de preço da coluna da esquerda
+
+O eixo de preço ocupa os 56 px finais de cada pane. A divisória entre duas colunas fica na borda
+direita da coluna da esquerda — ou seja, dentro do eixo dela. As duas faixas de acerto se
+sobrepõem e **uma tem de ganhar**.
+
+⭐ Ganha a **divisória**: o alvo dela é de 8 px e o eixo mantém os outros 52 para arrastar a
+escala. O inverso deixaria a divisória de coluna inalcançável, porque ela não existe em nenhum
+outro X. A borda direita da ÚLTIMA coluna não tem divisória, então o eixo de preço da direita do
+gráfico continua intocado.
+
+⚠️ E a precedência tem de ser **idêntica** em `onPointerDown` e em `atualizarCursor`. Divergir
+faz o cursor prometer um gesto e o clique executar outro — é o tipo de detalhe que faz o
+operador concluir que o recurso "às vezes não funciona".
+
+## ⚠️ Pan em coluna comprimida: dividir `dx` pelo fator, e a invariante NÃO é "andar o mesmo"
+
+Numa coluna de meia largura, 60 px de dedo cobrem o DOBRO de barras (a mesma janela em metade
+dos pixels). A invariante correta é **"a barra que estava sob o dedo continua sob o dedo"**, e
+para isso o eixo global tem de andar `dx / fator`.
+
+⚠️ Escrevi o primeiro teste esperando "anda o mesmo número de barras" e ele reprovou — a
+expectativa estava errada, não o código. Se andasse o mesmo, a barra escaparia para trás da mão.
+Mesmo raciocínio para a âncora da roda e do ponto médio da pinça: as duas passam por
+`xNoEixoGlobal`, que converte a posição da coluna no X equivalente do eixo global **pelo
+instante**. Sem isso, a roda sobre um oscilador ancora noutra barra e a tela desliza para o lado.

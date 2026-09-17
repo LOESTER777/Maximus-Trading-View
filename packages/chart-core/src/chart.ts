@@ -56,6 +56,8 @@ import type {
   Time,
   TimeRange,
   WatermarkOptions,
+  PaneRect,
+  PaneGridInfo,
 } from './contracts.js';
 import {
   autoScale,
@@ -100,6 +102,20 @@ import {
   zoomAtCoordinate,
   type TimeScaleState,
 } from './time-scale.core.js';
+// ⭐⭐ A GEOMETRIA das panes vive num nucleo PURO. Ver `pane-grid.core.ts` — inclusive a
+// invariante que sustenta a grade: toda pane mostra a MESMA janela logica, e a coluna so
+// muda a escala geometrica (`barSpacing` escalado por `larguraDaPane / larguraTotal`).
+import {
+  calcularArranjo,
+  fatorDeCompressao,
+  paneNoPonto,
+  retanguloDe,
+  type ArranjoDeGrade,
+  type ColunasPorLinha,
+  type FronteiraHorizontal,
+  type FronteiraVertical,
+  type RetanguloDePane,
+} from './pane-grid.core.js';
 
 /** Id da escala de preco PRINCIPAL. Serie sem `priceScaleId` cai nela. */
 const MAIN_SCALE_ID = 'right';
@@ -150,6 +166,22 @@ interface Pane {
    * Guardar só o resultado faria a intenção ser apagada pelo próximo indicador ligado.
    */
   heightFractionFixa: number | null;
+  /**
+   * Peso da LARGURA dentro da linha da grade. `1` para todas = colunas iguais.
+   *
+   * ⚠️ Ignorado no modo empilhado (uma coluna por linha): lá a pane sempre ocupa a largura
+   * inteira, e o peso nao teria com quem ser comparado.
+   */
+  widthFraction: number;
+  /**
+   * Peso de largura PEDIDO (divisoria vertical arrastada, ou `setPaneWidthFraction`).
+   *
+   * ⚠️ Separado de `widthFraction` pelo mesmo motivo de `heightFractionFixa`: este e a
+   * INTENCAO e sobrevive ao rebalanceamento; o outro e o RESULTADO. Guardar so o resultado
+   * faria a largura arrastada ser apagada pelo proximo indicador ligado — que era exatamente
+   * o defeito conhecido da divisoria horizontal, e nao vale repeti-lo na vertical.
+   */
+  widthFractionFixa: number | null;
   readonly series: SeriesImpl<SeriesType>[];
   /**
    * Escala de preco em modo MANUAL.
@@ -205,6 +237,16 @@ const PANE_DIVIDER_GRAB_PX = 4;
  * e o suficiente para a pane continuar visivel e agarravel.
  */
 const MIN_PANE_HEIGHT_PX = 40;
+
+/**
+ * Largura MINIMA de uma pane na grade, em pixel logico.
+ *
+ * ⚠️ Par horizontal de `MIN_PANE_HEIGHT_PX`, e pelo mesmo motivo: sem piso, arrastar a
+ * divisoria vertical ate a ponta deixa uma coluna com largura 0 — ela some da tela E fica
+ * sem area para o cursor voltar a pegar a divisoria. 120 px e o suficiente para a coluna
+ * continuar visivel e agarravel; note que 56 deles sao do eixo de preco dela.
+ */
+const MIN_PANE_WIDTH_PX = 120;
 
 /**
  * Fundo usado ao EXPORTAR imagem quando o tema e `transparent`.
@@ -266,6 +308,30 @@ export class RobustusChartCore implements IChartApi {
   private readonly timeAxisHeight = TIME_AXIS_HEIGHT;
   /** Ultima altura total medida (para distribuir panes + reservar o eixo). */
   private totalHeight = 0;
+  /**
+   * ⭐⭐ Colunas por linha na grade de SUB-PAINEIS. Default `1` = empilhado.
+   *
+   * ⚠️ O default e o comportamento historico de proposito. A grade muda COMO o operador le o
+   * grafico, e ninguem deve ter o layout reorganizado por atualizar a biblioteca. Quem quer a
+   * grade pede (`setPaneGridColumns`), e `'auto'` adapta a largura da janela.
+   */
+  private colunasPedidas: ColunasPorLinha = 1;
+  /**
+   * A GEOMETRIA corrente, calculada pelo nucleo puro em cada `measure()`.
+   *
+   * ⚠️ Cache de resultado, nunca fonte de verdade: a verdade sao as fracoes das panes mais o
+   * tamanho do container. Recalcular a cada consulta seria correto e caro (o `render` consulta
+   * por pane, por quadro); guardar sem invalidar seria um segundo dono da geometria. O ponto
+   * UNICO de invalidacao e `measure()`.
+   */
+  private arranjo: ArranjoDeGrade = {
+    retangulos: [],
+    colunas: 1,
+    linhas: 0,
+    alturaUtil: 1,
+    fronteirasHorizontais: [],
+    fronteirasVerticais: [],
+  };
   /** Estado do arrasto vertical do eixo de preco. */
   private scalingPriceAxis = false;
   private scalingPane: Pane | null = null;
@@ -311,7 +377,18 @@ export class RobustusChartCore implements IChartApi {
    * ou `null`. Posicao no array, nao o `index` estavel da pane: fronteira e
    * relacao entre vizinhos na ordem de empilhamento.
    */
-  private resizingBoundary: number | null = null;
+  /** Fronteira HORIZONTAL em arrasto (altura de faixa), ou `null`. */
+  private resizingBoundary: FronteiraHorizontal | null = null;
+  /** Fronteira VERTICAL em arrasto (largura de coluna), ou `null`. */
+  private resizingColumn: FronteiraVertical | null = null;
+  /**
+   * A pane em que o PAN comecou, ou `null`.
+   *
+   * ⚠️ Numa coluna comprimida, `dx` de canvas nao vale `dx` de eixo: a coluna tem
+   * `barSpacing` escalado, e passar o `dx` cru faria o grafico correr o dobro do dedo. O
+   * gesto tem de lembrar ONDE comecou, porque o dedo pode sair da coluna no meio do arrasto.
+   */
+  private panPane: RetanguloDePane | null = null;
 
   /**
    * O contexto 2D e REAL (nao o dublê inerte do jsdom)?
@@ -367,6 +444,8 @@ export class RobustusChartCore implements IChartApi {
         overlayScales: new Map(),
         heightFraction: 1,
         heightFractionFixa: null,
+        widthFraction: 1,
+        widthFractionFixa: null,
         series: [],
         priceScaleManual: false,
         collapsed: false,
@@ -421,18 +500,37 @@ export class RobustusChartCore implements IChartApi {
   }
 
   /**
-   * Reparte a altura entre as panes conforme as fracoes, RESERVANDO a faixa do
-   * eixo de tempo na base.
+   * Recalcula a GEOMETRIA de todas as panes e aplica a altura nas escalas.
    *
    * ⚠️ A altura das panes soma `totalH - timeAxisHeight`, nao `totalH`. E o que
    * impede as series de desenharem por cima dos rotulos de data/hora: a tira
    * `[totalH - timeAxisHeight, totalH]` fica fora de toda pane, livre para o eixo.
+   *
+   * ⭐ A MATEMATICA saiu daqui e foi para `pane-grid.core.ts`. O motivo nao e organizacao:
+   * a geometria e a parte que erra em SILENCIO (um retangulo deslocado nao lanca nada, so
+   * desenha no lugar errado), e num nucleo puro ela e medivel sem rasterizar. Aqui ficou so
+   * a aplicacao do resultado.
    */
   private distributePaneHeights(totalH: number): void {
-    const util = Math.max(1, totalH - this.timeAxisHeight);
-    const soma = this.panes.reduce((a, p) => a + p.heightFraction, 0) || 1;
+    this.arranjo = calcularArranjo(
+      this.panes.map((p) => ({
+        key: p.index,
+        principal: p.index === 0,
+        colapsada: p.collapsed,
+        heightFraction: p.heightFraction,
+        widthFraction: p.widthFraction,
+      })),
+      {
+        largura: this.ts.width,
+        altura: totalH,
+        alturaEixoTempo: this.timeAxisHeight,
+        colunas: this.colunasPedidas,
+      },
+    );
+
     for (const p of this.panes) {
-      const h = (p.heightFraction / soma) * util;
+      const r = retanguloDe(this.arranjo, p.index);
+      const h = r === null ? 0 : r.height;
       // ⚠️ TODAS as escalas da pane recebem a altura — inclusive as de overlay.
       // Elas dividem o mesmo retangulo de pixel e se distinguem por faixa e
       // margem; uma overlay com altura 0 converteria tudo para `null` e o volume
@@ -441,14 +539,48 @@ export class RobustusChartCore implements IChartApi {
     }
   }
 
-  /** Y do topo de uma pane, em pixel logico. */
-  private paneTop(index: number): number {
-    let y = 0;
-    for (const p of this.panes) {
-      if (p.index === index) return y;
-      y += p.priceScale.height;
-    }
-    return 0;
+  /**
+   * O retangulo de uma pane, em pixel logico. Nunca `null` para pane existente.
+   *
+   * ⚠️ Substituiu `paneTop`, que somava as alturas dos vizinhos anteriores. Numa grade essa
+   * soma esta ERRADA por construcao: duas panes lado a lado tem o mesmo topo, e a soma daria
+   * a segunda um topo abaixo da primeira.
+   */
+  private paneRect(index: number): RetanguloDePane {
+    return (
+      retanguloDe(this.arranjo, index) ?? {
+        key: index,
+        left: 0,
+        top: 0,
+        width: this.ts.width,
+        height: 0,
+        linha: -1,
+        coluna: 0,
+      }
+    );
+  }
+
+  /**
+   * ⭐⭐ O eixo de tempo COMO ESTA PANE O VE.
+   *
+   * A pane de largura cheia recebe o eixo original (mesma referencia, custo zero). Uma coluna
+   * de largura `w` recebe uma COPIA com `width = w` e `barSpacing` escalado por
+   * `w / larguraTotal`, mantendo `leftLogical` e `times`.
+   *
+   * ⭐ Por que isso e correto: a janela visivel e `width / barSpacing`, e escalar os dois pelo
+   * mesmo fator a deixa IDENTICA. A coluna mostra as mesmas barras, comprimidas. Nao existe
+   * janela por coluna nem estado de eixo por coluna — continua UM eixo, e pan/zoom em qualquer
+   * pane movem o grafico inteiro.
+   *
+   * ⚠️ Deriva por COPIA e nao por mutacao temporaria. Mutar `this.ts` durante o desenho de uma
+   * pane e restaurar depois funcionaria e seria uma bomba: qualquer `subscribe` disparado no
+   * meio (a autoescala emite faixa) leria um eixo que nao e o do grafico. Copia rasa e barata —
+   * o campo pesado (`times`) e compartilhado por referencia, nao clonado.
+   */
+  private tsDaPane(rect: RetanguloDePane): TimeScaleState {
+    const fator = fatorDeCompressao(rect.width, this.ts.width);
+    if (fator === 1) return this.ts;
+    return { ...this.ts, width: rect.width, barSpacing: this.ts.barSpacing * fator };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -549,6 +681,8 @@ export class RobustusChartCore implements IChartApi {
       overlayScales: new Map(),
       heightFraction: 0, // definido por rebalancePanes
       heightFractionFixa: null,
+      widthFraction: 1,
+      widthFractionFixa: null,
       series: [],
       priceScaleManual: false,
       collapsed: false,
@@ -803,9 +937,104 @@ export class RobustusChartCore implements IChartApi {
     };
   }
 
+  /**
+   * O tamanho de uma pane, em pixel logico.
+   *
+   * ⚠️ A largura passou a ser a REAL da pane, e nao mais a do grafico. Para a pane 0 nada muda
+   * — ela sempre ocupa a largura inteira (ver `pane-grid.core.ts`), e e ela que as ferramentas
+   * de desenho, o bookmap, o footprint e o perfil de volume consultam (`paneSize()` sem
+   * argumento). Para uma coluna da grade, devolver a largura do grafico seria mentir: a camada
+   * calcularia a faixa lateral e o recorte sobre um espaco que a pane nao tem.
+   */
   paneSize(paneIndex = 0): PaneSize {
-    const pane = this.panes.find((p) => p.index === paneIndex) ?? this.panes[0]!;
-    return { width: this.ts.width, height: pane.priceScale.height };
+    const r = this.paneRect(paneIndex);
+    return { width: r.width, height: r.height };
+  }
+
+  /**
+   * ⭐⭐ Quantas COLUNAS de sub-painel por linha. `'auto'` deriva da largura da janela.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O PEDIDO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * *"termos um modo de visualizacao um abaixo do outro ou um ao lado do outro e podermos
+   * configurar a quantidade de colunas por linha"*.
+   *
+   * Com quatro osciladores empilhados o preco perdia quase metade da tela. Em duas colunas
+   * eles ocupam DUAS faixas em vez de quatro, e nenhuma informacao foi descartada — o que
+   * mudou e que dois indicadores passaram a dividir a mesma faixa vertical.
+   *
+   * ⚠️ O CUSTO, declarado: a coluna mostra a MESMA janela em menos pixel, entao a
+   * correspondencia com o painel de preco deixa de ser pixel-a-pixel e passa a ser
+   * PROPORCIONAL. Nao se pode mais encostar uma regua vertical do preco ate a coluna. O que
+   * substitui isso e o crosshair, desenhado em cada pane na posicao do MESMO instante — o
+   * vinculo temporal continua visivel, so nao e mais uma linha reta continua. Ver
+   * `crosshairInPane` e o cabecalho de `pane-grid.core.ts`.
+   *
+   * ⚠️ O pedido e RECORTADO pelo que cabe (largura minima de coluna e teto de 4). Pedir 4
+   * colunas numa janela de 600 px daria 150 px cada, com 56 de eixo de preco — melhor 3
+   * legiveis que 4 ilegiveis. O valor EFETIVO sai em `paneGrid()`, para a interface poder
+   * dizer o que de fato aconteceu em vez de o recorte ser silencioso.
+   */
+  setPaneGridColumns(colunas: ColunasPorLinha): void {
+    if (this.disposed) return;
+    if (colunas !== 'auto') {
+      if (!Number.isFinite(colunas)) return;
+      const n = Math.floor(colunas);
+      if (n < 1) return;
+      this.colunasPedidas = n;
+    } else {
+      this.colunasPedidas = 'auto';
+    }
+    this.measure();
+  }
+
+  /** O arranjo corrente: o que foi PEDIDO, o que ficou EFETIVO, e quantas linhas. */
+  paneGrid(): { readonly pedido: ColunasPorLinha; readonly colunas: number; readonly linhas: number } {
+    return { pedido: this.colunasPedidas, colunas: this.arranjo.colunas, linhas: this.arranjo.linhas };
+  }
+
+  /**
+   * ⭐ O PESO da largura de um sub-painel dentro da linha dele.
+   *
+   * E o par horizontal de `setPaneHeightFraction`, e o que a divisoria vertical arrastavel
+   * grava. `null` devolve a coluna a participacao igual.
+   *
+   * ⚠️ Peso RELATIVO e nao pixel, pelo mesmo motivo da altura: o grafico e redimensionavel, e
+   * 300 px sao a tela inteira num celular e um terco num monitor largo.
+   *
+   * Ignorado na pane principal (ela nunca entra na grade) e no modo empilhado (nao ha com quem
+   * dividir a linha).
+   */
+  setPaneWidthFraction(paneIndex: number, peso: number | null): void {
+    if (this.disposed || paneIndex === 0) return;
+    const pane = this.panes.find((p) => p.index === paneIndex);
+    if (pane === undefined) return;
+    if (peso === null) {
+      pane.widthFractionFixa = null;
+      pane.widthFraction = 1;
+    } else {
+      if (!Number.isFinite(peso) || peso <= 0) return;
+      // Recorte 0,2..5: abaixo disso a coluna nao cabe nem no eixo de preco dela, e acima
+      // ela engoliria as vizinhas ate a largura minima, que e o mesmo resultado com mais
+      // passos.
+      const limitado = Math.min(5, Math.max(0.2, peso));
+      pane.widthFractionFixa = limitado;
+      pane.widthFraction = limitado;
+    }
+    this.measure();
+  }
+
+  /** O peso de largura fixado para um sub-painel, ou `null` quando ele divide por igual. */
+  paneWidthFraction(paneIndex: number): number | null {
+    return this.panes.find((p) => p.index === paneIndex)?.widthFractionFixa ?? null;
+  }
+
+  /** O retangulo de uma pane na tela, em pixel logico. Ver `PaneRect`. */
+  paneRectOf(paneIndex: number): PaneRect {
+    const r = this.paneRect(paneIndex);
+    return { left: r.left, top: r.top, width: r.width, height: r.height, row: r.linha, column: r.coluna };
   }
 
   options(): ChartOptions {
@@ -1029,48 +1258,63 @@ export class RobustusChartCore implements IChartApi {
     return typeof h === 'boolean' ? h : h.pinch;
   }
 
-  /** O ponto (pixel logico) cai sobre a faixa do eixo de preco, a direita? */
-  private isOnPriceAxis(x: number): boolean {
-    return x >= this.ts.width - PRICE_AXIS_WIDTH && x <= this.ts.width;
+  /**
+   * O ponto (pixel logico) cai sobre a faixa do eixo de preco DA PANE que o contem?
+   *
+   * ⚠️ Era uma faixa unica na borda direita do grafico. Numa grade CADA COLUNA tem o seu eixo
+   * de preco, na borda direita dela — a faixa antiga acertaria so a ultima coluna, e arrastar
+   * o eixo de uma coluna da esquerda faria pan em vez de escalar o preco.
+   */
+  private isOnPriceAxis(x: number, y: number): boolean {
+    const r = this.paneNoPontoInterna(x, y);
+    const direita = r === null ? this.ts.width : r.left + r.width;
+    return x >= direita - PRICE_AXIS_WIDTH && x <= direita;
   }
 
-  /** Qual pane contem o Y (pixel logico)? A ultima cujo topo <= y. */
-  private paneAtY(y: number): Pane | null {
-    let acc = 0;
-    for (const p of this.panes) {
-      // ⚠️ Pane colapsada tem altura ZERO, e `y >= acc && y <= acc + 0` casa
-      // exatamente na fronteira dela. Sem pular, o crosshair na borda entre duas
-      // panes visiveis seria atribuido a uma pane invisivel no meio, e o rotulo de
-      // preco sairia lido na escala errada.
-      if (p.collapsed) continue;
-      if (y >= acc && y <= acc + p.priceScale.height) return p;
-      acc += p.priceScale.height;
+  /**
+   * Qual pane contem o ponto (pixel logico)?
+   *
+   * ⚠️ Substituiu `paneAtY`. Numa grade, duas panes dividem a mesma faixa de Y e a resposta
+   * passa a depender de X — com o teste so em Y, clicar na coluna da direita responderia a
+   * pane da esquerda, e o rotulo de preco sairia lido na escala errada.
+   */
+  private paneAt(x: number, y: number): Pane | null {
+    const r = this.paneNoPontoInterna(x, y);
+    if (r === null) return null;
+    return this.panes.find((p) => p.index === r.key) ?? null;
+  }
+
+  /**
+   * A fronteira HORIZONTAL sob o ponto, ou `null`. Redistribui ALTURA.
+   *
+   * ⚠️ So conta fronteira ENTRE DUAS FAIXAS: a base da ultima e a borda da tira do eixo de
+   * tempo, e arrastar ali nao redistribui nada — nao ha faixa abaixo para ceder ou receber
+   * altura. Sem sub-painel nao existe fronteira alguma (o grafico nunca muda o cursor).
+   *
+   * ⭐ Na grade a fronteira pertence a LINHA, nao a uma pane: `acima`/`abaixo` sao listas.
+   * Arrastar a divisoria sob uma linha de tres osciladores move os tres — senao a linha
+   * ficaria com membros de alturas diferentes e sobraria um buraco de canvas no meio da tela.
+   */
+  private fronteiraHorizontalEm(x: number, y: number): FronteiraHorizontal | null {
+    for (const f of this.arranjo.fronteirasHorizontais) {
+      if (Math.abs(y - f.y) <= PANE_DIVIDER_GRAB_PX) {
+        void x;
+        return f;
+      }
     }
     return null;
   }
 
   /**
-   * A fronteira entre panes sob o Y, ou `null`.
+   * A fronteira VERTICAL sob o ponto, ou `null`. Redistribui LARGURA entre colunas vizinhas.
    *
-   * ⚠️ So conta fronteira ENTRE DUAS PANES: a base da ultima pane e a borda da
-   * tira do eixo de tempo, e arrastar ali nao redistribui nada — nao ha pane
-   * abaixo para ceder ou receber altura. Por isso o laco para em
-   * `panes.length - 1`, e com uma pane so nao existe fronteira alguma (o grafico
-   * sem sub-painel nunca muda o cursor).
-   *
-   * Devolve a POSICAO `k` no array: a fronteira separa `panes[k]` de `panes[k+1]`.
+   * ⚠️ Limitada a faixa vertical da linha (`topo`/`base`): sem isso o cursor viraria
+   * `ew-resize` sobre o painel de preco, prometendo um arrasto que nao faz nada ali.
    */
-  private paneBoundaryAt(y: number): number | null {
-    // ⚠️ Somente panes VISIVEIS tem fronteira arrastavel. Uma colapsada tem altura
-    // zero, entao a fronteira dela coincide com a da vizinha — duas divisorias no
-    // mesmo pixel, e o arrasto redistribuiria altura de uma pane que nao esta na
-    // tela (efeito: a divisoria "nao pega", ou pega e nada se move).
-    const visiveis = this.panes.filter((p) => !p.collapsed);
-    if (visiveis.length < 2) return null;
-    let acc = 0;
-    for (let k = 0; k < visiveis.length - 1; k++) {
-      acc += visiveis[k]!.priceScale.height;
-      if (Math.abs(y - acc) <= PANE_DIVIDER_GRAB_PX) return this.panes.indexOf(visiveis[k]!);
+  private fronteiraVerticalEm(x: number, y: number): FronteiraVertical | null {
+    for (const f of this.arranjo.fronteirasVerticais) {
+      if (y < f.topo || y > f.base) continue;
+      if (Math.abs(x - f.x) <= PANE_DIVIDER_GRAB_PX) return f;
     }
     return null;
   }
@@ -1088,30 +1332,107 @@ export class RobustusChartCore implements IChartApi {
    * piso de `MIN_PANE_HEIGHT_PX` corta o excesso antes da conversao, para nenhuma
    * das duas chegar a zero (ver a constante).
    */
-  private resizePaneBoundary(k: number, dyPx: number): void {
-    const a = this.panes[k];
-    // A vizinha de baixo e a proxima VISIVEL, nao a proxima do array: uma pane
-    // colapsada entre as duas nao pode receber a altura arrastada (ela nao aparece,
-    // e o movimento se perderia num retangulo invisivel).
-    const b = this.panes.slice(k + 1).find((p) => !p.collapsed);
-    if (a === undefined || b === undefined || a.collapsed || !Number.isFinite(dyPx)) return;
+  private resizePaneBoundary(f: FronteiraHorizontal, dyPx: number): void {
+    if (!Number.isFinite(dyPx)) return;
+    const acima = f.acima.map((k) => this.panes.find((p) => p.index === k)).filter(naoNulo);
+    const abaixo = f.abaixo.map((k) => this.panes.find((p) => p.index === k)).filter(naoNulo);
+    if (acima.length === 0 || abaixo.length === 0) return;
 
     const util = Math.max(1, this.totalHeight - this.timeAxisHeight);
-    const soma = this.panes.reduce((acc, p) => acc + p.heightFraction, 0);
-    if (!(soma > 0)) return;
-
-    const pxA = (a.heightFraction / soma) * util;
-    const pxB = (b.heightFraction / soma) * util;
+    // ⚠️ A altura em pixel vem do ARRANJO, e nao de uma reconta das fracoes. Numa grade a
+    // altura de uma faixa e o MAXIMO das fracoes dos membros dela, e refazer essa conta aqui
+    // seria uma segunda fonte de verdade — divergiria da tela na primeira mudanca da regra.
+    const pxA = this.paneRect((acima[0] as Pane).index).height;
+    const pxB = this.paneRect((abaixo[0] as Pane).index).height;
     const parAlt = pxA + pxB;
     // Par curto demais para respeitar o piso nas duas: nao ha o que redistribuir.
     if (parAlt < MIN_PANE_HEIGHT_PX * 2) return;
 
     const alvoA = Math.min(parAlt - MIN_PANE_HEIGHT_PX, Math.max(MIN_PANE_HEIGHT_PX, pxA + dyPx));
-    const novoA = alvoA;
     const novoB = parAlt - alvoA;
 
-    a.heightFraction = (novoA / util) * soma;
-    b.heightFraction = (novoB / util) * soma;
+    // A soma das fracoes DE TODO O ARRANJO (a principal mais uma por linha) e o denominador
+    // que converte pixel de volta para fracao. Ler do arranjo mantem as duas contas na mesma
+    // fonte.
+    const soma = this.somaDeFracoesDoArranjo();
+    if (!(soma > 0)) return;
+    const fracaoA = (alvoA / util) * soma;
+    const fracaoB = (novoB / util) * soma;
+
+    // ⭐⭐ GRAVA COMO INTENCAO (`heightFractionFixa`), e nao so como resultado.
+    //
+    // ⚠️ Antes o arrasto mexia apenas em `heightFraction`, e o proximo `rebalancePanes`
+    // (disparado por ligar qualquer indicador) apagava o valor. Era um defeito conhecido e
+    // documentado: o operador ajustava a divisoria, ligava o RSI, e a altura voltava sozinha.
+    // O pedido desta rodada e explicito sobre ajustar na mao — de nada serve ajustar e perder.
+    //
+    // ⚠️ A pane PRINCIPAL nao recebe fracao fixa: ela e definida como "o que sobra". Fixa-la
+    // criaria dois donos do resto, e a soma poderia passar de 1.
+    for (const p of acima) {
+      p.heightFraction = fracaoA;
+      if (p.index !== 0) p.heightFractionFixa = fracaoA;
+    }
+    for (const p of abaixo) {
+      p.heightFraction = fracaoB;
+      if (p.index !== 0) p.heightFractionFixa = fracaoB;
+    }
+    this.distributePaneHeights(this.totalHeight);
+    this.scheduleRender();
+  }
+
+  /**
+   * A soma das fracoes que o arranjo usa como denominador: a principal mais UMA por linha.
+   *
+   * ⚠️ Nao e `Σ` das fracoes de todas as panes. Numa linha de tres osciladores, as tres
+   * fracoes valem UMA altura de linha; somar as tres inflaria o denominador e o arrasto
+   * andaria menos que o dedo.
+   */
+  private somaDeFracoesDoArranjo(): number {
+    const principal = this.panes.find((p) => p.index === 0);
+    let soma = principal !== undefined && !principal.collapsed ? principal.heightFraction : 0;
+    const porLinha = new Map<number, number>();
+    for (const r of this.arranjo.retangulos) {
+      if (r.linha < 0) continue;
+      const pane = this.panes.find((p) => p.index === r.key);
+      if (pane === undefined) continue;
+      porLinha.set(r.linha, Math.max(porLinha.get(r.linha) ?? 0, pane.heightFraction));
+    }
+    for (const v of porLinha.values()) soma += v;
+    return soma;
+  }
+
+  /**
+   * Redistribui LARGURA entre duas colunas vizinhas — o ajuste manual na horizontal.
+   *
+   * ⭐ Mesma disciplina da divisoria horizontal: trabalha em PIXEL e converte para peso no
+   * fim (o arrasto do operador vem em pixel), preserva a SOMA do par (as outras colunas nao
+   * se mexem), e grava como INTENCAO para sobreviver ao rebalanceamento.
+   *
+   * ⚠️ O piso e `MIN_PANE_WIDTH_PX`, nao zero: uma coluna de largura 0 sai da tela E fica sem
+   * area para o cursor reencontrar a divisoria — a coluna estaria perdida sem desfazer.
+   */
+  private resizeColumnBoundary(f: FronteiraVertical, dxPx: number): void {
+    if (!Number.isFinite(dxPx)) return;
+    const a = this.panes.find((p) => p.index === f.esquerda);
+    const b = this.panes.find((p) => p.index === f.direita);
+    if (a === undefined || b === undefined) return;
+
+    const pxA = this.paneRect(a.index).width;
+    const pxB = this.paneRect(b.index).width;
+    const par = pxA + pxB;
+    if (par < MIN_PANE_WIDTH_PX * 2) return;
+
+    const alvoA = Math.min(par - MIN_PANE_WIDTH_PX, Math.max(MIN_PANE_WIDTH_PX, pxA + dxPx));
+    const alvoB = par - alvoA;
+
+    // Peso proporcional dentro do par, preservando a soma dos pesos: assim as colunas de
+    // OUTRAS linhas (e as outras colunas desta) nao se movem.
+    const somaPesos = a.widthFraction + b.widthFraction;
+    const escala = somaPesos > 0 ? somaPesos : 2;
+    a.widthFraction = (alvoA / par) * escala;
+    b.widthFraction = (alvoB / par) * escala;
+    a.widthFractionFixa = a.widthFraction;
+    b.widthFractionFixa = b.widthFraction;
     this.distributePaneHeights(this.totalHeight);
     this.scheduleRender();
   }
@@ -1180,14 +1501,42 @@ export class RobustusChartCore implements IChartApi {
       this.scalingPriceAxis = false;
       this.scalingPane = null;
       this.resizingBoundary = null;
+      this.resizingColumn = null;
       this.reiniciarPinca();
       return;
     }
 
-    // Arrasto sobre a DIVISORIA entre panes redimensiona. Tem precedencia sobre o
-    // pan e sobre a escala de eixo: a faixa de 4 px e alvo explicito do operador.
-    const fronteira = this.paneBoundaryAt(y);
-    if (fronteira !== null && !this.isOnPriceAxis(x)) {
+    // Arrasto sobre uma DIVISORIA redimensiona. Tem precedencia sobre o pan e sobre a escala
+    // de eixo: a faixa de 4 px e alvo explicito do operador.
+    //
+    // ⭐ A VERTICAL e testada ANTES da horizontal, e a ordem importa: nos cruzamentos da grade
+    // as duas faixas se sobrepoem, e sem uma ordem declarada a resposta dependeria da ordem
+    // dos lacos. Vertical primeiro porque a coluna e o eixo NOVO — quem esta no cruzamento
+    // acabou de organizar a grade, e o ajuste que ele procura e o de largura.
+    //
+    // ⚠️⚠️ E ela VENCE O EIXO DE PRECO, diferente da horizontal. Nao e inconsistencia: na
+    // grade, o eixo de preco de uma coluna ocupa os 56 px finais DELA, e a divisoria entre
+    // duas colunas cai exatamente sobre a borda direita da coluna da esquerda — ou seja,
+    // DENTRO do eixo dela. Uma das duas tem de ganhar, e a divisoria ganha porque o alvo dela
+    // e de 8 px enquanto o eixo mantem os outros 52 px para arrastar a escala. O inverso
+    // deixaria a divisoria de coluna INALCANCAVEL: ela nao existe em nenhum outro X.
+    //
+    // ⚠️ A borda direita da ULTIMA coluna nao tem divisoria, entao o eixo de preco da direita
+    // do grafico continua intocado.
+    const coluna = this.fronteiraVerticalEm(x, y);
+    if (coluna !== null) {
+      this.resizingColumn = coluna;
+      this.lastPointerX = e.clientX;
+      try {
+        this.canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* ambiente sem captura */
+      }
+      return;
+    }
+
+    const fronteira = this.fronteiraHorizontalEm(x, y);
+    if (fronteira !== null && !this.isOnPriceAxis(x, y)) {
       this.resizingBoundary = fronteira;
       this.lastPointerY = e.clientY;
       try {
@@ -1200,10 +1549,10 @@ export class RobustusChartCore implements IChartApi {
 
     // Arrasto sobre o eixo de preco ESCALA o preco (nao faz pan). Tem precedencia
     // sobre o pan porque o cursor esta sobre a faixa do eixo, nao sobre as velas.
-    if (this.scaleEnabled() && this.isOnPriceAxis(x)) {
+    if (this.scaleEnabled() && this.isOnPriceAxis(x, y)) {
       // Por toque, respeita `vertTouchDrag`: e arrasto vertical.
       if (this.isTouch(e) && !this.touchDragEnabled('vert')) return;
-      const pane = this.paneAtY(y);
+      const pane = this.paneAt(x, y);
       if (pane !== null) {
         this.scalingPriceAxis = true;
         this.scalingPane = pane;
@@ -1220,6 +1569,8 @@ export class RobustusChartCore implements IChartApi {
     if (!this.scrollEnabled()) return;
     if (this.isTouch(e) && !this.touchDragEnabled('horz')) return;
     this.dragging = true;
+    // Lembra a pane do gesto: e ela que da o fator de compressao do pan.
+    this.panPane = this.paneNoPontoInterna(x, y);
     this.lastPointerX = e.clientX;
     this.lastPointerY = e.clientY;
     try {
@@ -1247,14 +1598,21 @@ export class RobustusChartCore implements IChartApi {
     return Number.isFinite(d) ? d : null;
   }
 
-  /** Ponto MEDIO entre os dois ponteiros — a ancora do zoom da pinca. */
+  /**
+   * Ponto MEDIO entre os dois ponteiros, JA no eixo global — a ancora do zoom da pinca.
+   *
+   * ⚠️ Convertido por `xNoEixoGlobal` pelo mesmo motivo da roda: dois dedos sobre uma coluna
+   * comprimida tem um ponto medio de canvas que corresponde a outro instante no eixo global.
+   * A pinca ancoraria na barra errada e a tela deslizaria durante o gesto — o mesmo sintoma da
+   * translacao residual que a formulacao absoluta desta pinca ja corrigiu uma vez.
+   */
   private pontoMedioX(): number | null {
     if (this.pointers.size < 2) return null;
     const it = this.pointers.values();
     const a = it.next().value as { x: number; y: number } | undefined;
     const b = it.next().value as { x: number; y: number } | undefined;
     if (a === undefined || b === undefined) return null;
-    return (a.x + b.x) / 2;
+    return this.xNoEixoGlobal((a.x + b.x) / 2, (a.y + b.y) / 2);
   }
 
   /**
@@ -1361,7 +1719,10 @@ export class RobustusChartCore implements IChartApi {
     // onde `buttons` traz o bit do botao principal durante todo o arrasto.
     if (
       e.buttons === 0 &&
-      (this.dragging || this.scalingPriceAxis || this.resizingBoundary !== null)
+      (this.dragging ||
+        this.scalingPriceAxis ||
+        this.resizingBoundary !== null ||
+        this.resizingColumn !== null)
     ) {
       this.encerrarGestos();
     }
@@ -1382,6 +1743,14 @@ export class RobustusChartCore implements IChartApi {
     // ANTES do arrasto para o cursor nao "piscar" de volta durante o gesto.
     this.atualizarCursor(x, y);
 
+    if (this.resizingColumn !== null) {
+      const dx = e.clientX - this.lastPointerX;
+      this.lastPointerX = e.clientX;
+      this.resizeColumnBoundary(this.resizingColumn, dx);
+      this.emitCrosshair();
+      return;
+    }
+
     if (this.resizingBoundary !== null) {
       const dy = e.clientY - this.lastPointerY;
       this.lastPointerY = e.clientY;
@@ -1400,7 +1769,14 @@ export class RobustusChartCore implements IChartApi {
       this.lastPointerY = e.clientY;
       // Arrastar para a direita revela o passado: leftLogical DIMINUI. Por isso
       // rolamos por `-dx`.
-      scrollByPixels(this.ts, -dx);
+      //
+      // ⭐ `dx` e DIVIDIDO pelo fator de compressao da pane onde o gesto comecou. Numa coluna
+      // de meia largura, 10 px de dedo valem 20 px de eixo — sem a divisao o grafico correria
+      // o DOBRO do dedo, e o operador sentiria o arrasto "escapando" da mao. A pane vem do
+      // inicio do gesto porque o dedo pode sair da coluna no meio dele.
+      const fator =
+        this.panPane === null ? 1 : fatorDeCompressao(this.panPane.width, this.ts.width);
+      scrollByPixels(this.ts, -dx / fator);
     }
 
     this.emitCrosshair();
@@ -1439,9 +1815,25 @@ export class RobustusChartCore implements IChartApi {
    * terminou.
    */
   private atualizarCursor(x: number, y: number): void {
-    if (this.resizingBoundary !== null || this.dragging || this.scalingPriceAxis) return;
-    const sobreDivisoria = !this.isOnPriceAxis(x) && this.paneBoundaryAt(y) !== null;
-    const desejado = sobreDivisoria ? 'ns-resize' : '';
+    if (
+      this.resizingBoundary !== null ||
+      this.resizingColumn !== null ||
+      this.dragging ||
+      this.scalingPriceAxis
+    )
+      return;
+    // ⭐ EXATAMENTE a precedencia do `pointerdown`: divisoria de coluna primeiro (ela vence o
+    // eixo de preco, ver a nota la), depois eixo, depois divisoria de linha. O cursor tem de
+    // prometer o gesto que vai acontecer — divergir aqui e o tipo de detalhe que faz o
+    // operador achar que o recurso "as vezes nao funciona".
+    const desejado =
+      this.fronteiraVerticalEm(x, y) !== null
+        ? 'ew-resize'
+        : this.isOnPriceAxis(x, y)
+          ? ''
+          : this.fronteiraHorizontalEm(x, y) !== null
+            ? 'ns-resize'
+            : '';
     // Le antes de escrever: atribuir `style.cursor` a cada `pointermove` invalidaria
     // estilo do elemento dezenas de vezes por segundo sem mudar nada.
     if (this.canvas.style.cursor !== desejado) this.canvas.style.cursor = desejado;
@@ -1458,6 +1850,8 @@ export class RobustusChartCore implements IChartApi {
     this.scalingPriceAxis = false;
     this.scalingPane = null;
     this.resizingBoundary = null;
+    this.resizingColumn = null;
+    this.panPane = null;
   }
 
   /**
@@ -1481,7 +1875,7 @@ export class RobustusChartCore implements IChartApi {
 
   private readonly onPointerUp = (e: PointerEvent): void => {
     const estavaEscalando = this.scalingPriceAxis;
-    const estavaRedimensionando = this.resizingBoundary !== null;
+    const estavaRedimensionando = this.resizingBoundary !== null || this.resizingColumn !== null;
     const estavaEmPinca = this.pointers.size >= 2;
     const gestoDeOutraCamada = this.cliqueSuprimido;
 
@@ -1546,8 +1940,8 @@ export class RobustusChartCore implements IChartApi {
     const r = this.canvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
-    if (!this.isOnPriceAxis(x)) return;
-    const pane = this.paneAtY(y);
+    if (!this.isOnPriceAxis(x, y)) return;
+    const pane = this.paneAt(x, y);
     if (pane === null) return;
     pane.priceScaleManual = false;
     this.scheduleRender();
@@ -1568,6 +1962,7 @@ export class RobustusChartCore implements IChartApi {
       this.pinchInicio = null;
     }
     this.resizingBoundary = null;
+    this.resizingColumn = null;
     if (this.canvas.style.cursor !== '') this.canvas.style.cursor = '';
     this.crosshair = null;
     this.emitCrosshair();
@@ -1582,11 +1977,37 @@ export class RobustusChartCore implements IChartApi {
     this.cancelarAnimacao();
     const r = this.canvas.getBoundingClientRect();
     const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
     // Roda para cima (deltaY < 0) aproxima. Fator suave para o zoom nao "pular".
     const fator = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    zoomAtCoordinate(this.ts, x, fator);
+    // ⭐ A ancora do zoom e o INSTANTE sob o cursor, e o eixo que se move e o GLOBAL. Numa
+    // coluna, `x` de canvas nao corresponde ao mesmo instante que corresponderia no painel de
+    // preco — usar o `x` cru faria a roda sobre um oscilador ancorar noutra barra, e a tela
+    // deslizaria para o lado.
+    zoomAtCoordinate(this.ts, this.xNoEixoGlobal(x, y), fator);
     this.scheduleRender();
   };
+
+  /**
+   * Converte um X de canvas para o X EQUIVALENTE no eixo global, passando pelo instante.
+   *
+   * ⭐ E a ponte entre "onde o dedo esta" e "que barra e essa" quando o dedo esta numa coluna
+   * comprimida. Para pane de largura cheia devolve o proprio `x` (o eixo e o mesmo objeto e a
+   * origem e zero), entao o caminho comum nao paga nada.
+   *
+   * ⚠️ Cai no `x` cru quando o instante nao e resolvivel (grafico sem dado): melhor ancorar
+   * aproximado que nao ancorar — devolver `null` faria a roda e a pinca pararem de funcionar
+   * num grafico vazio, onde elas ainda precisam mover o eixo.
+   */
+  private xNoEixoGlobal(x: number, y: number): number {
+    const r = this.paneNoPontoInterna(x, y);
+    if (r === null) return x;
+    const tsPane = this.tsDaPane(r);
+    if (tsPane === this.ts) return x;
+    const logico = coordinateToLogical(tsPane, x - r.left);
+    if (logico === null) return x;
+    return logicalToCoordinate(this.ts, logico) ?? x;
+  }
 
   /**
    * A barra da serie de preco principal (pane 0) sob a coluna `x` do cursor.
@@ -1637,14 +2058,21 @@ export class RobustusChartCore implements IChartApi {
   private emitCrosshair(): void {
     if (this.crosshairListeners.size === 0) return;
     const p = this.crosshair;
+    // ⭐ `time`/`logical` resolvidos pelo eixo GLOBAL a partir do X equivalente: assim o evento
+    // fala do mesmo instante esteja o cursor no painel de preco ou numa coluna comprimida. E
+    // `paneIndex` diz ONDE o cursor esta — sem ele, o consumidor de uma grade nao tem como
+    // saber de que sub-painel o evento veio.
+    const xGlobal = p === null ? 0 : this.xNoEixoGlobal(p.x, p.y);
+    const paneDoPonto = p === null ? null : this.paneNoPontoInterna(p.x, p.y);
     const param: MouseEventParams =
       p === null
         ? {}
         : {
             point: { x: p.x, y: p.y },
-            time: coordinateToTime(this.ts, p.x) ?? undefined,
-            logical: coordinateToLogical(this.ts, p.x) ?? undefined,
-            seriesData: this.barSobCursor(p.x),
+            time: coordinateToTime(this.ts, xGlobal) ?? undefined,
+            logical: coordinateToLogical(this.ts, xGlobal) ?? undefined,
+            seriesData: this.barSobCursor(xGlobal),
+            ...(paneDoPonto === null ? {} : { paneIndex: paneDoPonto.key }),
           };
     for (const l of this.crosshairListeners) {
       try {
@@ -1658,10 +2086,13 @@ export class RobustusChartCore implements IChartApi {
   private emitClick(): void {
     if (this.clickListeners.size === 0 || this.crosshair === null) return;
     const p = this.crosshair;
+    const xGlobal = this.xNoEixoGlobal(p.x, p.y);
+    const paneDoPonto = this.paneNoPontoInterna(p.x, p.y);
     const param: MouseEventParams = {
       point: { x: p.x, y: p.y },
-      time: coordinateToTime(this.ts, p.x) ?? undefined,
-      logical: coordinateToLogical(this.ts, p.x) ?? undefined,
+      time: coordinateToTime(this.ts, xGlobal) ?? undefined,
+      logical: coordinateToLogical(this.ts, xGlobal) ?? undefined,
+      ...(paneDoPonto === null ? {} : { paneIndex: paneDoPonto.key }),
     };
     for (const l of this.clickListeners) {
       try {
@@ -1884,15 +2315,27 @@ export class RobustusChartCore implements IChartApi {
 
     for (const pane of this.panes) {
       if (pane.collapsed) continue;
-      const topo = this.paneTop(pane.index);
-      const local = this.crosshairInPane(pane, topo);
+      const rect = this.paneRect(pane.index);
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // ⭐⭐ O eixo COMO ESTA PANE O VE: mesma janela logica, escala geometrica da coluna.
+      const tsPane = this.tsDaPane(rect);
+      const local = this.crosshairInPane(rect, tsPane);
       ctx.save();
       try {
-        // Recorta e translada para a faixa da pane, em pixel de bitmap.
+        // Recorta e translada para o RETANGULO da pane, em pixel de bitmap.
+        //
+        // ⚠️ O `translate` ganhou a componente X. Ele era so vertical porque toda pane
+        // comecava em x=0 — e era essa unica linha que, junto com `ts.width`, codificava
+        // "pane ocupa a largura inteira".
         ctx.beginPath();
-        ctx.rect(0, topo * this.dpr, this.ts.width * this.dpr, pane.priceScale.height * this.dpr);
+        ctx.rect(
+          rect.left * this.dpr,
+          rect.top * this.dpr,
+          rect.width * this.dpr,
+          rect.height * this.dpr,
+        );
         ctx.clip();
-        ctx.translate(0, topo * this.dpr);
+        ctx.translate(rect.left * this.dpr, rect.top * this.dpr);
 
         // ⭐ CAMADA `bottom` ANTES DAS SERIES — e isto corrige um defeito relatado:
         // *"o bookmap está sendo plotado em cima das médias de volume"*.
@@ -1909,13 +2352,17 @@ export class RobustusChartCore implements IChartApi {
         // continuam depois. É o que faz o bookmap ser FUNDO — que é a razão de ele
         // existir como camada de contexto.
         // `true` = esta passada é a que ATUALIZA as views (uma vez por quadro).
-        this.drawPrimitives(ctx, pane, ['bottom'], true);
+        this.drawPrimitives(ctx, pane, ['bottom'], true, rect, tsPane);
 
         renderPane(
           ctx,
           this.dpr,
           this.dpr,
-          this.ts,
+          // ⭐ O eixo DERIVADO entra aqui, e e o que faz `renderer.ts` nao precisar de UMA
+          // LINHA de mudanca: ele le `ts.width` como a largura da area e `ts.barSpacing` para
+          // posicionar as barras. Com o eixo da pane, grade vertical, series, eixo de preco e
+          // crosshair caem todos no lugar certo dentro da coluna, de graca.
+          tsPane,
           pane.priceScale,
           // ⭐ Cada serie vai com a SUA escala. A grade e o eixo usam a principal
           // (passada acima); o volume desenha contra a escala de overlay dele.
@@ -1940,10 +2387,10 @@ export class RobustusChartCore implements IChartApi {
           pane.index === 0 ? this.watermarkOpts() : undefined,
         );
 
-        this.drawPriceLines(ctx, pane);
+        this.drawPriceLines(ctx, pane, rect);
         // ⭐ `normal` e `top` DEPOIS das series; `bottom` já saiu ANTES (ver acima).
-        this.drawPrimitives(ctx, pane, ['normal', 'top']);
-        this.drawMarkers(ctx, pane);
+        this.drawPrimitives(ctx, pane, ['normal', 'top'], false, rect, tsPane);
+        this.drawMarkers(ctx, pane, rect, tsPane);
       } finally {
         ctx.restore();
       }
@@ -2112,11 +2559,17 @@ export class RobustusChartCore implements IChartApi {
     tolerancePx = 6,
   ): ISeriesApi<SeriesType> | null {
     if (this.disposed) return null;
-    const pane = this.paneAtY(point.y);
+    const pane = this.paneAt(point.x, point.y);
     if (pane === null) return null;
+    const rect = this.paneRect(pane.index);
 
     // Y local da pane: as escalas de preco convertem no espaco DELA, nao do canvas.
-    const yLocal = point.y - this.paneTop(pane.index);
+    const yLocal = point.y - rect.top;
+    // ⚠️ E X local TAMBEM, com o eixo da pane. Antes so o Y era convertido, porque toda pane
+    // comecava em x=0 com a largura do grafico. Numa coluna, X cru resolveria o tempo pelo
+    // eixo global — o clique num oscilador acertaria a barra errada, ou nenhuma.
+    const xLocal = point.x - rect.left;
+    const tsPane = this.tsDaPane(rect);
 
     let melhor: SeriesImpl<SeriesType> | null = null;
     let melhorPrioridade = -1;
@@ -2124,7 +2577,7 @@ export class RobustusChartCore implements IChartApi {
 
     for (const s of pane.series) {
       if (!RobustusChartCore.visivel(s)) continue;
-      const acerto = this.acertoNaSerie(pane, s, point.x, yLocal, tolerancePx);
+      const acerto = this.acertoNaSerie(pane, s, xLocal, yLocal, tolerancePx, tsPane, rect);
       if (acerto === null) continue;
       if (
         acerto.prioridade > melhorPrioridade ||
@@ -2151,6 +2604,8 @@ export class RobustusChartCore implements IChartApi {
     x: number,
     yLocal: number,
     tol: number,
+    tsPane: TimeScaleState = this.ts,
+    rect: RetanguloDePane = this.paneRect(pane.index),
   ): { distancia: number; prioridade: number } | null {
     const escala = this.scaleOf(pane, s);
     const dados = s.model.data;
@@ -2158,7 +2613,10 @@ export class RobustusChartCore implements IChartApi {
 
     // Indice do array DA SERIE mais proximo da coluna clicada, resolvido por TEMPO —
     // a serie pode estar desalinhada do eixo (indicador que descartou o aquecimento).
-    const t = coordinateToTime(this.ts, x);
+    //
+    // ⚠️ Pelo eixo da PANE, com `x` local: numa coluna comprimida o eixo global resolveria
+    // outro instante e o clique acertaria a barra errada.
+    const t = coordinateToTime(tsPane, x);
     if (t === null) return null;
     const i = this.indiceMaisProximoPorTempo(dados, t);
     if (i === null) return null;
@@ -2203,7 +2661,7 @@ export class RobustusChartCore implements IChartApi {
       // ⚠️ A barra de histograma vai do VALOR ate a base (zero). Medir so a distancia ao
       // topo da barra faria o clique no meio dela nao acertar nada — e e no meio que o
       // operador clica.
-      const base = yZero === null ? pane.priceScale.height : yZero;
+      const base = yZero === null ? rect.height : yZero;
       const topo = Math.min(yValor, base);
       const fundo = Math.max(yValor, base);
       if (yLocal >= topo - tol && yLocal <= fundo + tol) {
@@ -2223,8 +2681,8 @@ export class RobustusChartCore implements IChartApi {
       const a = dados[j];
       const b = dados[j + 1];
       if (a === undefined || b === undefined) continue;
-      const xa = timeToCoordinate(this.ts, a.time);
-      const xb = timeToCoordinate(this.ts, b.time);
+      const xa = timeToCoordinate(tsPane, a.time);
+      const xb = timeToCoordinate(tsPane, b.time);
       const va = (a as unknown as { value?: number }).value;
       const vb = (b as unknown as { value?: number }).value;
       if (xa === null || xb === null || va === undefined || vb === undefined) continue;
@@ -2240,7 +2698,7 @@ export class RobustusChartCore implements IChartApi {
       const p = dados[i];
       const v = (p as unknown as { value?: number } | undefined)?.value;
       if (p === undefined || v === undefined) return null;
-      const xp = timeToCoordinate(this.ts, p.time);
+      const xp = timeToCoordinate(tsPane, p.time);
       const yp = priceToCoordinate(escala, v);
       if (xp === null || yp === null) return null;
       dist = Math.hypot(x - xp, yLocal - yp);
@@ -2474,14 +2932,60 @@ export class RobustusChartCore implements IChartApi {
     };
   }
 
-  private crosshairInPane(pane: Pane, topo: number): CrosshairState | null {
+  /**
+   * O crosshair no espaco LOCAL de uma pane, ou `null`.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ⭐⭐ O X VIAJA POR TEMPO, E E ISSO QUE COSTURA A GRADE
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ⚠️ A versao anterior devolvia `x` CRU. Estava certa enquanto toda pane comecava em x=0 com
+   * a largura do grafico; numa grade fica errada de duas formas ao mesmo tempo: o `x` do canvas
+   * nao e o `x` local (falta subtrair `left`) e a coluna tem outra escala geometrica.
+   *
+   * ⭐ A conversao e por INSTANTE: le o tempo sob o cursor no eixo da pane ONDE ELE ESTA, e
+   * pergunta a esta pane onde aquele instante cai NELA. E o que mantem a promessa que a grade
+   * precisa fazer — a linha vertical em cada coluna marca o MESMO momento que a linha no
+   * painel de preco. Sem isso, a grade viraria paineis desconexos e o operador nao teria como
+   * relacionar o oscilador com a vela.
+   *
+   * ⚠️ Y fora da faixa devolve `-1` em vez de `null` (e nao e descuido): `null` apagaria a
+   * linha VERTICAL das panes que nao estao sob o cursor, e e justamente ela que atravessa o
+   * grafico. `-1` desenha a vertical e joga a horizontal para fora do recorte.
+   */
+  private crosshairInPane(rect: RetanguloDePane, tsPane: TimeScaleState): CrosshairState | null {
     const c = this.crosshair;
     if (c === null) return null;
-    const dentro = c.y >= topo && c.y <= topo + pane.priceScale.height;
-    return dentro ? { x: c.x, y: c.y - topo } : { x: c.x, y: -1 };
+
+    let xLocal: number;
+    if (tsPane === this.ts) {
+      // Pane de largura cheia: o eixo e o mesmo objeto, entao a conta e a de sempre.
+      xLocal = c.x - rect.left;
+    } else {
+      // Coluna: acha o instante sob o cursor (no eixo da pane que o contem) e projeta.
+      const origem = this.paneNoPontoInterna(c.x, c.y);
+      const tsOrigem = origem === null ? this.ts : this.tsDaPane(origem);
+      const logico = coordinateToLogical(tsOrigem, c.x - (origem?.left ?? 0));
+      const projetado = logico === null ? null : logicalToCoordinate(tsPane, logico);
+      // ⚠️ Sem tempo resolvivel (grafico vazio), cai na proporcao geometrica em vez de
+      // desistir: a linha no lugar aproximado informa mais que linha nenhuma, e `null` aqui
+      // apagaria o crosshair do grafico inteiro num grafico sem dado.
+      xLocal =
+        projetado !== null
+          ? projetado
+          : ((c.x - (origem?.left ?? 0)) / Math.max(1, origem?.width ?? this.ts.width)) * rect.width;
+    }
+
+    const dentro = c.y >= rect.top && c.y <= rect.top + rect.height;
+    return { x: xLocal, y: dentro ? c.y - rect.top : -1 };
   }
 
-  private drawPriceLines(ctx: CanvasRenderingContext2D, pane: Pane): void {
+  /** A pane sob um ponto do canvas, como RETANGULO. `null` fora de todas. */
+  private paneNoPontoInterna(x: number, y: number): RetanguloDePane | null {
+    return paneNoPonto(this.arranjo, x, y);
+  }
+
+  private drawPriceLines(ctx: CanvasRenderingContext2D, pane: Pane, rect: RetanguloDePane): void {
     for (const s of pane.series) {
       if (!RobustusChartCore.visivel(s)) continue;
       // A linha de preco pertence a serie, logo vive na escala DELA: uma linha
@@ -2495,7 +2999,9 @@ export class RobustusChartCore implements IChartApi {
         ctx.setLineDash(pl.lineStyle === 2 ? [6 * this.dpr, 4 * this.dpr] : []);
         ctx.beginPath();
         ctx.moveTo(0, y * this.dpr);
-        ctx.lineTo(this.ts.width * this.dpr, y * this.dpr);
+        // ⚠️ Largura da PANE, nao do grafico: numa coluna, a linha de preco vazaria por cima
+        // da coluna vizinha. O clip a cortaria, mas o desenho estaria errado por sorte.
+        ctx.lineTo(rect.width * this.dpr, y * this.dpr);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -2515,8 +3021,26 @@ export class RobustusChartCore implements IChartApi {
     pane: Pane,
     camadas: ReadonlyArray<'bottom' | 'normal' | 'top'>,
     atualizarViews = false,
+    rect: RetanguloDePane = this.paneRect(pane.index),
+    _tsPane: TimeScaleState = this.ts,
   ): void {
-    const target = createCanvasTarget(ctx, this.ts.width, pane.priceScale.height, this.dpr, this.dpr);
+    // ⚠️⚠️ A ORIGEM da pane e passada por DADO, e nao pela transformacao do contexto — e isto
+    // corrige um defeito LATENTE, anterior a grade.
+    //
+    // `createCanvasTarget().useBitmapCoordinateSpace` faz `setTransform(1,0,0,1,0,0)`, que
+    // DESCARTA o `translate` aplicado pelo laco de render. Isso passou despercebido porque
+    // toda primitive existente (bookmap, footprint, perfil) e anexada a serie da pane 0, onde
+    // a origem e (0,0) e descartar a translacao nao muda nada. Numa pane de baixo a camada ja
+    // desenhava em Y absoluto errado; numa COLUNA erraria X tambem.
+    const target = createCanvasTarget(
+      ctx,
+      rect.width,
+      rect.height,
+      this.dpr,
+      this.dpr,
+      rect.left,
+      rect.top,
+    );
     // Ordem por z DENTRO do que foi pedido: bottom (bookmap), normal, top (footprint,
     // desenho). A ordem relativa entre as três é preservada.
     const ordem: Array<'bottom' | 'normal' | 'top'> = (['bottom', 'normal', 'top'] as const).filter(
@@ -2587,12 +3111,18 @@ export class RobustusChartCore implements IChartApi {
    * O ancoramento por posicao (aboveBar/belowBar/inBar) e preservado. Tolerante:
    * marcador com tempo fora da serie e PULADO, como antes.
    */
-  private drawMarkers(ctx: CanvasRenderingContext2D, pane: Pane): void {
+  private drawMarkers(
+    ctx: CanvasRenderingContext2D,
+    pane: Pane,
+    rect: RetanguloDePane = this.paneRect(pane.index),
+    tsPane: TimeScaleState = this.ts,
+  ): void {
     for (const s of pane.series) {
       if (!RobustusChartCore.visivel(s)) continue;
       const escala = this.scaleOf(pane, s);
       for (const m of s.model.markers) {
-        const x = timeToCoordinate(this.ts, m.time);
+        // Eixo da PANE: numa coluna o marcador tem de cair na posicao proporcional dela.
+        const x = timeToCoordinate(tsPane, m.time);
         if (x === null) continue;
         // Ancora o marcador ao preco da barra: acima/abaixo/dentro.
         //
@@ -2601,7 +3131,7 @@ export class RobustusChartCore implements IChartApi {
         // `s.model.data` acerta so quando a serie esta alinhada ao eixo — numa
         // serie desalinhada o marcador ancorava no preco de outra barra.
         const bar = this.barraPorTempo(s.model.data, m.time);
-        let yBase = pane.priceScale.height / 2;
+        let yBase = rect.height / 2;
         if (bar !== undefined) {
           const c = bar as { high?: number; low?: number; value?: number };
           const preco =
@@ -2829,4 +3359,9 @@ function criarContextoInerte(): CanvasRenderingContext2D {
     },
   );
   return alvo as unknown as CanvasRenderingContext2D;
+}
+
+/** Filtro de tipo: descarta `undefined` preservando o tipo do elemento. */
+function naoNulo<T>(v: T | undefined): v is T {
+  return v !== undefined;
 }
