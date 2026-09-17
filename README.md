@@ -11,7 +11,7 @@ anotações — sem depender de provedor de gráfico de terceiro.
 
 ```bash
 npm install
-npm test              # 1172 testes, 61 arquivos
+npm test              # 1880 testes, 97 arquivos
 npm run build         # compila todos os pacotes
 npm run verify        # typecheck + typecheck do playground + extensão ESM + testes
 npm run smoke:consumo # ⭐ prova que o pacote PUBLICADO instala e importa
@@ -32,10 +32,10 @@ projeto](#consumindo-em-outro-projeto).
 | `@robustus/charts-replay` | Replay de mercado determinístico, relógio injetado, pausa no fim | **não** |
 | `@robustus/charts-datafeed` | Contrato agnóstico de fonte de dados: dia de mercado, HTTP bars/depth, WS ao vivo com reconexão, agregador de timeframes | tipos¹ |
 | `@robustus/chart-core` | **Motor de renderização próprio** em canvas: eixo de tempo com sessão irregular, autoescala por escala de preço, pan/zoom, pinça em touch, crosshair com rótulos, sub-painéis, marcadores com forma, banda, formatação de preço por tick, exportar imagem | sim |
-| `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive` | sim |
-| `@robustus/charts-drawings` | 8 ferramentas de desenho, hit-test priorizado, ímã ao OHLC, desfazer/refazer, persistência versionada | sim |
-| `@robustus/charts-engine` | Motor sem framework + persistência de layout (`serializeChartState`) | sim |
-| `@robustus/charts-react` | Hooks finos: `useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, e `<RobustusChart />` | sim |
+| `@robustus/charts-primitives` | Camadas de canvas: `BookmapPrimitive`, `FootprintPrimitive`, `VolumeProfilePrimitive` | sim |
+| `@robustus/charts-drawings` | 13 ferramentas de desenho, hit-test priorizado, ímã ao OHLC, desfazer/refazer, persistência versionada | sim |
+| `@robustus/charts-engine` | Motor sem framework + persistência de layout (`serializeChartState`) + setups nomeados (`layout-templates.core`) + **abas por ativo** (`chart-workspace.core`) | sim |
+| `@robustus/charts-react` | Hooks finos (`useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, `useHistoryBackfill`, `useChartSync`, `useVisibleTimeRange`, `useLayerLegends`, `useSymbolWorkspace`), UI própria (`ChartToolbar`, `DrawingToolbar`, `IndicatorToolbox`, `CommandPalette`, `ChartLegend`, `TimeframeSelector`, `SymbolTabs`, `ChartGrid`, `ObjectTree`, `AssetReadout`, `CorrelationInset`) e `<RobustusChart />` | sim |
 | `@robustus/charts-devtools` | Bancada de desempenho com dublês de canvas — **não publicável** (`private: true`) | sim |
 
 ¹ `charts-datafeed` **roda** em Node (o `fetch` é injetado, o pacote não o
@@ -47,6 +47,11 @@ Os 29 indicadores: SMA, EMA, WMA, RMA, DEMA, TEMA, RSI, Stochastic, CCI,
 Williams %R, ROC, Momentum, ATR, StdDev, Bollinger, Keltner, MACD, ADX, OBV,
 VWAP, SuperTrend, Parabolic SAR, Ichimoku, Donchian, VWAP com bandas, MFI, CMF,
 Awesome Oscillator e Pivot Points.
+
+As 13 ferramentas de desenho: linha de tendência, raio, reta infinita, linha
+horizontal, raio horizontal, linha vertical, retângulo, seta, régua, retração e
+extensão de Fibonacci, e posição de compra/venda (entrada + stop, com o alvo
+derivado do múltiplo de risco e as zonas pintadas na proporção).
 
 ## Consumindo em outro projeto
 
@@ -68,7 +73,7 @@ devolve **403**. Escolha um caminho:
 - **B (imediato, sem registry):** consumir por **tarball local** — funciona
   hoje, sem conta, sem token, sem rede. Ver [Caminho B](#caminho-b--tarball-local-funciona-hoje).
 - **C (evitar):** renomear o escopo para `@loester777`. Mexe em import de
-  centenas de arquivos e nos 1172 testes, só para satisfazer uma regra de
+  centenas de arquivos e nos 1880 testes, só para satisfazer uma regra de
   registry.
 
 Escopo privado em `npmjs.org` é pago; o repositório já é privado em
@@ -272,12 +277,27 @@ importam `vitest` e `fast-check`, que não são dependência dos pacotes. O
 - **Tipos de gráfico:** velas, barras OHLC, linha, área, Heikin-Ashi e Renko.
 - **Indicadores incrementais** (`warmup`+`update`+`preview` O(1)): sobre o preço
   ou em sub-painel próprio, com bandas preenchidas (Bollinger, Keltner).
-- **Ferramentas de desenho:** linha, raio, reta, horizontal, vertical, retângulo,
-  Fibonacci e régua — com ímã ao OHLC, seleção, edição por alça e histórico.
-- **Alertas de preço:** cruzamento, toque, faixa e variação percentual, sem repique.
-- **Replay de mercado:** reproduz o pregão barra a barra, com play/pause/velocidade.
-- **Legenda O/H/L/C** sob o cursor e **persistência de layout** completa.
-- **Fluxo de ordem:** bookmap (heatmap de livro), footprint e perfil de volume.
+- **Ferramentas de desenho:** 13 delas — linha, raio, reta, horizontal, raio
+  horizontal, vertical, retângulo, seta, régua, retração e extensão de Fibonacci,
+  e posição de compra/venda com risco-retorno — todas com ímã ao OHLC, seleção,
+  edição por alça e histórico.
+- **Alertas de preço:** cruzamento, toque, faixa, variação percentual e cruzamento
+  de duas séries, sem repique, e **desenhados no gráfico** com o estado virando
+  aparência (armado é tracejado âmbar; disparado é sólido ciano).
+- **Replay de mercado:** reproduz o pregão barra a barra, com play/pause/velocidade,
+  sobre dado sintético ou histórico real.
+- **Legenda O/H/L/C** sob o cursor, **trilha de legendas** das camadas de canvas
+  (um dono por linha, em ordem de leitura) e **persistência de layout** completa.
+- **Abas por ativo:** cada aba é um DOCUMENTO — desenhos, indicadores e alertas
+  voltam ao trocar de aba. Aba nova herda os indicadores e não as marcações de
+  preço, que não valem em outro instrumento.
+- **Setups nomeados:** vários layouts pelo mesmo ativo, salvos por nome.
+- **Leitura do ativo:** desempenho por janela, sazonalidade por ano, termômetro
+  dos indicadores ligados, e correlação entre dois ativos num inset.
+- **Objetos do gráfico em lista** (`ObjectTree`): o que está na tela, com
+  visibilidade, remoção e atalho para as propriedades.
+- **Fluxo de ordem:** bookmap (heatmap de livro), footprint e perfil de volume —
+  este último por coluna ou por linha, e opcionalmente só da janela visível.
 
 ### Uso mínimo (React)
 

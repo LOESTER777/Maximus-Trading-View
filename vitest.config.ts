@@ -26,7 +26,11 @@ export default defineConfig({
     // de grafico usa. Sem isto, uma execucao de 18 testes produzia 63 rejeicoes
     // nao tratadas — ruido que afoga erro de verdade. Ver `vitest.setup.ts`.
     setupFiles: ['./vitest.setup.ts'],
-    include: ['packages/*/src/**/*.{test,spec}.{ts,tsx}'],
+    // ⭐ `apps/*` entra junto, e não é generosidade: o playground é a montagem de REFERÊNCIA da
+    // biblioteca, e existe uma família de defeito que só a execução pega — ordem de declaração
+    // de hook, ciclo entre hooks, `const` lido antes da inicialização. Todos derrubam a página
+    // com a tela BRANCA, que é o modo mais caro de descobrir. Ver `apps/playground/src/__tests__`.
+    include: ['packages/*/src/**/*.{test,spec}.{ts,tsx}', 'apps/*/src/**/*.{test,spec}.{ts,tsx}'],
     // As bancadas nao sao teste de regressao: elas medem. Rodam por comando
     // proprio para nao somar tempo (nem variancia de maquina) ao `npm test`.
     exclude: ['**/node_modules/**', '**/dist/**', '**/__bench__/**'],
