@@ -693,6 +693,75 @@ export function alphaOf(scale: ColorScale, value: number): number {
  *   `0` quando não houver nenhuma quantidade positiva. Como a amostra só admite
  *   valores maiores que zero, `0` identifica sem ambiguidade a amostra vazia.
  */
+/**
+ * Como duas colunas paralelas se combinam numa grandeza DERIVADA.
+ *
+ * ⭐ Existe porque as métricas `DELTA` e `VOLUME` não são colunas do grid: são contas sobre
+ * `execCompra` e `execVenda`. A escala delas precisa dos percentis da grandeza COMBINADA — usar
+ * a escala de `EXECUCAO` calibraria a cor pela distribuição dos lados separados, e a
+ * distribuição da soma e a do módulo da diferença não são a mesma.
+ *
+ * Com números: mil células de 500×500 (compra×venda) dão delta zero e volume 1.000. A escala de
+ * `EXECUCAO` teria p99 ≈ 500; o volume real satura em 1.000 e o delta é nulo. Uma pintaria tudo
+ * saturado, a outra pintaria tudo no piso.
+ */
+export type CombinacaoDeColunas =
+  /** `|a − b|`. É o DELTA: quanto um lado venceu o outro, sem o sinal. */
+  | 'DIFERENCA_ABS'
+  /** `a + b`. É o VOLUME total, sem lado. */
+  | 'SOMA';
+
+/** Escreve a grandeza combinada positiva na amostra. Devolve a nova marca de escrita. */
+function collectCombined(
+  out: Float32Array,
+  offset: number,
+  a: Float32Array,
+  b: Float32Array,
+  n: number,
+  combinacao: CombinacaoDeColunas,
+): number {
+  let w = offset;
+  for (let i = 0; i < n; i += 1) {
+    const va = a[i] ?? 0;
+    const vb = b[i] ?? 0;
+    if (!Number.isFinite(va) || !Number.isFinite(vb)) continue;
+    // ⚠️ A combinação é feita ANTES do filtro de positividade, e não depois. `|500 − 500| = 0`
+    // sai da amostra por ser zero — que é o correto: delta nulo é equilíbrio, e equilíbrio não
+    // tem magnitude a calibrar. Filtrar as colunas primeiro descartaria o par inteiro sempre
+    // que um dos lados fosse zero, e é justamente o par `(800, 0)` que define o topo do delta.
+    const v = combinacao === 'SOMA' ? va + vb : Math.abs(va - vb);
+    if (v > 0 && Number.isFinite(v)) {
+      out[w] = v;
+      w += 1;
+    }
+  }
+  return w;
+}
+
+/**
+ * Escala de cor de uma grandeza DERIVADA de duas colunas paralelas.
+ *
+ * Mesmo contrato de `computeColorScalePair`: não muta as entradas, saneia `count`, nunca devolve
+ * `NaN`, e amostra vazia devolve `p50 = p99 = 0` (então `alphaOf` responde `alphaMin` para
+ * qualquer valor).
+ *
+ * ⚠️ A amostra tem **uma** posição por par, e não duas: a grandeza derivada é UMA por célula.
+ * Por isso este não é `computeColorScalePair` com outro operador — o tamanho da amostra difere, e
+ * o posto do percentil sai de `n`.
+ */
+export function computeColorScaleOfCombination(
+  sideA: Float32Array,
+  sideB: Float32Array,
+  count: number,
+  combinacao: CombinacaoDeColunas,
+  opts?: ColorScaleOptions,
+): ColorScale {
+  const n = Math.min(sanitizeCount(sideA.length, count), sanitizeCount(sideB.length, count));
+  const sample = new Float32Array(n);
+  const sampled = collectCombined(sample, 0, sideA, sideB, n, combinacao);
+  return scaleFromSample(sample, sampled, opts);
+}
+
 export function positiveQuantileOfPair(
   sideA: Float32Array,
   sideB: Float32Array,

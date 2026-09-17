@@ -37,7 +37,7 @@
  */
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { agregarPerfilDeVolume, decodeColumnar } from '@robustus/charts-core';
+import { agregarPerfilDeVolume, decodeColumnar, type MetricaBookmap } from '@robustus/charts-core';
 // ⭐ O vocabulário de PERÍODO vive no datafeed (junto de `periodSeconds` e da agregação);
 // o componente de seleção vive no pacote React e recebe a lista por prop. É o consumidor
 // — este app — que une os dois.
@@ -324,6 +324,29 @@ export function App(): JSX.Element {
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
   /** O perfil segue a JANELA VISÍVEL (default) ou agrega o dia inteiro. */
   const [perfilNaJanela, setPerfilNaJanela] = useState(true);
+  /**
+   * ⭐ A ESCADA lateral do livro. Nasce desligada, como na camada.
+   *
+   * ⚠️ Ela e o "Perfil da janela" disputam a MESMA faixa da borda direita, e o playground é quem
+   * sabe disso — a camada de bookmap não conhece o perfil de volume e nem deve. Ver o filtro da
+   * barra: a escada não é oferecida com o perfil ligado, em vez de as duas se sobreporem na tela.
+   */
+  const [escadaDoLivro, setEscadaDoLivro] = useState(false);
+  /**
+   * ⭐ A MÉTRICA do heatmap, escolhida pela paleta e não por botão.
+   *
+   * ⚠️ São cinco, e cinco botões numa barra que tem a regra de "não encher a tela de botões" seria
+   * a própria regra sendo quebrada. A paleta responde por nome, com o "para que serve" no rodapé —
+   * é o mesmo caminho dos 45 indicadores.
+   */
+  const [metricaLivro, setMetricaLivro] = useState<MetricaBookmap>('AMBAS');
+  /**
+   * Escala do DIA em vez da janela.
+   *
+   * ⚠️ Também na paleta: é uma escolha que o operador faz uma vez e esquece, e um botão permanente
+   * para ela custaria espaço a toda hora para uma decisão que acontece raramente.
+   */
+  const [escalaDoDia, setEscalaDoDia] = useState(false);
   const [imaLigado, setImaLigado] = useState(false);
   const [gradeVertical, setGradeVertical] = useState(false);
   const [marcaDagua, setMarcaDagua] = useState(true);
@@ -802,10 +825,16 @@ export function App(): JSX.Element {
       mostrarBookmap && grid !== null
         ? {
             grid,
-            metrica: 'AMBAS',
-            escala: 'P99_GAMMA',
+            metrica: metricaLivro,
+            escala: escalaDoDia ? 'P99_LINEAR' : 'P99_GAMMA',
             tickSize: tickSizeAtual,
             modoCor: 'TERMICA',
+            // ⚠️ A escada lateral COMPETE com o perfil de volume pela mesma faixa da
+            // borda direita. Oferecer os dois ligados ao mesmo tempo os sobreporia, e
+            // recusar um silenciosamente faria o controle parecer não funcionar. A
+            // solução certa é escolher: perfil ligado vence a escada, e a escada volta
+            // quando o perfil sai.
+            mostrarPerfilLateral: !mostrarPerfil && escadaDoLivro,
             // ⭐ A legenda do livro sai do CANVAS e entra na TRILHA.
             //
             // ⚠️ Antes era `posicaoLegenda: 'inferior-esquerda'`, para fugir da fita de
@@ -1376,6 +1405,20 @@ export function App(): JSX.Element {
         hint: 'Heatmap do livro por região de preço: onde há oferta parada.',
       },
       {
+        // ⭐ A ESCADA do bookmap como controle próprio: ela é AUXILIAR de leitura —
+        // mostra fila acumulada por preço — e compete com o perfil de volume pela mesma
+        // faixa da borda direita.
+        //
+        // ⚠️ Só aparece com bookmap LIGADO e perfil DESLIGADO: um controle que não afeta
+        // nada (bookmap desligado) ou que sobrepõe duas visualizações na mesma faixa
+        // (perfil ligado) é ruído.
+        id: 'escada-livro',
+        label: 'Escada do livro',
+        icon: 'bookmap',
+        active: escadaDoLivro,
+        hint: 'Mostra fila acumulada por preço na borda direita. Compete com o perfil de volume pela mesma faixa.',
+      },
+      {
         id: 'perfil',
         label: 'Perfil',
         icon: 'volumeProfile',
@@ -1404,8 +1447,14 @@ export function App(): JSX.Element {
       ] as ToolbarToggleItem[])
         // ⚠️ O escopo do perfil só entra na barra com o perfil LIGADO: um controle que não
         // afeta nada visível é ruído, e esta barra tem a regra de não encher a tela de botões.
-        .filter((item) => item.id !== 'perfil-janela' || mostrarPerfil),
-    [alertasLigados, mostrarBookmap, mostrarPerfil, perfilNaJanela],
+        // O mesmo vale para a escada: só aparece quando o bookmap está ligado E o perfil está
+        // desligado (os dois competem pela mesma faixa lateral).
+        .filter((item) => {
+          if (item.id === 'perfil-janela') return mostrarPerfil;
+          if (item.id === 'escada-livro') return mostrarBookmap && !mostrarPerfil;
+          return true;
+        }),
+    [alertasLigados, mostrarBookmap, escadaDoLivro, mostrarPerfil, perfilNaJanela],
   );
 
   const ambiente = useMemo<ToolbarToggleItem[]>(
@@ -1446,6 +1495,7 @@ export function App(): JSX.Element {
 
   const alternarCamada = useCallback((id: string): void => {
     if (id === 'bookmap') setMostrarBookmap((v) => !v);
+    else if (id === 'escada-livro') setEscadaDoLivro((v) => !v);
     else if (id === 'perfil') setMostrarPerfil((v) => !v);
     else if (id === 'perfil-janela') setPerfilNaJanela((v) => !v);
     else if (id === 'alertas') setAlertasLigados((v) => !v);
@@ -1513,6 +1563,22 @@ export function App(): JSX.Element {
       ['Retângulo', 'B', 'RECTANGLE'],
       ['Retração de Fibonacci', 'F', 'FIB_RETRACEMENT'],
       ['Régua', 'M', 'MEASURE'],
+      // ⚠️ Esta lista estava PARADA nas nove primeiras ferramentas enquanto a barra chegava a
+      // vinte — e a paleta é justamente o caminho de quem não decora atalho nem procura ícone. As
+      // onze que faltavam entraram aqui; a próxima que entrar na barra tem de entrar nesta lista
+      // também.
+      ['Raio horizontal', 'J', 'HORIZONTAL_RAY'],
+      ['Seta', 'N', 'ARROW'],
+      ['Extensão de Fibonacci', 'X', 'FIB_EXTENSION'],
+      ['Posição de compra', 'P', 'POSITION_LONG'],
+      ['Posição de venda', 'O', 'POSITION_SHORT'],
+      ['Canal paralelo', 'C', 'PARALLEL_CHANNEL'],
+      ['Elipse', 'L', 'ELLIPSE'],
+      ['Nota de texto', 'W', 'TEXT_NOTE'],
+      ['Zona de demanda', 'D', 'ZONE_DEMAND'],
+      ['Zona de oferta', 'U', 'ZONE_SUPPLY'],
+      ['Leque de Fibonacci', 'Q', 'FIB_FAN'],
+      ['Zonas de tempo de Fibonacci', 'G', 'FIB_TIME_ZONES'],
     ];
     for (const [rotulo, atalho, tool] of ferramentas) {
       lista.push({
@@ -1538,6 +1604,49 @@ export function App(): JSX.Element {
       { id: 'act:salvar', label: 'Salvar layout', group: 'Ações', icon: 'save', run: salvarLayout },
       { id: 'act:restaurar', label: 'Restaurar layout', group: 'Ações', icon: 'restore', run: restaurarLayout },
       { id: 'act:limpar', label: 'Apagar desenho selecionado', group: 'Ações', icon: 'trash', run: desenho.deleteSelected },
+    );
+
+    // ── Métricas do bookmap ─────────────────────────────────────────────────
+    //
+    // ⭐ Cinco escolhas mutuamente exclusivas, e cada uma descreve o QUE o calor
+    // codifica. Não são toggle porque as métricas não podem estar ligadas ao mesmo
+    // tempo — um pixel não pode ser FILA e DELTA simultaneamente.
+    const metricas: Array<readonly [string, MetricaBookmap, string]> = [
+      ['Fila em repouso', 'FILA', 'Lado e intensidade de quem ESPERAVA negociar.'],
+      ['Execução', 'EXECUCAO', 'Lado e volume de quem NEGOCIOU.'],
+      ['Fila + execução', 'AMBAS', 'Fila com marca de execução sobreposta.'],
+      ['Delta', 'DELTA', 'Diferença (agressão de compra − venda).'],
+      ['Volume negociado', 'VOLUME', 'Total negociado por célula, sem lado.'],
+    ];
+    for (const [rotulo, metrica, descricao] of metricas) {
+      lista.push({
+        id: `bookmap:metrica:${metrica}`,
+        label: `Bookmap: ${rotulo}`,
+        group: 'Bookmap',
+        icon: 'bookmap',
+        hint: descricao,
+        run: () => setMetricaLivro(metrica),
+      });
+    }
+
+    // ── Escala e controles do bookmap ───────────────────────────────────────
+    lista.push(
+      {
+        id: 'bookmap:escada',
+        label: 'Bookmap: Alternar escada lateral',
+        group: 'Bookmap',
+        icon: 'bookmap',
+        hint: 'Mostra fila acumulada na borda direita. Compete com o perfil de volume pela mesma faixa.',
+        run: () => setEscadaDoLivro((v) => !v),
+      },
+      {
+        id: 'bookmap:escala-dia',
+        label: 'Bookmap: Alternar escala do dia',
+        group: 'Bookmap',
+        icon: 'bookmap',
+        hint: 'Escala de cor calculada sobre o dia inteiro (em vez da janela visível).',
+        run: () => setEscalaDoDia((v) => !v),
+      },
     );
 
     return lista;

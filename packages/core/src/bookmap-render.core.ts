@@ -128,6 +128,14 @@ export {
    * opostos receberem opacidade igual.
    */
   computeColorScalePair,
+  /**
+   * ⭐ Escala de uma grandeza DERIVADA de duas colunas — `|a − b|` (delta) ou `a + b` (volume).
+   *
+   * Existe porque as métricas `DELTA` e `VOLUME` não são colunas do grid, e a distribuição da
+   * soma não é a distribuição dos lados: mil células de 500×500 têm p99 ≈ 500 por lado, volume
+   * 1.000 e delta zero. Reusar a escala de `EXECUCAO` pintaria uma saturada e a outra no piso.
+   */
+  computeColorScaleOfCombination,
   /** Quantidade → opacidade. Monotônica não-decrescente, nunca `NaN`. */
   alphaOf,
   /** Percentil da amostra positiva de um par de colunas, sem mutar a entrada. */
@@ -148,6 +156,9 @@ export {
 
 /** Ajustes opcionais de `computeColorScale` e `computeColorScalePair`. */
 export type { ColorScaleOptions } from './bookmap-color.core.js';
+
+/** `'DIFERENCA_ABS'` (delta) ou `'SOMA'` (volume) — o operador de `computeColorScaleOfCombination`. */
+export type { CombinacaoDeColunas } from './bookmap-color.core.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Agregação por zoom — `bookmap-aggregate.core`
@@ -196,6 +207,30 @@ export type {
   /** Os campos de cor de `DrawCell`, declarados por `Pick` sobre o tipo canônico. */
   DrawCellPaint,
 } from './bookmap-pixels.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Perfil lateral — `bookmap-lateral.core`
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * `perfilLateralDoBookmap(cells, grandeza, escopo?) → PerfilLateral | null`.
+ *
+ * ⭐ A escada de liquidez por PREÇO, que troca a comparação por COR pela comparação por
+ * COMPRIMENTO. Dezesseis níveis de opacidade não dizem se uma célula tem o dobro da outra; uma
+ * barra diz. Ver o cabeçalho do módulo para as três decisões que mudam o significado dela.
+ */
+export { perfilLateralDoBookmap } from './bookmap-lateral.core.js';
+
+export type {
+  /** `'ULTIMA_COLUNA'` (o livro agora) ou `'JANELA'` (onde a liquidez se concentrou). */
+  EscopoLateral,
+  /** `'FILA'` ou `'EXECUCAO'` — o par de colunas que alimenta a escada. */
+  GrandezaLateral,
+  /** Um nível de preço da escada. */
+  NivelLateral,
+  /** A escada pronta para virar barras, com o máximo COMPARTILHADO pelos dois lados. */
+  PerfilLateral,
+} from './bookmap-lateral.core.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Paredes — `bookmap-walls.core`

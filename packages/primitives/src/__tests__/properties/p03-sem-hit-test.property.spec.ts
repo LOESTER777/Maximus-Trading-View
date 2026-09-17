@@ -646,7 +646,9 @@ function criarParametroDeAnexacao(g: FormaDoGrafico): SeriesAttachedParameter<Ti
 // Geradores
 // ═════════════════════════════════════════════════════════════════════════════
 
-const METRICAS: readonly MetricaBookmap[] = ['FILA', 'EXECUCAO', 'AMBAS'];
+// ⚠️ As CINCO. `DELTA` e `VOLUME` entraram junto com a implementação: a garantia de que a camada
+// nunca captura ponteiro tem de valer em todo estado, e métrica nova é estado novo.
+const METRICAS: readonly MetricaBookmap[] = ['FILA', 'EXECUCAO', 'AMBAS', 'DELTA', 'VOLUME'];
 const ESCALAS: readonly BookmapLayerOptions['escala'][] = ['P99_GAMMA', 'P99_LINEAR'];
 const FONTES: readonly FonteBookmap[] = ['MT5_L2', 'CEDRO_MBO'];
 

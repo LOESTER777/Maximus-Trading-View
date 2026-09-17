@@ -151,10 +151,13 @@ import {
   aggregateForZoomWithOutcome,
   alphaOf,
   cellToPixels,
+  DEFAULT_COVERAGE_CLOCK,
+  computeColorScaleOfCombination,
   computeColorScalePair,
   computeCoverageView,
   hasMagnitudeVariation,
   isAboveScale,
+  perfilLateralDoBookmap,
 } from '@robustus/charts-core';
 /**
  * Rampa térmica — cor por TAMANHO em vez de por lado. Módulo puro, sem
@@ -171,7 +174,9 @@ import type {
   CoordinateFns,
   CoverageView,
   DrawCell,
+  EscopoLateral,
   MetricaBookmap,
+  PerfilLateral,
   VisibleWindow,
 } from '@robustus/charts-core';
 
@@ -370,6 +375,85 @@ export interface BookmapLayerOptions {
    * construção do plano, então a chamada é cercada.
    */
   readonly onLegenda?: (linhas: readonly string[], alerta: boolean) => void;
+  /**
+   * ⭐⭐ ESCOPO da amostra de percentis. Ausente ⇒ `'JANELA'`, o comportamento original.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * A PERGUNTA QUE CADA ESCOPO RESPONDE
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `'JANELA'` calibra pelo que está na tela. É o certo para EXAMINAR: dando zoom numa região
+   * calma, as diferenças internas dela reaparecem em vez de ficarem todas no piso da escala.
+   *
+   * `'DIA'` calibra pelo grid inteiro. É o certo para COMPARAR: a mesma cor significa a mesma
+   * quantidade às 10h e às 16h, então navegar pelo dia não recalibra nada.
+   *
+   * ⚠️⚠️ **O defeito que `'DIA'` resolve é real e é caro.** Com escala de janela, o operador
+   * examina a abertura, vê uma parede branca, rola para a tarde e vê outra parede branca — e
+   * conclui que são equivalentes. Podem diferir por uma ordem de grandeza: cada tela foi
+   * normalizada pelo próprio p99. A escala relativa é honesta sobre *contraste* e muda de
+   * significado a cada movimento, e nada na tela dizia isso.
+   *
+   * ⚠️ **O compromisso de `'DIA'`, declarado:** numa janela cuja liquidez está toda abaixo do p50
+   * do dia, TODAS as células caem em `alphaMin` e a região fica visualmente uniforme. Não é
+   * defeito — é a afirmação verdadeira de que ali não há nada de notável para o dia. Quem quer
+   * enxergar a estrutura interna daquele trecho volta para `'JANELA'`.
+   *
+   * ⭐ A distinção não é nova nesta base: `positiveQuantileOfPair` já documenta exatamente este
+   * par de escopos, porque o limiar de PAREDE mede o grid inteiro de propósito — uma parede não
+   * deixa de ser parede porque o operador deu zoom. Aqui a mesma escolha passa a ser oferecida
+   * para a COR.
+   *
+   * ⚠️ Consequência de desempenho aceita: em `'DIA'` a amostra de percentis é o grid todo (25.823
+   * células no pregão de referência) em vez das ~3.000 da janela. A seleção é O(n), roda uma vez
+   * por mudança de escala (com a espera de 120 ms) e **não** por quadro — e em `'DIA'` a escala
+   * nem depende da janela, então o recálculo por movimento deixa de ser necessário.
+   */
+  readonly escopoEscala?: 'JANELA' | 'DIA';
+  /**
+   * ⭐⭐ Desenhar o PERFIL LATERAL — a escada de liquidez por preço, na borda direita.
+   *
+   * ⚠️ **Ausente ⇒ `false`.** Duas razões, e as duas importam:
+   *
+   *  1. É forma NOVA sobre a área de plotagem, e ligá-la por omissão mudaria a tela de quem já
+   *     usa a camada — inclusive as bancadas herdadas, que contam retângulos desenhados e
+   *     afirmam ZERO em vários estados.
+   *  2. A escada consome largura útil do painel. Num gráfico estreito, ou com o perfil de volume
+   *     das velas já ligado na mesma faixa, duas escadas lado a lado competem pelo mesmo espaço
+   *     — e quem sabe se há outra camada ali é o consumidor, não esta.
+   *
+   * ── POR QUE ELA EXISTE ───────────────────────────────────────────────────
+   *
+   * O heatmap responde "como a liquidez se distribuiu no TEMPO". A pergunta do instante da ordem
+   * é outra: "quanto tem em cada PREÇO". Num heatmap isso se lê comparando intensidades de cor na
+   * coluna mais à direita — e cor é a pior régua para quantidade: dezesseis níveis de opacidade
+   * dizem que uma célula é mais forte que a outra, nunca que ela tem o dobro. A escada troca isso
+   * por COMPRIMENTO, que o olho mede.
+   *
+   * ⚠️ A grandeza da escada acompanha a MÉTRICA (fila em `FILA`/`AMBAS`, execução nas outras):
+   * uma escada de fila ao lado de um mapa de execução seriam duas afirmações diferentes na mesma
+   * altura de pixel, e o operador leria uma como se fosse a outra. Ver `perfilLateralDoBookmap`.
+   */
+  readonly mostrarPerfilLateral?: boolean;
+  /**
+   * De onde a escada tira os números. Ausente ⇒ `'ULTIMA_COLUNA'`.
+   *
+   * `'ULTIMA_COLUNA'` é o livro instantâneo — o elemento clássico do bookmap. `'JANELA'` acumula
+   * por preço no período visível, e é um perfil de volume derivado do LIVRO em vez das velas.
+   *
+   * ⚠️ Em `'ULTIMA_COLUNA'` a coluna escolhida é a última **com quantidade positiva**, e não
+   * simplesmente a última: num pregão devagar o balde em formação está vazio, e a escada ficaria
+   * vazia afirmando "não há liquidez" onde a verdade é "não houve nada neste minuto". A legenda
+   * diz de quando ela é.
+   */
+  readonly escopoPerfilLateral?: EscopoLateral;
+  /**
+   * Largura da escada lateral, em pixels lógicos. Ausente ⇒ `PERFIL_LATERAL_LARGURA_PX`.
+   *
+   * ⚠️ Recortada a um TERÇO da largura do painel: uma escada que ocupa metade da tela deixa de
+   * ser leitura auxiliar e passa a competir com o gráfico que ela explica.
+   */
+  readonly larguraPerfilLateral?: number;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -713,14 +797,37 @@ function formatContratos(v: number): string {
   return formatadorContratos.format(Math.round(v));
 }
 
-/** Rótulo da grandeza para a legenda. */
+/**
+ * Rótulo da grandeza para a legenda.
+ *
+ * ⚠️ Os rótulos das derivadas dizem a CONTA, e não o nome dela: "delta de execução" obriga o
+ * leitor a lembrar o que é delta, e há mais de uma definição em circulação (por barra, acumulado,
+ * por preço). "compra − venda" não deixa dúvida e cabe na mesma linha.
+ */
 function rotuloGrandeza(metrica: MetricaBookmap): string {
-  return metrica === 'EXECUCAO' ? 'execução' : 'fila em repouso';
+  if (metrica === 'EXECUCAO') return 'execução';
+  if (metrica === 'DELTA') return 'delta (compra − venda)';
+  if (metrica === 'VOLUME') return 'volume executado (compra + venda)';
+  return 'fila em repouso';
 }
 
-/** A métrica selecionada inclui execução? */
+/**
+ * A métrica selecionada inclui execução?
+ *
+ * ⚠️ `DELTA` e `VOLUME` entram: as duas são contas sobre `execCompra`/`execVenda`, então a hachura
+ * de execução não capturada tem de aparecer nelas — senão a tela afirmaria "nenhum negócio" onde a
+ * verdade é "ninguém gravou". Espelha `metricaIncluiExecucao` do núcleo de cobertura, e as duas
+ * foram estendidas na mesma edição de propósito.
+ */
 function incluiExecucao(metrica: MetricaBookmap): boolean {
-  return metrica === 'EXECUCAO' || metrica === 'AMBAS';
+  return (
+    metrica === 'EXECUCAO' || metrica === 'AMBAS' || metrica === 'DELTA' || metrica === 'VOLUME'
+  );
+}
+
+/** A métrica é DERIVADA de duas colunas? `null` nas três originais. */
+function grandezaDerivada(metrica: MetricaBookmap): 'DELTA' | 'VOLUME' | null {
+  return metrica === 'DELTA' || metrica === 'VOLUME' ? metrica : null;
 }
 
 
@@ -772,6 +879,58 @@ const BOLHA_RAIO_MAX_PX = 18;
 /** Opacidade da bolha mais fraca e da mais forte. */
 const BOLHA_ALPHA_MIN = 0.4;
 const BOLHA_ALPHA_MAX = 0.9;
+
+/**
+ * Uma barra da ESCADA LATERAL, já em pixels lógicos e recortada ao painel.
+ *
+ * ⚠️ `w` é o COMPRIMENTO e ele é a informação — diferente de todo o resto desta camada, em que a
+ * quantidade vira opacidade. É o ponto da escada: comprimento se mede de olho, opacidade não.
+ */
+interface BarraLateral {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly side: 'BID' | 'ASK';
+}
+
+/**
+ * Largura default da escada lateral, em pixels lógicos.
+ *
+ * ⚠️ **64, e a escolha tem conta.** A escada precisa distinguir razões que decidem — 800 contra
+ * 400 contratos, ou seja metade — e a menor diferença perceptível numa barra horizontal é da
+ * ordem de 3 px. Com 64 px de curso, a razão 1:2 sai como 32 px contra 64: inconfundível. Com 24
+ * px sairia 12 contra 24, ainda legível, mas a barra mais fraca (o piso é 1 px) ficaria
+ * indistinguível de sujeira. Acima de ~96 px ela deixa de ser leitura auxiliar e passa a esconder
+ * as velas da borda direita, que é onde o preço está agora.
+ */
+export const PERFIL_LATERAL_LARGURA_PX = 64;
+
+/**
+ * Fração máxima da largura do painel que a escada pode ocupar.
+ *
+ * ⚠️ Recorte necessário e não decorativo: num painel de 120 px (uma célula de grade estreita) a
+ * largura default consumiria mais da metade da tela. Recortar em silêncio é aceitável aqui porque
+ * a escada continua legível proporcionalmente — diferente do recorte de `maxCells`, que é
+ * publicado justamente porque o operador precisaria saber.
+ */
+const PERFIL_LATERAL_FRACAO_MAX = 1 / 3;
+
+/** Comprimento mínimo de barra com quantidade positiva, em pixels lógicos. */
+const PERFIL_LATERAL_BARRA_MIN_PX = 1;
+
+/**
+ * Opacidade das barras da escada.
+ *
+ * ⚠️ Mais opaca que as células do heatmap (que ficam em 0,18..0,92 e são CONTEXTO). A escada vive
+ * na faixa da direita, não sobre as velas, então não compete com nada — e uma barra translúcida
+ * sobre o heatmap por baixo dela ficaria com o comprimento ambíguo, que é justamente o que ela
+ * existe para tornar exato.
+ */
+const PERFIL_LATERAL_ALPHA = 0.78;
+
+/** Fundo da faixa da escada — separa a leitura do heatmap sem esconder as velas por completo. */
+const PERFIL_LATERAL_FUNDO = 'rgba(9, 14, 24, 0.55)';
 
 /** Contorno da bolha — escuro, para separar bolhas encostadas. */
 const BOLHA_CONTORNO = 'rgba(0, 0, 0, 0.45)';
@@ -966,6 +1125,31 @@ class DrawPlan {
   /** Faixas de cobertura ausente. */
   readonly hatch: HatchBand[] = [];
 
+  /**
+   * ⭐ Barras da ESCADA LATERAL. Vazio quando `mostrarPerfilLateral` não foi pedido.
+   *
+   * ⚠️ Vazio por omissão é o que mantém as bancadas herdadas intactas: várias delas afirmam ZERO
+   * retângulos desenhados em estados de só-texto, e a escada é `fillRect`.
+   */
+  readonly perfilLateral: BarraLateral[] = [];
+
+  /**
+   * Faixa que a escada ocupa, em pixels lógicos — `null` quando não há escada.
+   *
+   * Separada das barras porque o FUNDO é desenhado uma vez, e porque a legenda precisa saber que
+   * a faixa existe para poder falar dela.
+   */
+  faixaLateral: { readonly x: number; readonly w: number } | null = null;
+
+  /**
+   * Instante da coluna que a escada mostra, epoch ms — `null` no escopo de janela.
+   *
+   * ⭐ Existe só para a legenda dizer DE QUANDO a escada é. Num pregão devagar a última coluna com
+   * liquidez pode ser de dez minutos atrás, e uma escada parada sem essa informação parece camada
+   * travada — o operador desligaria e religaria a chave procurando defeito que não existe.
+   */
+  perfilLateralTsMs: number | null = null;
+
   /** Linhas da legenda, em pt-BR, de cima para baixo. */
   legend: readonly string[] = [];
 
@@ -1109,6 +1293,9 @@ class DrawPlan {
     this.bolhas.length = 0;
     this.outlines.length = 0;
     this.hatch.length = 0;
+    this.perfilLateral.length = 0;
+    this.faixaLateral = null;
+    this.perfilLateralTsMs = null;
     this.legend = [];
     this.legendAlerta = false;
     this.footer = null;
@@ -1308,6 +1495,13 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
       // ── 5: hachura de cobertura ausente ──
       this.fillHatch(ctx, plan.hatch, scope.bitmapSize.height, hpr, vpr);
 
+      // ── 5b: a ESCADA LATERAL, por último entre as formas ──
+      //
+      // Depois da hachura de propósito: a escada é leitura EXATA e a hachura é uma ressalva sobre o
+      // dado; hachurar por cima da barra tornaria o comprimento dela ambíguo, que é justamente o
+      // que a escada existe para não ser.
+      this.fillPerfilLateral(ctx, plan, scope.bitmapSize.height, hpr, vpr);
+
       // ── 6: legenda e rodapé — NÃO aqui. Ver o desvio no topo deste método.
       //
       // A supressão do conteúdo continua acontecendo no PLANO (listas vazias), não no
@@ -1363,6 +1557,50 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
         const larguraMarca = Math.max(1, Math.floor(c.w / EXEC_MARK_DIVISOR));
         const offset = Math.floor((c.w - larguraMarca) / 2);
         ctx.fillRect((c.x + offset) * hpr, c.y * vpr, larguraMarca * hpr, c.h * vpr);
+      }
+    }
+  }
+
+  /**
+   * ⭐⭐ A ESCADA LATERAL: um fundo e duas listas de barras.
+   *
+   * Três trocas de `fillStyle` no total (fundo, compra, venda), independentemente do número de
+   * níveis — mesma disciplina do agrupamento por bucket do heatmap.
+   *
+   * ⚠️ **Sem bucket de cor, e a ausência é a decisão central desta forma.** No heatmap a
+   * quantidade vira opacidade porque não há espaço para comprimento; aqui a quantidade JÁ é o
+   * comprimento, e modular a opacidade junto tornaria a barra curta também pálida — duas pistas
+   * dizendo o mesmo, com a segunda apagando a primeira. Opacidade única, comprimento variável.
+   *
+   * ⚠️ Verde e vermelho aqui significam o que significam no resto da camada (compra e venda), e é
+   * por isso que a escada não é neutra mesmo em `VOLUME`: naquela métrica o núcleo devolve tudo em
+   * `compra`, então sai uma cor só — e a legenda diz que ali o lado não existe.
+   */
+  private fillPerfilLateral(
+    ctx: CanvasRenderingContext2D,
+    plan: DrawPlan,
+    bitmapHeight: number,
+    hpr: number,
+    vpr: number,
+  ): void {
+    const faixa = plan.faixaLateral;
+    if (faixa === null || plan.perfilLateral.length === 0) return;
+
+    // O fundo cobre a faixa inteira, de topo a base: sem ele as barras flutuam sobre o heatmap e o
+    // olho não sabe onde termina o mapa e começa a leitura.
+    ctx.fillStyle = PERFIL_LATERAL_FUNDO;
+    ctx.fillRect(faixa.x * hpr, 0, faixa.w * hpr, bitmapHeight);
+
+    for (const canal of [CANAL_BID, CANAL_ASK] as const) {
+      const lado = canal === CANAL_BID ? 'BID' : 'ASK';
+      let pintouAlgo = false;
+      for (const barra of plan.perfilLateral) {
+        if (barra.side !== lado) continue;
+        if (!pintouAlgo) {
+          ctx.fillStyle = `rgba(${canal}, ${PERFIL_LATERAL_ALPHA})`;
+          pintouAlgo = true;
+        }
+        ctx.fillRect(barra.x * hpr, barra.y * vpr, barra.w * hpr, barra.h * vpr);
       }
     }
   }
@@ -1761,6 +1999,16 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
   /** Escala da execução — amostra própria, nunca reunida com a da fila. */
   private scaleExec: ColorScale | null = null;
 
+  /**
+   * ⭐ Escala da grandeza DERIVADA (`DELTA` ou `VOLUME`). `null` nas outras métricas.
+   *
+   * ⚠️ Terceira escala, e não reuso da execução: a distribuição de `|compra − venda|` e a de
+   * `compra + venda` **não** são a de cada lado. Mil células de 500×500 têm p99 ≈ 500 por lado,
+   * volume 1.000 e delta zero — a escala de execução pintaria o volume todo saturado e o delta
+   * todo no piso. Ver `computeColorScaleOfCombination`.
+   */
+  private scaleDerivada: ColorScale | null = null;
+
   /** As escalas precisam ser recalculadas antes da próxima passada. */
   private scalesDirty = true;
 
@@ -1931,6 +2179,7 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     this.requestUpdate = null;
     this.scaleFila = null;
     this.scaleExec = null;
+    this.scaleDerivada = null;
     this.lastWindowKey = null;
     this.paletteKeyBase = null;
     this.paletteKeyExec = null;
@@ -2466,11 +2715,39 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     const gamma = this.options.escala === 'P99_LINEAR' ? 1 : undefined;
     const opts = gamma === undefined ? undefined : { gamma };
 
+    // ⭐⭐ ESCOPO da amostra de percentis. `'DIA'` amostra o grid inteiro; ausente ou `'JANELA'`
+    // amostra as células agregadas da janela — o comportamento original.
+    //
+    // ⚠️ As colunas do grid e as agregadas são os DOIS lados da mesma decisão de escopo, e a
+    // diferença não é só de tamanho: as agregadas já passaram por `max` no tempo e no preço, então
+    // a amostra da janela é de PICOS de grupo, e a do dia é de células cruas. É esperado que o p99
+    // do dia seja menor que o de uma janela muito comprimida — a agregação por `max` preserva a
+    // parede, e preservá-la é o ponto.
+    const porDia = this.options.escopoEscala === 'DIA';
+    const amostra = porDia
+      ? { bid: grid.bid, ask: grid.ask, buy: grid.buy, sell: grid.sell, count: grid.ti.length }
+      : { bid: cells.bid, ask: cells.ask, buy: cells.buy, sell: cells.sell, count: cells.count };
+
+    // ⭐ A grandeza DERIVADA das métricas novas: `DELTA` é `|compra − venda|`, `VOLUME` é a soma.
+    const combinacao = metrica === 'DELTA' ? 'DIFERENCA_ABS' : metrica === 'VOLUME' ? 'SOMA' : null;
+
     // Uma escala por grandeza, compartilhada pelos dois lados; escalas
     // independentes para fila e para execução (requisito 2.9).
     if (this.scalesDirty || this.scaleFila === null || this.scaleExec === null) {
-      this.scaleFila = computeColorScalePair(cells.bid, cells.ask, cells.count, opts);
-      this.scaleExec = computeColorScalePair(cells.buy, cells.sell, cells.count, opts);
+      this.scaleFila = computeColorScalePair(amostra.bid, amostra.ask, amostra.count, opts);
+      this.scaleExec = computeColorScalePair(amostra.buy, amostra.sell, amostra.count, opts);
+      // ⚠️ Calculada só quando a métrica a usa. Calcular sempre custaria uma terceira seleção O(n)
+      // por recálculo em quem nunca liga `DELTA` nem `VOLUME` — e a seleção é a parte cara aqui.
+      this.scaleDerivada =
+        combinacao === null
+          ? null
+          : computeColorScaleOfCombination(
+              amostra.buy,
+              amostra.sell,
+              amostra.count,
+              combinacao,
+              opts,
+            );
       this.scalesDirty = false;
     }
     const scaleFila = this.scaleFila;
@@ -2478,9 +2755,10 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
 
     // A grandeza que dimensiona o retângulo base depende da métrica: em
     // `EXECUCAO` o retângulo É a execução, porque é ela a quantidade da métrica
-    // selecionada (critério 1.1).
+    // selecionada (critério 1.1). Em `DELTA` e `VOLUME` é a grandeza derivada.
     const baseIsExec = metrica === 'EXECUCAO';
-    const scaleBase = baseIsExec ? scaleExec : scaleFila;
+    const scaleBase =
+      this.scaleDerivada !== null ? this.scaleDerivada : baseIsExec ? scaleExec : scaleFila;
 
     this.refreshPalettes(scaleBase, scaleExec);
 
@@ -2497,6 +2775,10 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     // sobre as células que chegaram.
     if (coverage.desenhaCelulas) {
       this.buildCells(cells, coords, window, scaleBase, scaleExec, baseIsExec);
+      // ⭐ A escada lateral sai das MESMAS células agregadas, e por isso fica sob a mesma guarda
+      // de cobertura: cobertura `VAZIA` suprime o desenho, e uma escada desenhada ao lado de um
+      // heatmap suprimido afirmaria liquidez que a camada acabou de dizer que não tem.
+      this.buildPerfilLateral(cells, coords, window, metrica);
     }
 
     if (incluiExecucao(metrica)) {
@@ -2508,6 +2790,7 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     plan.vazio =
       plan.outlines.length === 0 &&
       plan.hatch.length === 0 &&
+      plan.perfilLateral.length === 0 &&
       plan.legend.length === 0 &&
       plan.footer === null &&
       !this.anyCells();
@@ -2547,6 +2830,13 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     // inerte — a mesma armadilha do `marcaExec`, que só surtia efeito
     // desligando e religando a camada.
     const termica = this.options.modoCor === 'TERMICA';
+    // ⭐ `VOLUME` NÃO TEM LADO, e pintá-lo de verde ou vermelho seria afirmar um agressor que a
+    // métrica soma justamente para ignorar. Então em modo `LADO` ela usa o canal NEUTRO — o mesmo
+    // cinza claro da marca de execução.
+    //
+    // ⚠️ E a legenda tem de dizer isso, senão o operador acostumado com verde/vermelho lê a
+    // ausência de cor como defeito de renderização. Ver `buildLegend`.
+    const neutro = this.options.metrica === 'VOLUME';
     // ⚠️ FORA do `if` de reconstrução, de propósito: o bloco abaixo é guardado
     // por cache de paleta e NÃO roda quando ela já está montada. Escrever
     // `suavizar` lá dentro amarraria uma decisão de DESENHO ao ciclo de vida de
@@ -2569,9 +2859,18 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     // Canto da legenda: decisão do consumidor, levada ao plano pelo mesmo caminho de
     // `suavizar` (o renderizador não lê `options`). Ver `posicaoLegenda`.
     this.plan.legendaEmBaixo = this.options.posicaoLegenda === 'inferior-esquerda';
-    const chaveBase = `${scaleBase.alphaMin}|${scaleBase.alphaMax}|${termica ? 'T' : 'L'}`;
+    // ⚠️ `neutro` entra na CHAVE pela mesma razão que `termica` entrou: sem ele, trocar de
+    // `VOLUME` para `FILA` com os mesmos limites de opacidade não reconstruiria a paleta e a fila
+    // sairia cinza — o seletor pareceria inerte, que é exatamente a armadilha que o `marcaExec`
+    // já causou uma vez.
+    const chaveBase =
+      `${scaleBase.alphaMin}|${scaleBase.alphaMax}|${termica ? 'T' : 'L'}|${neutro ? 'N' : 'S'}`;
     if (chaveBase !== this.paletteKeyBase || this.plan.paletteBid.length === 0) {
-      if (termica) {
+      if (neutro && !termica) {
+        const p = buildPalette(CANAL_EXEC, scaleBase.alphaMin, scaleBase.alphaMax);
+        this.plan.paletteBid = p;
+        this.plan.paletteAsk = p;
+      } else if (termica) {
         // ⚠️ A MESMA paleta nos dois lados, e é o ponto da rampa térmica: a cor
         // passa a codificar TAMANHO, e o lado se lê pela POSIÇÃO relativa ao
         // preço (fila acima é venda, abaixo é compra) — como no bookmap
@@ -2663,7 +2962,18 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     plan.larguraPainelPx = window.larguraPx;
     plan.alturaPainelPx = window.alturaPx;
 
-    const comExec = incluiExecucao(this.options.metrica);
+    // ⭐ A grandeza derivada, quando há. `null` nas três métricas originais.
+    const derivada = grandezaDerivada(this.options.metrica);
+
+    // ⚠️ A MARCA de execução NÃO sai nas métricas derivadas, e a ausência é decisão: o retângulo
+    // de `DELTA` e de `VOLUME` já é uma conta SOBRE a execução, e marcá-lo com a soma da execução
+    // sobreporia a mesma informação a ela mesma — em `VOLUME` seria literalmente a mesma
+    // quantidade duas vezes, uma como área e outra como barra interna.
+    //
+    // ⚠️ `EXECUCAO` continua recebendo marca, byte a byte como antes: lá o retângulo é UM lado e a
+    // marca é o TOTAL, então as duas dizem coisas diferentes. Há bancada com
+    // `{ metrica: 'EXECUCAO', marcaExec: 'BOLHA' }` que reprova se isso mudar.
+    const comExec = derivada === null && incluiExecucao(this.options.metrica);
     // Ausente ⇒ BARRA: preserva o comportamento das bancadas, que constroem a
     // camada sem informar a opção. Ver `BookmapLayerOptions.marcaExec`.
     const comBolha = comExec && this.options.marcaExec === 'BOLHA';
@@ -2707,16 +3017,56 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
       scratch.buy = buy;
       scratch.sell = sell;
 
-      const qtdBid = baseIsExec ? buy : bid;
-      const qtdAsk = baseIsExec ? sell : ask;
+      // ⭐⭐ AS MÉTRICAS DERIVADAS PRODUZEM **UMA** CÉLULA POR PAR, e não duas.
+      //
+      // É a diferença estrutural delas, e não uma economia: `FILA` e `EXECUCAO` desenham dois
+      // lados porque existem dois números independentes no mesmo preço. `DELTA` e `VOLUME` são UM
+      // número — a subtração e a soma já resolveram os dois lados. Emitir duas células pintaria a
+      // mesma informação duas vezes, uma sobre a outra, e a de cima venceria por acidente de
+      // ordem.
+      //
+      // ⚠️ De onde vem o LADO em cada uma:
+      //  - `DELTA` tira do SINAL. Delta positivo é agressor comprador, e vai para `plan.bid`; o
+      //    canal de cor continua significando o que sempre significou. É o que faz a métrica ser
+      //    legível sem legenda nova.
+      //  - `VOLUME` não tem lado. Vai todo para `plan.bid`, cuja paleta em modo `LADO` é o canal
+      //    NEUTRO justamente por isso (ver `refreshPalettes`). Distribuir entre as duas listas
+      //    daria duas cores para a mesma grandeza.
+      if (derivada !== null) {
+        const bruto = derivada === 'DELTA' ? buy - sell : buy + sell;
+        const magnitude = Math.abs(bruto);
+        // ⚠️ Delta ZERO não gera célula, e é afirmação e não omissão: os dois lados se
+        // equilibraram, e a métrica existe para dizer QUEM VENCEU. Pintar o equilíbrio exigiria um
+        // terceiro canal de cor que esta camada não tem — e pintá-lo no canal de um dos lados
+        // afirmaria um vencedor que não houve. A ausência é a leitura certa: numa região de
+        // absorção o mapa de delta fica quase vazio enquanto o de execução fica cheio, e essa
+        // diferença entre os dois mapas É a informação.
+        if (magnitude > 0) {
+          const lado: 'BID' | 'ASK' = derivada === 'VOLUME' ? 'BID' : bruto > 0 ? 'BID' : 'ASK';
+          this.pushCell(
+            scratch,
+            coords,
+            geom,
+            scaleBase,
+            magnitude,
+            lado,
+            aMin,
+            aMax,
+            lado === 'BID' ? plan.bid : plan.ask,
+          );
+        }
+      } else {
+        const qtdBid = baseIsExec ? buy : bid;
+        const qtdAsk = baseIsExec ? sell : ask;
 
-      // ── passada 1: compra ──
-      if (qtdBid > 0) {
-        this.pushCell(scratch, coords, geom, scaleBase, qtdBid, 'BID', aMin, aMax, plan.bid);
-      }
-      // ── passada 2: venda ──
-      if (qtdAsk > 0) {
-        this.pushCell(scratch, coords, geom, scaleBase, qtdAsk, 'ASK', aMin, aMax, plan.ask);
+        // ── passada 1: compra ──
+        if (qtdBid > 0) {
+          this.pushCell(scratch, coords, geom, scaleBase, qtdBid, 'BID', aMin, aMax, plan.bid);
+        }
+        // ── passada 2: venda ──
+        if (qtdAsk > 0) {
+          this.pushCell(scratch, coords, geom, scaleBase, qtdAsk, 'ASK', aMin, aMax, plan.ask);
+        }
       }
 
       // ── marca de execução, depois dos retângulos de fila ──
@@ -2804,6 +3154,120 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     const list = byBucket[drawn.bucket];
     if (list !== undefined) list.push(drawn);
     if (drawn.aboveScale) this.plan.outlines.push(drawn);
+  }
+
+  /**
+   * A hora da coluna que a escada mostra, ou `null`.
+   *
+   * ⚠️ Usa o MESMO `relogio` que o rodapé de cobertura, e não um formatador próprio. Dois
+   * formatadores nesta camada significariam dois fusos possíveis na mesma tela — e rótulo de
+   * horário que mente sobre o fuso, numa tela de fluxo de ordem, custa dinheiro. Ausente, o
+   * default é o mesmo do núcleo de cobertura (BRT sem segundos).
+   */
+  private horaDaEscada(tsMs: number): string | null {
+    const relogio = this.options.relogio ?? DEFAULT_COVERAGE_CLOCK;
+    try {
+      return relogio(tsMs);
+    } catch {
+      // `makeClockFormatter` já promete não lançar, mas o formatador é injetado pelo consumidor e
+      // aqui vale a regra do callback de terceiro: nada nesta camada derruba a legenda.
+      return null;
+    }
+  }
+
+  /**
+   * ⭐⭐ A ESCADA LATERAL: quantidade por preço, em COMPRIMENTO em vez de em cor.
+   *
+   * A conta pesada (quem é a última coluna, acúmulo por preço, o máximo compartilhado) vive no
+   * núcleo puro `perfilLateralDoBookmap`. Aqui só se converte para pixel.
+   *
+   * ⚠️ **A altura da barra sai de `priceToY`, exatamente como as células do heatmap** — não de uma
+   * divisão da altura do painel pelo número de níveis. É o que faz a escada ficar ALINHADA com o
+   * heatmap ao lado e com o eixo de preço: um nível a 138.420 fica na mesma linha nos dois. Dividir
+   * a altura em partes iguais daria uma escada bonita e desalinhada, que é pior — o operador
+   * traçaria a horizontal pelo lugar errado.
+   *
+   * ⚠️ **Do lado direito para a ESQUERDA.** A borda direita é onde o preço está agora, e é para lá
+   * que o olho vai; barras crescendo da esquerda obrigariam a ler de trás para frente e cobririam
+   * o passado do heatmap, que é a parte que a escada não descreve.
+   */
+  private buildPerfilLateral(
+    cells: AggregatedCells,
+    coords: CoordinateFns,
+    window: VisibleWindow,
+    metrica: MetricaBookmap,
+  ): void {
+    if (this.options.mostrarPerfilLateral !== true) return;
+
+    const larguraPainel = window.larguraPx;
+    if (!isFiniteNumber(larguraPainel) || larguraPainel <= 0) return;
+
+    // ⚠️ A grandeza acompanha a MÉTRICA. Escada de fila ao lado de mapa de execução seriam duas
+    // afirmações diferentes na mesma altura de pixel. `FILA` e `AMBAS` desenham fila; as outras
+    // três são todas sobre execução.
+    const grandeza = metrica === 'FILA' || metrica === 'AMBAS' ? 'FILA' : 'EXECUCAO';
+    const perfil: PerfilLateral | null = perfilLateralDoBookmap(
+      cells,
+      grandeza,
+      this.options.escopoPerfilLateral ?? 'ULTIMA_COLUNA',
+    );
+    if (perfil === null) return;
+
+    const pedida = this.options.larguraPerfilLateral;
+    const base = isFiniteNumber(pedida) && pedida > 0 ? pedida : PERFIL_LATERAL_LARGURA_PX;
+    // Recorte pela fração do painel — ver `PERFIL_LATERAL_FRACAO_MAX`. Piso de 8 px: abaixo disso a
+    // escada não distingue razão alguma e viraria uma listra decorativa.
+    const larguraFaixa = Math.max(
+      8,
+      Math.min(Math.floor(base), Math.floor(larguraPainel * PERFIL_LATERAL_FRACAO_MAX)),
+    );
+    const xDireita = Math.floor(larguraPainel);
+    const xEsquerda = xDireita - larguraFaixa;
+    if (xEsquerda <= 0) return;
+
+    this.plan.faixaLateral = { x: xEsquerda, w: larguraFaixa };
+    this.plan.perfilLateralTsMs = perfil.tsMs;
+
+    // A altura de cada barra é a do grupo de ticks, igual à célula do heatmap.
+    const meiaAltura = (this.options.tickSize * cells.fatorPreco) / 2;
+
+    for (const nivel of perfil.niveis) {
+      const yTopo = coords.priceToY(nivel.preco + meiaAltura);
+      const yBase = coords.priceToY(nivel.preco - meiaAltura);
+      if (yTopo === null || yBase === null) continue;
+      if (!isFiniteNumber(yTopo) || !isFiniteNumber(yBase)) continue;
+
+      const y = Math.round(Math.min(yTopo, yBase));
+      const h = Math.max(1, Math.round(Math.abs(yBase - yTopo)));
+      // Fora do painel: descarta este nível e segue. Nunca lança, na disciplina da camada.
+      if (y + h < 0 || y > window.alturaPx) continue;
+
+      // ⚠️ Os dois lados dividem a MESMA faixa, empilhados um sobre o outro no mesmo `y`, e não em
+      // metades da faixa. O motivo é que num preço só existe um lado quase sempre — dividir a faixa
+      // em duas metades desperdiçaria metade do curso de comprimento em toda barra, e o curso é
+      // exatamente a resolução da leitura. Quando os dois existem (o balde atravessou o spread), o
+      // lado maior fica atrás e o menor na frente, então os dois continuam legíveis.
+      const ordenados: ReadonlyArray<readonly ['BID' | 'ASK', number]> =
+        nivel.compra >= nivel.venda
+          ? [['BID', nivel.compra], ['ASK', nivel.venda]]
+          : [['ASK', nivel.venda], ['BID', nivel.compra]];
+
+      for (const [side, qtd] of ordenados) {
+        if (!(qtd > 0)) continue;
+        const fracao = qtd / perfil.maximo;
+        const comprimento = Math.max(
+          PERFIL_LATERAL_BARRA_MIN_PX,
+          Math.round(fracao * larguraFaixa),
+        );
+        this.plan.perfilLateral.push({
+          x: xDireita - comprimento,
+          y: Math.max(0, y),
+          w: comprimento,
+          h,
+          side,
+        });
+      }
+    }
   }
 
   /**
@@ -2912,6 +3376,7 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
 
     const grandeza = baseIsExec ? 'execução' : rotuloGrandeza(metrica);
     const identidade = `Livro · ${grandeza}`;
+    const derivada = grandezaDerivada(metrica);
     linhas.push(
       diagnostico
         ? `${identidade} · p50 ${formatContratos(scaleBase.p50)} ct · ` +
@@ -2964,11 +3429,57 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     // O que verde e vermelho significam depende da grandeza desenhada: em
     // `EXECUCAO` os retângulos são a execução, e o lado é o agressor. Repetir o
     // texto da fila ali faria a legenda mentir sobre o que está na tela.
+    // ⭐ As derivadas têm leitura de cor PRÓPRIA, e dizê-la é obrigatório:
+    //
+    //  - em `DELTA` a cor é o SINAL, não o lado de uma coluna. E a linha diz o que a AUSÊNCIA
+    //    significa, porque é a informação menos óbvia e a mais valiosa da métrica: célula vazia é
+    //    equilíbrio, não falta de negócio. Sem essa frase o operador leria uma região de absorção
+    //    como uma região sem fluxo — a conclusão oposta.
+    //  - em `VOLUME` não há lado. Dizer isso evita que a ausência de verde e vermelho seja lida
+    //    como defeito de renderização por quem está acostumado com as outras métricas.
+    if (derivada === 'DELTA') {
+      linhas.push('Verde: agressor comprador venceu · Vermelho: vendedor venceu');
+      linhas.push('Célula vazia = os dois lados se equilibraram, e não ausência de negócio');
+    } else if (derivada === 'VOLUME') {
+      linhas.push('Sem lado: a soma dos dois agressores · a cor é só a intensidade');
+    } else {
+      linhas.push(
+        baseIsExec
+          ? 'Verde: agressor comprador · Vermelho: agressor vendedor'
+          : 'Verde: fila de compra · Vermelho: fila de venda',
+      );
+    }
+
+    // ⭐⭐ O ESCOPO da escala entra na legenda, e não no diagnóstico. É deliberado e é a correção de
+    // um defeito de LEITURA: com escala de janela, o operador examina a abertura, vê uma parede
+    // branca, rola para a tarde, vê outra parede branca, e conclui que são equivalentes — podem
+    // diferir por uma ordem de grandeza, porque cada tela foi normalizada pelo próprio p99.
+    //
+    // ⚠️ Os NÚMEROS (p50/p99) seguem no diagnóstico; o que é legenda é a advertência de que a cor
+    // é relativa e a QUÊ. Uma escala relativa sem essa frase é uma régua sem unidade.
     linhas.push(
-      baseIsExec
-        ? 'Verde: agressor comprador · Vermelho: agressor vendedor'
-        : 'Verde: fila de compra · Vermelho: fila de venda',
+      this.options.escopoEscala === 'DIA'
+        ? 'Escala do DIA: a mesma cor é a mesma quantidade em qualquer hora'
+        : 'Escala da JANELA: a cor é relativa ao que está na tela e recalibra ao dar zoom',
     );
+
+    // A escada lateral precisa se apresentar: uma faixa de barras na borda direita é
+    // indistinguível de um histograma de volume ou de um perfil de velas para quem não a ligou.
+    if (this.plan.faixaLateral !== null) {
+      const escadaDeFila = metrica === 'FILA' || metrica === 'AMBAS';
+      linhas.push(
+        `Escada à direita: ${escadaDeFila ? 'fila' : 'execução'} por preço · comprimento = quantidade`,
+      );
+      // ⭐ DE QUANDO ela é. Num pregão devagar a última coluna com liquidez pode ser de dez minutos
+      // atrás, e uma escada parada sem essa informação parece camada travada.
+      const ts = this.plan.perfilLateralTsMs;
+      if (ts !== null) {
+        const hora = this.horaDaEscada(ts);
+        if (hora !== null) linhas.push(`Escada: livro de ${hora}`);
+      } else {
+        linhas.push('Escada: acumulado da janela visível');
+      }
+    }
 
     // Retomada em curso: a camada voltou a desenhar, mas nenhuma passada ainda
     // concluiu sem exceção. O aviso continua até haver evidência (requisito 10.7),

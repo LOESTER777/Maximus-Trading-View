@@ -165,9 +165,18 @@ function chamar(
   });
 }
 
-/** A métrica informada faz o desenho incluir execução (a condição de 7.2). */
+/**
+ * A métrica informada faz o desenho incluir execução (a condição de 7.2).
+ *
+ * ⚠️ `DELTA` e `VOLUME` entraram junto com as métricas: as duas são contas sobre
+ * `execCompra`/`execVenda`, então num intervalo sem execução capturada elas desenham ZERO e a tela
+ * afirmaria "nenhum negócio" onde a verdade é "ninguém gravou". Este espelho existe para que a
+ * propriedade reprove se o núcleo esquecer uma delas.
+ */
 function incluiExecucao(metrica: unknown): boolean {
-  return metrica === 'EXECUCAO' || metrica === 'AMBAS';
+  return (
+    metrica === 'EXECUCAO' || metrica === 'AMBAS' || metrica === 'DELTA' || metrica === 'VOLUME'
+  );
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -245,10 +254,24 @@ const arbClasseQualquer = fc.oneof(
   { arbitrary: fc.constantFrom(null, undefined, 0, 1, true, false), weight: 2 },
 );
 
-const arbMetricaConhecida = fc.constantFrom<MetricaBookmap>('FILA', 'EXECUCAO', 'AMBAS');
+// ⚠️ Lista LITERAL e não derivada do tipo: métrica nova acrescentada à união sem entrar aqui
+// passaria em silêncio e a propriedade deixaria de cobri-la. `DELTA` e `VOLUME` entraram na mesma
+// edição que as criou, de propósito.
+const arbMetricaConhecida = fc.constantFrom<MetricaBookmap>(
+  'FILA',
+  'EXECUCAO',
+  'AMBAS',
+  'DELTA',
+  'VOLUME',
+);
 
-/** Só as métricas que fazem o desenho incluir execução. */
-const arbMetricaComExecucao = fc.constantFrom<MetricaBookmap>('EXECUCAO', 'AMBAS');
+/** Só as métricas que fazem o desenho incluir execução — agora quatro, e não duas. */
+const arbMetricaComExecucao = fc.constantFrom<MetricaBookmap>(
+  'EXECUCAO',
+  'AMBAS',
+  'DELTA',
+  'VOLUME',
+);
 
 /** Métrica como pode chegar do painel, inclusive fora da união. */
 const arbMetricaQualquer = fc.oneof(

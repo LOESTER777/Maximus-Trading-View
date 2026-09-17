@@ -87,6 +87,15 @@ export type { BookmapLayerOptions } from './BookmapPrimitive.js';
  */
 export { resetBookmapSessionWarnings } from './BookmapPrimitive.js';
 
+/**
+ * ⭐ Largura default da ESCADA LATERAL do bookmap, em pixels lógicos.
+ *
+ * Exportada porque quem monta a interface precisa dela para reservar espaço: a escada ocupa a borda
+ * direita da área de plotagem, e é ali que um perfil de volume de velas também costuma viver. Sem
+ * o número, o consumidor descobriria a colisão na tela.
+ */
+export { PERFIL_LATERAL_LARGURA_PX } from './BookmapPrimitive.js';
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Footprint — volume por preco dentro de cada vela
 // ═════════════════════════════════════════════════════════════════════════════

@@ -153,8 +153,36 @@ const HORARIO_AUSENTE = 'não informado';
 /** As quatro classes de cobertura conhecidas. */
 export type ClasseCoberturaConhecida = (typeof CLASSES_CONHECIDAS)[number];
 
-/** Métrica selecionada no painel — a mesma união de `BookmapLayerOptions`. */
-export type MetricaBookmap = 'FILA' | 'EXECUCAO' | 'AMBAS';
+/**
+ * Métrica selecionada no painel — a mesma união de `BookmapLayerOptions`.
+ *
+ * ── AS CINCO, E O QUE DISTINGUE CADA UMA ──────────────────────────────────
+ *
+ * | métrica | grandeza | células por par (t,p) | de onde vem o LADO |
+ * |---|---|---|---|
+ * | `FILA` | fila em repouso, PICO no balde | duas (compra e venda) | a coluna |
+ * | `EXECUCAO` | volume por AGRESSOR, SOMA | duas (comprador e vendedor) | a coluna |
+ * | `AMBAS` | fila, com a execução marcada por cima | duas + a marca | a coluna |
+ * | `DELTA` | `execCompra − execVenda` | **uma** | o SINAL |
+ * | `VOLUME` | `execCompra + execVenda` | **uma** | não tem |
+ *
+ * ⭐⭐ As duas novas são **derivadas**, e é isso que as torna leituras diferentes e não
+ * apenas outra cor para o mesmo dado:
+ *
+ * - `DELTA` responde *"quem venceu aqui"*. `EXECUCAO` já mostra os dois lados, mas em duas
+ *   células que o olho tem de comparar; o delta faz a subtração e pinta o resultado. Numa
+ *   região de absorção — muito volume dos dois lados e preço parado — `EXECUCAO` mostra duas
+ *   manchas fortes e `DELTA` mostra quase nada, que é exatamente a informação.
+ * - `VOLUME` responde *"onde foi negociado"*, sem lado. É a pergunta do perfil de volume, e
+ *   um agressor não a responde: 500 comprados e 500 vendidos no mesmo preço são mil contratos
+ *   de interesse naquele nível, e nas duas métricas por lado eles aparecem como duas manchas
+ *   médias em vez de uma forte.
+ *
+ * ⚠️ As duas dependem de `execCompra`/`execVenda`, então **contam como "inclui execução"** para
+ * a cobertura: a hachura de execução não capturada tem de aparecer nelas. Ver
+ * `metricaIncluiExecucao` — a guarda foi estendida junto, e não depois.
+ */
+export type MetricaBookmap = 'FILA' | 'EXECUCAO' | 'AMBAS' | 'DELTA' | 'VOLUME';
 
 /**
  * Por que um intervalo do dia ficou sem execução capturada.
@@ -299,9 +327,18 @@ function isInstante(value: unknown): value is number {
   return isFiniteNumber(value) && Math.abs(value) <= MAX_EPOCH_MS;
 }
 
-/** Normaliza a métrica e responde se o desenho inclui execução. */
+/**
+ * Normaliza a métrica e responde se o desenho inclui execução.
+ *
+ * ⚠️⚠️ `DELTA` e `VOLUME` entram AQUI, e a omissão teria sido silenciosa e grave: as duas são
+ * derivadas de `execCompra`/`execVenda`, então num intervalo em que a execução não foi capturada
+ * elas desenham ZERO e a tela afirmaria "nenhum negócio" onde a verdade é "ninguém gravou".
+ * A hachura existe exatamente para dizer a diferença.
+ */
 function metricaIncluiExecucao(metrica: unknown): boolean {
-  return metrica === 'EXECUCAO' || metrica === 'AMBAS';
+  return (
+    metrica === 'EXECUCAO' || metrica === 'AMBAS' || metrica === 'DELTA' || metrica === 'VOLUME'
+  );
 }
 
 /** Normaliza a duração do balde para milissegundos, sempre positiva. */
