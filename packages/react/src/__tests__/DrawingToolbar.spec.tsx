@@ -256,8 +256,32 @@ describe('DrawingToolbar — estrutura e grupos', () => {
       expect(within(barra).getByRole('group', { name: nome })).toBeTruthy();
     }
 
-    // Separador visual entre grupos: cinco para seis familias, nunca um solto no fim.
-    expect(within(barra).getAllByRole('separator')).toHaveLength(5);
+    // ⭐ `Posição` entrou como grupo PROPRIO (e nao dentro de Formas ou Medição): ela nao e
+    // forma nem medida, e a pergunta que precede a ordem — quanto se perde estando errado e
+    // quanto se ganha estando certo.
+    expect(within(barra).getByRole('group', { name: 'Posição' })).toBeTruthy();
+    // Separador visual entre grupos: um a menos que o numero de familias, nunca um solto no
+    // fim. Sete familias agora.
+    expect(within(barra).getAllByRole('separator')).toHaveLength(6);
+  });
+
+  it('⭐ NENHUM atalho e usado por duas ferramentas', () => {
+    // ⚠️ Este teste existe porque a colisao ACONTECEU: ao acrescentar as ferramentas de
+    // posicao eu dei `A` a seta (que o ima ja usava) e `E` a extensao de Fibonacci (que a
+    // reta infinita ja usava). O sintoma nao e erro nenhum — o atalho aciona o PRIMEIRO item
+    // que casa, e o operador aperta a tecla de sempre e recebe outra ferramenta. Foi o teste
+    // do ima que pegou uma das duas; sem uma guarda geral, a proxima colisao passa.
+    const d = fakeDrawings();
+    render(<DrawingToolbar drawings={d} onToggleSnap={() => undefined} />);
+
+    const atalhos = within(screen.getByRole('toolbar', { name: 'Ferramentas de desenho' }))
+      .getAllByRole('button')
+      .map((b) => b.getAttribute('aria-keyshortcuts'))
+      .filter((a): a is string => a !== null && a !== '');
+
+    // Guarda de vacuidade: sem atalho lido, a assercao de unicidade seria vazia.
+    expect(atalhos.length).toBeGreaterThan(8);
+    expect(new Set(atalhos).size).toBe(atalhos.length);
   });
 
   it('honra orientation horizontal', () => {

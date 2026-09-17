@@ -213,3 +213,7 @@ export type {
   AnoSazonal,
   TermometroLido,
 } from './AssetReadout.js';
+
+// ⭐ A arvore de OBJETOS do grafico (indicadores, desenhos, alertas) — ver `ObjectTree.tsx`.
+export { ObjectTree } from './ObjectTree.js';
+export type { ObjectTreeProps, ObjectTreeGroup, ObjectTreeItem } from './ObjectTree.js';

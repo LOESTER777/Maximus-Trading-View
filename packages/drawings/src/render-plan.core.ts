@@ -37,6 +37,7 @@
 import {
   ANCHORS_REQUIRED,
   fibLevelsOf,
+  rMultipleOf,
   isComplete,
   isVisible,
   type Drawing,
@@ -46,6 +47,7 @@ import {
 import {
   HIT_TOLERANCE_PX,
   boxOfPoints,
+  boxesIntersect,
   bothFinite,
   extendLineToBox,
   lerp,
@@ -162,6 +164,17 @@ export interface FibLine {
  * `points` sao as ancoras projetadas, na MESMA ordem do modelo: e por isso que o
  * indice de alca devolvido pelo hit-test pode ser usado direto em `withAnchor`.
  */
+/**
+ * As cores das zonas de posicao.
+ *
+ * ⚠️ Fixas, e nao configuraveis: verde e lucro e vermelho e risco em toda mesa do mundo, e
+ * uma posicao com as cores trocadas seria lida ao contrario por qualquer operador que olhasse
+ * a tela de longe. Alpha baixo porque a zona e FUNDO — ela nao pode cobrir a vela que a
+ * justifica.
+ */
+const COR_ZONA_LUCRO = 'rgba(22, 199, 132, 0.16)';
+const COR_ZONA_RISCO = 'rgba(234, 57, 67, 0.16)';
+
 export interface ScreenDrawing {
   readonly id: string;
   readonly kind: DrawingKind;
@@ -173,6 +186,17 @@ export interface ScreenDrawing {
   readonly region: Box | null;
   /** Niveis de Fibonacci projetados. */
   readonly fibLines: readonly FibLine[];
+  /**
+   * ⭐ Zonas preenchidas com cor PROPRIA — o risco e o retorno da ferramenta de posicao.
+   *
+   * ⚠️ Separadas de `region`, que usa `style.fill` (a cor do desenho). Aqui a cor NAO e
+   * escolha estetica: verde e a zona de lucro e vermelho e a de risco, e trocar isso
+   * inverteria a leitura da ferramenta. Passar as duas por `style.fill` daria uma cor so
+   * para as duas zonas — a informacao central desapareceria.
+   *
+   * Vazio para todo desenho que nao seja posicao.
+   */
+  readonly zonas: readonly { readonly box: Box; readonly cor: string }[];
   /** Caixa envolvente COM a folga de tolerancia, para o prefiltro. */
   readonly box: Box;
   /** Bloqueado: pinta, mas nao participa do hit-test. */
@@ -286,6 +310,7 @@ function projectOne(
         strokes,
         region: null,
         fibLines: [],
+        zonas: [],
         // A caixa cobre a largura toda: a linha e acertavel em qualquer X.
         box: { minX: 0, maxX: largura, minY: p0.y - HIT_TOLERANCE_PX, maxY: p0.y + HIT_TOLERANCE_PX },
         locked,
@@ -303,6 +328,7 @@ function projectOne(
         strokes,
         region: null,
         fibLines: [],
+        zonas: [],
         box: { minX: p0.x - HIT_TOLERANCE_PX, maxX: p0.x + HIT_TOLERANCE_PX, minY: 0, maxY: altura },
         locked,
         style,
@@ -324,6 +350,7 @@ function projectOne(
         strokes: [{ a: p0, b: p1 }],
         region: null,
         fibLines: [],
+        zonas: [],
         box: boxOfPoints(pontos, HIT_TOLERANCE_PX) ?? recorte,
         locked,
         style,
@@ -352,6 +379,7 @@ function projectOne(
         strokes: [{ a: ini, b: fim }],
         region: null,
         fibLines: [],
+        zonas: [],
         // A caixa e a do TRACO recortado, nao a das ancoras: a reta e acertavel
         // onde ela aparece, e nao apenas entre os dois cliques do usuario.
         box: boxOfPoints([ini, fim], HIT_TOLERANCE_PX) ?? recorte,
@@ -390,6 +418,7 @@ function projectOne(
         strokes: cantos,
         region: regiao,
         fibLines: [],
+        zonas: [],
         box: {
           minX: regiao.minX - HIT_TOLERANCE_PX,
           maxX: regiao.maxX + HIT_TOLERANCE_PX,
@@ -430,6 +459,7 @@ function projectOne(
         strokes: [{ a: p0, b: p1 }],
         region: null,
         fibLines,
+        zonas: [],
         box: {
           minX: x1 - HIT_TOLERANCE_PX,
           maxX: x2 + HIT_TOLERANCE_PX,
@@ -441,6 +471,191 @@ function projectOne(
       };
     }
 
+    case 'HORIZONTAL_RAY': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+      // ⚠️ O preco vem da PRIMEIRA ancora e o sentido da segunda. A segunda serve para o
+      // operador dizer "para a direita" arrastando; o `y` dela e ignorado de proposito —
+      // um raio horizontal cujo preco mudasse com a altura do arrasto seria impossivel de
+      // colocar exatamente num topo.
+      const paraDireita = p1.x >= p0.x;
+      const strokes: Stroke[] = [
+        { a: p0, b: { x: paraDireita ? largura : 0, y: p0.y } },
+      ];
+      if (p0.y < recorte.minY || p0.y > recorte.maxY) return null;
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes,
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: {
+          minX: paraDireita ? p0.x - HIT_TOLERANCE_PX : 0,
+          maxX: paraDireita ? largura : p0.x + HIT_TOLERANCE_PX,
+          minY: p0.y - HIT_TOLERANCE_PX,
+          maxY: p0.y + HIT_TOLERANCE_PX,
+        },
+        locked,
+        style,
+      };
+    }
+    case 'ARROW': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      const comprimento = Math.hypot(dx, dy);
+      // ⚠️ Seta de comprimento zero nao tem direcao: a ponta sairia com angulo `NaN` e o
+      // canvas simplesmente nao pintaria nada. Degrada para o segmento puro.
+      const strokes: Stroke[] = [{ a: p0, b: p1 }];
+      if (comprimento > 1) {
+        // ⭐ A ponta como DOIS segmentos: herda cor, espessura, tracejado, acerto de ponteiro
+        // e recorte sem tocar no renderizador. O tamanho acompanha o comprimento (com teto),
+        // senao uma seta curta viraria só ponta e uma longa teria uma ponta minúscula.
+        const tamanho = Math.min(14, Math.max(6, comprimento * 0.18));
+        const ang = Math.atan2(dy, dx);
+        const abertura = 0.42; // ~24°, a abertura que lê como seta sem virar V
+        for (const sinal of [-1, 1]) {
+          const a2 = ang + Math.PI + sinal * abertura;
+          strokes.push({
+            a: p1,
+            b: { x: p1.x + Math.cos(a2) * tamanho, y: p1.y + Math.sin(a2) * tamanho },
+          });
+        }
+      }
+      const caixa = boxOfPoints([p0, p1], HIT_TOLERANCE_PX + 14);
+      if (caixa === null) return null;
+      if (!boxesIntersect(caixa, recorte)) return null;
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes,
+        region: null,
+        fibLines: [],
+        zonas: [],
+        box: caixa,
+        locked,
+        style,
+      };
+    }
+    case 'FIB_EXTENSION': {
+      // ⭐ MESMA geometria da retracao: `lerp` com nivel > 1 projeta ALEM da segunda ancora,
+      // que e exatamente o que a extensao mede. O que difere sao os niveis default, e isso
+      // vive em `fibLevelsOf` — reimplementar a projecao aqui daria duas verdades.
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+      const x1 = Math.min(p0.x, p1.x);
+      const x2 = Math.max(p0.x, p1.x);
+      const fibLines: FibLine[] = fibLevelsOf(d).map((level) => ({
+        level,
+        y: lerp(p0.y, p1.y, level),
+        x1,
+        x2,
+      }));
+      const ys = fibLines.map((l) => l.y);
+      const minY = Math.min(...ys, p0.y, p1.y);
+      const maxY = Math.max(...ys, p0.y, p1.y);
+      if (x2 < recorte.minX || x1 > recorte.maxX || maxY < recorte.minY || minY > recorte.maxY) {
+        return null;
+      }
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        strokes: [{ a: p0, b: p1 }],
+        region: null,
+        fibLines,
+        zonas: [],
+        box: {
+          minX: x1 - HIT_TOLERANCE_PX,
+          maxX: x2 + HIT_TOLERANCE_PX,
+          minY: minY - HIT_TOLERANCE_PX,
+          maxY: maxY + HIT_TOLERANCE_PX,
+        },
+        locked,
+        style,
+      };
+    }
+    case 'POSITION_LONG':
+    case 'POSITION_SHORT': {
+      const p1 = pontos[1];
+      if (p1 === undefined) return null;
+      // ⭐ A: entrada. B: stop. O alvo e derivado — ver `POSITION_LONG` no modelo.
+      const yEntrada = p0.y;
+      const yStop = p1.y;
+      const risco = yStop - yEntrada; // em PIXEL, com sinal
+      // ⚠️ Stop no mesmo pixel da entrada nao define posicao: a zona de risco teria altura
+      // zero e a de lucro nasceria de uma divisao sem sentido. Degrada para o traco da
+      // entrada, que e informacao verdadeira (o operador ainda esta colocando).
+      if (Math.abs(risco) < 1) {
+        return {
+          id: d.id,
+          kind: d.kind,
+          points: pontos,
+          strokes: [{ a: { x: p0.x, y: yEntrada }, b: { x: largura, y: yEntrada } }],
+          region: null,
+          fibLines: [],
+          zonas: [],
+          box: {
+            minX: p0.x - HIT_TOLERANCE_PX,
+            maxX: largura,
+            minY: yEntrada - HIT_TOLERANCE_PX,
+            maxY: yEntrada + HIT_TOLERANCE_PX,
+          },
+          locked,
+          style,
+        };
+      }
+      // O alvo fica do lado OPOSTO ao stop, a `rMultiple` vezes a distancia.
+      const yAlvo = yEntrada - risco * rMultipleOf(d);
+
+      // A extensao horizontal: da entrada para a direita, ate a coluna do stop ou, se ela
+      // ficar atras, uma largura minima. Uma posicao sem largura visivel nao se le.
+      const xInicio = Math.min(p0.x, p1.x);
+      const xFim = Math.max(p0.x + 60, Math.max(p0.x, p1.x));
+
+      const caixa = (yA: number, yB: number): Box => ({
+        minX: xInicio,
+        maxX: xFim,
+        minY: Math.min(yA, yB),
+        maxY: Math.max(yA, yB),
+      });
+      const zonaRisco = caixa(yEntrada, yStop);
+      const zonaLucro = caixa(yEntrada, yAlvo);
+
+      const envolvente: Box = {
+        minX: xInicio - HIT_TOLERANCE_PX,
+        maxX: xFim + HIT_TOLERANCE_PX,
+        minY: Math.min(zonaRisco.minY, zonaLucro.minY) - HIT_TOLERANCE_PX,
+        maxY: Math.max(zonaRisco.maxY, zonaLucro.maxY) + HIT_TOLERANCE_PX,
+      };
+      if (!boxesIntersect(envolvente, recorte)) return null;
+
+      return {
+        id: d.id,
+        kind: d.kind,
+        points: pontos,
+        // Tres tracos horizontais: entrada, stop e alvo. Sao eles que dao o preco exato de
+        // cada nivel — a zona pintada da a proporcao, o traco da o numero.
+        strokes: [
+          { a: { x: xInicio, y: yEntrada }, b: { x: xFim, y: yEntrada } },
+          { a: { x: xInicio, y: yStop }, b: { x: xFim, y: yStop } },
+          { a: { x: xInicio, y: yAlvo }, b: { x: xFim, y: yAlvo } },
+        ],
+        region: null,
+        fibLines: [],
+        zonas: [
+          { box: zonaRisco, cor: COR_ZONA_RISCO },
+          { box: zonaLucro, cor: COR_ZONA_LUCRO },
+        ],
+        box: envolvente,
+        locked,
+        style,
+      };
+    }
     default: {
       // Ferramenta nova sem projecao: nao desenha, em vez de desenhar errado.
       return null;

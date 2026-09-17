@@ -81,6 +81,7 @@ import {
   type ToolbarToggleItem,
   type ToolbarActionItem,
   AssetReadout,
+  ObjectTree,
 } from '@robustus/charts-react';
 // ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
 // que já estão na tela, sem requisição nova.
@@ -611,6 +612,76 @@ function App(): JSX.Element {
 
   const alertas = useAlerts({ bars: velasBase, alerts: alertSpecs });
 
+  /**
+   * ⭐ A ÁRVORE DE OBJETOS: tudo o que está no gráfico, em lista.
+   *
+   * ⚠️ Os desenhos são identificados por TIPO + preço, e não por id: o id é opaco
+   * (`drawing-7`) e não diz nada a quem olha. "Linha horizontal · 188.420" localiza o objeto
+   * na tela sem o operador ter de clicar em cada um para descobrir qual é.
+   */
+  const gruposDeObjetos = useMemo(() => {
+    const rotuloDeDesenho: Record<string, string> = {
+      TRENDLINE: 'Linha de tendência',
+      RAY: 'Raio',
+      EXTENDED_LINE: 'Reta infinita',
+      HORIZONTAL_LINE: 'Linha horizontal',
+      HORIZONTAL_RAY: 'Raio horizontal',
+      VERTICAL_LINE: 'Linha vertical',
+      RECTANGLE: 'Retângulo',
+      ARROW: 'Seta',
+      FIB_RETRACEMENT: 'Retração de Fib.',
+      FIB_EXTENSION: 'Extensão de Fib.',
+      MEASURE: 'Régua',
+      POSITION_LONG: 'Posição de compra',
+      POSITION_SHORT: 'Posição de venda',
+    };
+    return [
+      {
+        id: 'indicadores',
+        label: 'Indicadores',
+        emptyHint: 'Nenhum indicador no gráfico. Escolha um na caixa de indicadores.',
+        items: indicadores.active.map((a) => ({
+          id: a.id,
+          label: indicadores.entryOf(a.name)?.label ?? a.name,
+          ...(a.colors?.['value'] === undefined ? {} : { color: a.colors['value'] }),
+          visible: a.visible,
+          onToggleVisible: () => indicadores.setVisible(a.id, !a.visible),
+          onRemove: () => indicadores.remove(a.id),
+          // Clicar no nome abre as propriedades — o mesmo caminho do clique no gráfico.
+          onSelect: () =>
+            setIndicadorClicado((atual) => ({ id: a.id, nonce: (atual?.nonce ?? 0) + 1 })),
+        })),
+      },
+      {
+        id: 'desenhos',
+        label: 'Desenhos',
+        emptyHint: 'Nenhum desenho. Escolha uma ferramenta na barra à esquerda.',
+        items: desenho.drawings.map((d) => {
+          const preco = d.anchors[0]?.price;
+          return {
+            id: d.id,
+            label: rotuloDeDesenho[d.kind] ?? d.kind,
+            ...(preco === undefined ? {} : { detail: preco.toFixed(1) }),
+            selected: desenho.selectedIds.includes(d.id),
+            onRemove: () => desenho.load(desenho.drawings.filter((x) => x.id !== d.id)),
+          };
+        }),
+      },
+      {
+        id: 'alertas',
+        label: 'Alertas',
+        emptyHint: 'Nenhum alerta armado.',
+        items: alertas.alerts.map(([key, alert]) => ({
+          id: key,
+          label: key === 'cross-acima' ? 'Cruzar ↑' : 'Cruzar ↓',
+          detail: alert.state === 'TRIGGERED' ? 'disparado' : 'armado',
+          color: alert.state === 'TRIGGERED' ? '#fbbf24' : '#64748b',
+        })),
+      },
+    ];
+  }, [indicadores, desenho, alertas.alerts]);
+
+
   const linhasAlerta = useMemo<ChartPriceLine[]>(
     () =>
       alertasLigados
@@ -1079,6 +1150,20 @@ function App(): JSX.Element {
               gauge={termometro}
               rotulosTecnicos={ROTULO_TECNICO}
             />
+          </CollapsiblePanel>
+
+          {/*
+            ⭐ A ÁRVORE de objetos vem antes da caixa de indicadores: ela é o ÍNDICE do que já
+            está na tela, e a caixa é o catálogo do que se pode acrescentar. Ver o que existe
+            precede escolher o que somar.
+          */}
+          <CollapsiblePanel
+            title="Objetos no gráfico"
+            icon="settings"
+            badge={`${gruposDeObjetos.reduce((n, g) => n + g.items.length, 0)}`}
+            hint="Tudo o que está desenhado: indicadores, desenhos e alertas. Esconda, remova ou abra as propriedades daqui."
+          >
+            <ObjectTree groups={gruposDeObjetos} />
           </CollapsiblePanel>
 
           <CollapsiblePanel

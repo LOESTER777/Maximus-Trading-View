@@ -92,6 +92,11 @@
 export {
   ANCHORS_REQUIRED,
   FIB_LEVELS_DEFAULT,
+  // ⭐ Ferramentas novas: os niveis default da EXTENSAO de Fibonacci e o multiplo de risco
+  // das ferramentas de POSICAO.
+  FIB_EXTENSION_LEVELS_DEFAULT,
+  R_MULTIPLE_DEFAULT,
+  rMultipleOf,
   createDefaultIdFactory,
   createDrawing,
   fibLevelsOf,

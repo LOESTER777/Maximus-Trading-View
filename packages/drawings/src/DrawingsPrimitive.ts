@@ -57,6 +57,7 @@ import type {
 import {
   HANDLE_RADIUS_PX,
   HIT_TOLERANCE_PX,
+  type Box,
   type Point,
 } from './geometry.core.js';
 import { cursorFor, hitTest, type Hit } from './hit-test.core.js';
@@ -128,6 +129,8 @@ class DrawingsRenderer implements IPrimitivePaneRenderer {
     // Ordem: regiao, traco, nivel, previa, alca. A alca vai por ULTIMO para ficar
     // acima de tudo — ela e o alvo do gesto, e alvo escondido nao serve.
     if (this.plan !== null) {
+      // ⭐ Zonas ANTES das regiões e dos traços: elas são fundo (ver `fillZones`).
+      this.fillZones(ctx, this.plan.items, hpr, vpr);
       this.fillRegions(ctx, this.plan.items, hpr, vpr);
       this.strokeAll(ctx, this.plan.items, hpr, vpr);
       this.strokeFibLevels(ctx, this.plan.items, hpr, vpr);
@@ -137,6 +140,45 @@ class DrawingsRenderer implements IPrimitivePaneRenderer {
     }
     if (this.plan !== null) {
       this.drawHandles(ctx, this.plan.items, hpr, vpr);
+    }
+  }
+
+  /**
+   * ⭐ As ZONAS de cor própria — risco e retorno da ferramenta de posição.
+   *
+   * ⚠️ Separadas de `fillRegions` porque a cor vem da ZONA e não do estilo do desenho: verde
+   * é lucro e vermelho é risco, e passar as duas por `style.fill` daria uma cor só para as
+   * duas — a informação central da ferramenta desapareceria.
+   *
+   * ⚠️ Desenhadas ANTES dos traços (é o primeiro método chamado no laço de pintura): a zona é
+   * fundo, e os traços de entrada/stop/alvo têm de ficar legíveis sobre ela.
+   */
+  private fillZones(
+    ctx: CanvasRenderingContext2D,
+    items: readonly ScreenDrawing[],
+    hpr: number,
+    vpr: number,
+  ): void {
+    // Agrupa por cor, como as regiões: uma troca de `fillStyle` por grupo em vez de uma por
+    // zona. Com várias posições na tela são duas trocas no total.
+    const porCor = new Map<string, Array<{ readonly box: Box }>>();
+    for (const it of items) {
+      for (const z of it.zonas) {
+        const lista = porCor.get(z.cor);
+        if (lista === undefined) porCor.set(z.cor, [{ box: z.box }]);
+        else lista.push({ box: z.box });
+      }
+    }
+    for (const [cor, lista] of porCor) {
+      ctx.fillStyle = cor;
+      for (const { box } of lista) {
+        ctx.fillRect(
+          box.minX * hpr,
+          box.minY * vpr,
+          Math.max(1, (box.maxX - box.minX) * hpr),
+          Math.max(1, (box.maxY - box.minY) * vpr),
+        );
+      }
     }
   }
 

@@ -59,6 +59,12 @@ export type IconName =
   | 'horizontalLine'
   | 'verticalLine'
   | 'rectangle'
+  // ⭐ Ferramentas novas: raio horizontal, seta, extensão de Fibonacci e as duas posições.
+  | 'horizontalRay'
+  | 'arrow'
+  | 'fibExtension'
+  | 'positionLong'
+  | 'positionShort'
   | 'fibonacci'
   | 'measure'
   | 'magnet'
@@ -156,6 +162,44 @@ const GEOMETRIA: Readonly<Record<IconName, ReactNode>> = {
     </>
   ),
   rectangle: <rect x="4" y="6" width="16" height="12" rx="1.5" />,
+  // ⭐ Ícones das ferramentas novas. Todos em traço, 24×24, `currentColor` — a mesma regra
+  // dos existentes: o ícone herda a cor do estado (ativo/inativo) sem duas variantes.
+  horizontalRay: (
+    <>
+      <path d="M4 12h15" />
+      <circle cx="4" cy="12" r="1.8" fill="currentColor" stroke="none" />
+      <path d="M16 9l3 3-3 3" />
+    </>
+  ),
+  arrow: (
+    <>
+      <path d="M4 19L19 5" />
+      <path d="M12 5h7v7" />
+    </>
+  ),
+  fibExtension: (
+    <>
+      <path d="M4 18h16" />
+      <path d="M4 13h16" />
+      <path d="M8 8h12" strokeDasharray="3 2" />
+      <path d="M8 4h12" strokeDasharray="3 2" />
+    </>
+  ),
+  positionLong: (
+    <>
+      {/* A zona de lucro acima da entrada, a de risco abaixo — a leitura da ferramenta. */}
+      <rect x="5" y="5" width="14" height="6" rx="1" opacity="0.45" />
+      <rect x="5" y="13" width="14" height="4" rx="1" opacity="0.2" />
+      <path d="M3 11.8h18" />
+    </>
+  ),
+  positionShort: (
+    <>
+      <rect x="5" y="7" width="14" height="4" rx="1" opacity="0.2" />
+      <rect x="5" y="13" width="14" height="6" rx="1" opacity="0.45" />
+      <path d="M3 12.2h18" />
+    </>
+  ),
   // Fibonacci: niveis desiguais, como os 0.236/0.382/0.618 que ele traca.
   fibonacci: (
     <>

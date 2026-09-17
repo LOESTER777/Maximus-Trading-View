@@ -187,6 +187,15 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
         shortcut: 'H',
       },
       {
+        id: 'horizontalRay',
+        kind: 'TOOL',
+        tool: 'HORIZONTAL_RAY',
+        icon: 'horizontalRay',
+        label: 'Raio horizontal',
+        hint: 'Nível que vale a partir do ponto marcado para a direita — e não antes dele. Um topo formado às 10h não era resistência às 9h.',
+        shortcut: 'J',
+      },
+      {
         id: 'verticalLine',
         kind: 'TOOL',
         tool: 'VERTICAL_LINE',
@@ -201,6 +210,15 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
     id: 'shapes',
     label: 'Formas',
     items: [
+      {
+        id: 'arrow',
+        kind: 'TOOL',
+        tool: 'ARROW',
+        icon: 'arrow',
+        label: 'Seta',
+        hint: 'Aponta para o que importa na tela. Para anotar leitura, não para medir.',
+        shortcut: 'N',
+      },
       {
         id: 'rectangle',
         kind: 'TOOL',
@@ -226,6 +244,15 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
         shortcut: 'F',
       },
       {
+        id: 'fibExtension',
+        kind: 'TOOL',
+        tool: 'FIB_EXTENSION',
+        icon: 'fibExtension',
+        label: 'Extensão de Fibonacci',
+        hint: 'Projeta 127,2%, 161,8%, 200% e 261,8% ALÉM do movimento — onde o preço pode chegar, não onde a correção para.',
+        shortcut: 'X',
+      },
+      {
         id: 'ruler',
         kind: 'TOOL',
         tool: 'MEASURE',
@@ -233,6 +260,34 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
         label: 'Régua',
         hint: 'Mede variação em preço, em % e em barras entre dois pontos.',
         shortcut: 'M',
+      },
+    ],
+  },
+  {
+    // ⭐⭐ Grupo PRÓPRIO, e a separação é decisão: posição não é forma nem medição — é a
+    // pergunta que precede a ordem ("quanto perco se estiver errado, quanto ganho se
+    // estiver certo"). Enfiá-la entre retângulo e régua a esconderia justamente na
+    // ferramenta que um operador usa mais que todas as outras juntas.
+    id: 'position',
+    label: 'Posição',
+    items: [
+      {
+        id: 'positionLong',
+        kind: 'TOOL',
+        tool: 'POSITION_LONG',
+        icon: 'positionLong',
+        label: 'Posição de compra',
+        hint: 'Marque a ENTRADA e arraste até o STOP. O alvo sai em 2R e as zonas de risco e retorno são pintadas na proporção.',
+        shortcut: 'P',
+      },
+      {
+        id: 'positionShort',
+        kind: 'TOOL',
+        tool: 'POSITION_SHORT',
+        icon: 'positionShort',
+        label: 'Posição de venda',
+        hint: 'Espelho da compra: o stop fica acima da entrada e o alvo abaixo.',
+        shortcut: 'O',
       },
     ],
   },
@@ -645,6 +700,15 @@ function BotaoItem({
         // outro tornaria a barra ilegivel de percorrer.
         aria-label={item.label}
         {...(ativo === undefined ? {} : { 'aria-pressed': ativo })}
+        // ⭐ `aria-keyshortcuts` é o atributo padrão para "esta tecla aciona isto", e ele
+        // faltava: o atalho existia no código e era invisível para leitor de tela — quem
+        // navega por voz não tinha como descobrir que a barra tem atalhos.
+        //
+        // ⚠️ E é ele que torna a COLISÃO de atalho testável. Ela aconteceu de verdade: a
+        // seta nasceu com `A`, que o ímã já usava, e a extensão de Fibonacci com `E`, da
+        // reta infinita. O sintoma não é erro nenhum — o atalho aciona o primeiro item que
+        // casa, e o operador aperta a tecla de sempre e recebe outra ferramenta.
+        {...(item.shortcut === undefined ? {} : { 'aria-keyshortcuts': item.shortcut })}
         disabled={desabilitado}
         data-item-id={item.id}
         // Roving tabindex — ver o cabecalho.
