@@ -114,13 +114,89 @@ interface ItemAction extends ItemBase {
   readonly action: ToolbarAction;
 }
 
-type ToolbarItem = ItemTool | ItemToggle | ItemAction;
+/**
+ * ⭐⭐ Uma FAMILIA: um botao que carrega varias variantes da mesma ideia.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O RELATO, E O QUE ELE MEDIA DE VERDADE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * *"tem redundancia nas ferramentas da esquerda"*.
+ *
+ * ⚠️ Nao havia ferramenta duplicada — havia dezoito alvos numa tira estreita, e SEIS deles eram
+ * icones de linha. `TRENDLINE`, `RAY` e `EXTENDED_LINE` diferem so em ATE ONDE a reta segue;
+ * `HORIZONTAL_LINE` e `HORIZONTAL_RAY` diferem so em SE ela vale para a esquerda. Distincoes que
+ * importam de verdade numa mesa (um topo das 10h nao era resistencia as 9h) e que, a 14 px numa
+ * coluna, sao seis riscos parecidos. A redundancia era de ICONE, nao de ferramenta.
+ *
+ * ⭐ Uma familia mostra UMA variante — a que esta em uso — e guarda as outras num menu. Dezoito
+ * alvos caem para onze, e nenhuma ferramenta foi perdida.
+ *
+ * ⚠️⚠️ A variante exibida e DERIVADA da ferramenta ativa quando ela pertence a familia, e so cai
+ * na memoria quando nao pertence. Sem isso, apertar `H` (linha horizontal) pelo atalho deixaria
+ * a familia mostrando "linha de tendencia" ACESA enquanto a ferramenta ativa era outra — a barra
+ * afirmando uma coisa e o gesto fazendo outra. Ver `varianteExibida`.
+ */
+interface ItemFamilia extends ItemBase {
+  readonly kind: 'FAMILY';
+  /** As variantes, na ordem do menu. A primeira e o default de partida. */
+  readonly variantes: readonly ItemTool[];
+}
+
+type ToolbarItem = ItemTool | ItemToggle | ItemAction | ItemFamilia;
 
 interface ToolbarGroup {
   readonly id: string;
   /** Nome da familia. Vira `aria-label` do `role="group"`. */
   readonly label: string;
+  /**
+   * ⭐ A COR da familia. Atende *"ferramentas vivas e em cores para melhor visualizacao"*.
+   *
+   * ⚠️ Ela pinta o item ATIVO e o anel de foco, nunca o icone em repouso. Uma barra com dez
+   * icones coloridos ao mesmo tempo e uma barra sem hierarquia: tudo grita e nada informa. A cor
+   * aqui responde "onde eu estou", e para isso ela precisa aparecer em UM lugar de cada vez.
+   *
+   * ⚠️ E nenhuma delas e verde nem vermelho: os dois significam ALTA e BAIXA em todo pixel deste
+   * gráfico, e uma ferramenta acesa em verde seria lida como afirmacao sobre o mercado. Mesma
+   * regra que fez o alerta disparado ser ciano.
+   */
+  readonly cor: string;
   readonly items: readonly ToolbarItem[];
+}
+
+/**
+ * A variante que a familia deve MOSTRAR.
+ *
+ * ⭐⭐ Regra: se a ferramenta ativa pertence a familia, e ela — venha de clique, de menu ou de
+ * atalho de teclado. Senao, a ultima lembrada; senao, a primeira.
+ *
+ * ⚠️ Derivar em vez de guardar e o que mantem os tres caminhos de acao coerentes com um estado
+ * so. Guardar "a ultima clicada" faria o atalho `H` divergir do que a barra desenha.
+ */
+function varianteExibida(
+  familia: ItemFamilia,
+  toolAtiva: ActiveTool,
+  memoria: string | undefined,
+): ItemTool {
+  const daFerramenta = familia.variantes.find((v) => v.tool === toolAtiva);
+  if (daFerramenta !== undefined) return daFerramenta;
+  const lembrada = familia.variantes.find((v) => v.id === memoria);
+  return lembrada ?? (familia.variantes[0] as ItemTool);
+}
+
+/** Achata familias para percorrer todo item acionavel (atalho, roving tabindex). */
+function itensPlanos(grupos: readonly ToolbarGroup[]): readonly ToolbarItem[] {
+  const saida: ToolbarItem[] = [];
+  for (const g of grupos) {
+    for (const i of g.items) {
+      saida.push(i);
+      // ⚠️ As variantes entram TAMBEM: os atalhos delas (`T`, `R`, `E`, `H`, `J`, `V`) tem de
+      // continuar funcionando com a familia fechada. Uma variante escondida num menu nao pode
+      // perder o atalho — quem usa teclado nunca abre o menu.
+      if (i.kind === 'FAMILY') saida.push(...i.variantes);
+    }
+  }
+  return saida;
 }
 
 /**
@@ -134,6 +210,7 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
   {
     id: 'select',
     label: 'Selecionar',
+    cor: '#94a3b8',
     items: [
       {
         id: 'cursor',
@@ -149,66 +226,80 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
   {
     id: 'lines',
     label: 'Linhas',
+    cor: '#38bdf8',
     items: [
       {
-        id: 'trendline',
-        kind: 'TOOL',
-        tool: 'TRENDLINE',
+        id: 'family-lines',
+        kind: 'FAMILY',
         icon: 'trendline',
-        label: 'Linha de tendência',
-        hint: 'Dois pontos: mede a inclinação de um movimento e serve de suporte inclinado.',
-        shortcut: 'T',
-      },
-      {
-        id: 'ray',
-        kind: 'TOOL',
-        tool: 'RAY',
-        icon: 'ray',
-        label: 'Raio',
-        hint: 'Parte de um ponto e segue só para a frente: projeta o rumo sem marcar o passado.',
-        shortcut: 'R',
-      },
-      {
-        id: 'extendedLine',
-        kind: 'TOOL',
-        tool: 'EXTENDED_LINE',
-        icon: 'extendedLine',
-        label: 'Reta estendida',
-        hint: 'Prolonga a reta de dois pontos nos dois sentidos, por todo o gráfico.',
-        shortcut: 'E',
-      },
-      {
-        id: 'horizontalLine',
-        kind: 'TOOL',
-        tool: 'HORIZONTAL_LINE',
-        icon: 'horizontalLine',
-        label: 'Linha horizontal',
-        hint: 'Um preço fixo de ponta a ponta: suporte, resistência ou o preço de entrada.',
-        shortcut: 'H',
-      },
-      {
-        id: 'horizontalRay',
-        kind: 'TOOL',
-        tool: 'HORIZONTAL_RAY',
-        icon: 'horizontalRay',
-        label: 'Raio horizontal',
-        hint: 'Nível que vale a partir do ponto marcado para a direita — e não antes dele. Um topo formado às 10h não era resistência às 9h.',
-        shortcut: 'J',
-      },
-      {
-        id: 'verticalLine',
-        kind: 'TOOL',
-        tool: 'VERTICAL_LINE',
-        icon: 'verticalLine',
-        label: 'Linha vertical',
-        hint: 'Um instante fixo: abertura, notícia ou o horário de um evento.',
-        shortcut: 'V',
+        label: 'Linhas',
+        hint: 'Seis variantes que diferem em ATÉ ONDE a reta vale. Clique para usar a atual; clique direito (ou Alt+↓) para escolher outra.',
+        variantes: [
+          {
+            id: 'trendline',
+            kind: 'TOOL',
+            tool: 'TRENDLINE',
+            icon: 'trendline',
+            label: 'Linha de tendência',
+            hint: 'Dois pontos: mede a inclinação de um movimento e serve de suporte inclinado.',
+            shortcut: 'T',
+          },
+          {
+            id: 'ray',
+            kind: 'TOOL',
+            tool: 'RAY',
+            icon: 'ray',
+            label: 'Raio',
+            hint: 'Parte de um ponto e segue só para a frente: projeta o rumo sem marcar o passado.',
+            shortcut: 'R',
+          },
+          {
+            id: 'extendedLine',
+            kind: 'TOOL',
+            tool: 'EXTENDED_LINE',
+            icon: 'extendedLine',
+            label: 'Reta estendida',
+            hint: 'Prolonga a reta de dois pontos nos dois sentidos, por todo o gráfico.',
+            shortcut: 'E',
+          },
+          {
+            id: 'horizontalLine',
+            kind: 'TOOL',
+            tool: 'HORIZONTAL_LINE',
+            icon: 'horizontalLine',
+            label: 'Linha horizontal',
+            hint: 'Um preço fixo de ponta a ponta: suporte, resistência ou o preço de entrada.',
+            shortcut: 'H',
+          },
+          {
+            id: 'horizontalRay',
+            kind: 'TOOL',
+            tool: 'HORIZONTAL_RAY',
+            icon: 'horizontalRay',
+            label: 'Raio horizontal',
+            hint: 'Nível que vale a partir do ponto marcado para a direita — e não antes dele. Um topo formado às 10h não era resistência às 9h.',
+            shortcut: 'J',
+          },
+          {
+            id: 'verticalLine',
+            kind: 'TOOL',
+            tool: 'VERTICAL_LINE',
+            icon: 'verticalLine',
+            label: 'Linha vertical',
+            hint: 'Um instante fixo: abertura, notícia ou o horário de um evento.',
+            shortcut: 'V',
+          },
+        ],
       },
     ],
   },
   {
+    // ⚠️ Seta e retângulo ficam SOLTOS, sem família: são duas formas visualmente distintas a
+    // 14 px, e agrupá-las esconderia uma atrás de um menu para economizar um alvo. Família se
+    // justifica quando os ícones se confundem — que é o caso das seis linhas, não deste.
     id: 'shapes',
     label: 'Formas',
+    cor: '#a78bfa',
     items: [
       {
         id: 'arrow',
@@ -233,33 +324,43 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
   {
     id: 'measure',
     label: 'Medição',
+    cor: '#fbbf24',
     items: [
       {
-        id: 'fibonacci',
-        kind: 'TOOL',
-        tool: 'FIB_RETRACEMENT',
+        id: 'family-measure',
+        kind: 'FAMILY',
         icon: 'fibonacci',
-        label: 'Retração de Fibonacci',
-        hint: 'Traça 23,6%, 38,2%, 50% e 61,8% entre o topo e o fundo que você marcar.',
-        shortcut: 'F',
-      },
-      {
-        id: 'fibExtension',
-        kind: 'TOOL',
-        tool: 'FIB_EXTENSION',
-        icon: 'fibExtension',
-        label: 'Extensão de Fibonacci',
-        hint: 'Projeta 127,2%, 161,8%, 200% e 261,8% ALÉM do movimento — onde o preço pode chegar, não onde a correção para.',
-        shortcut: 'X',
-      },
-      {
-        id: 'ruler',
-        kind: 'TOOL',
-        tool: 'MEASURE',
-        icon: 'measure',
-        label: 'Régua',
-        hint: 'Mede variação em preço, em % e em barras entre dois pontos.',
-        shortcut: 'M',
+        label: 'Medição',
+        hint: 'Retração, extensão e régua. Clique para usar a atual; clique direito (ou Alt+↓) para escolher outra.',
+        variantes: [
+          {
+            id: 'fibonacci',
+            kind: 'TOOL',
+            tool: 'FIB_RETRACEMENT',
+            icon: 'fibonacci',
+            label: 'Retração de Fibonacci',
+            hint: 'Traça 23,6%, 38,2%, 50% e 61,8% entre o topo e o fundo que você marcar.',
+            shortcut: 'F',
+          },
+          {
+            id: 'fibExtension',
+            kind: 'TOOL',
+            tool: 'FIB_EXTENSION',
+            icon: 'fibExtension',
+            label: 'Extensão de Fibonacci',
+            hint: 'Projeta 127,2%, 161,8%, 200% e 261,8% ALÉM do movimento — onde o preço pode chegar, não onde a correção para.',
+            shortcut: 'X',
+          },
+          {
+            id: 'ruler',
+            kind: 'TOOL',
+            tool: 'MEASURE',
+            icon: 'measure',
+            label: 'Régua',
+            hint: 'Mede variação em preço, em % e em barras entre dois pontos.',
+            shortcut: 'M',
+          },
+        ],
       },
     ],
   },
@@ -270,30 +371,41 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
     // ferramenta que um operador usa mais que todas as outras juntas.
     id: 'position',
     label: 'Posição',
+    cor: '#22d3ee',
     items: [
       {
-        id: 'positionLong',
-        kind: 'TOOL',
-        tool: 'POSITION_LONG',
+        id: 'family-position',
+        kind: 'FAMILY',
         icon: 'positionLong',
-        label: 'Posição de compra',
-        hint: 'Marque a ENTRADA e arraste até o STOP. O alvo sai em 2R e as zonas de risco e retorno são pintadas na proporção.',
-        shortcut: 'P',
-      },
-      {
-        id: 'positionShort',
-        kind: 'TOOL',
-        tool: 'POSITION_SHORT',
-        icon: 'positionShort',
-        label: 'Posição de venda',
-        hint: 'Espelho da compra: o stop fica acima da entrada e o alvo abaixo.',
-        shortcut: 'O',
+        label: 'Posição',
+        hint: 'Compra e venda com risco-retorno. Clique para usar a atual; clique direito (ou Alt+↓) para trocar o lado.',
+        variantes: [
+          {
+            id: 'positionLong',
+            kind: 'TOOL',
+            tool: 'POSITION_LONG',
+            icon: 'positionLong',
+            label: 'Posição de compra',
+            hint: 'Marque a ENTRADA e arraste até o STOP. O alvo sai em 2R e as zonas de risco e retorno são pintadas na proporção.',
+            shortcut: 'P',
+          },
+          {
+            id: 'positionShort',
+            kind: 'TOOL',
+            tool: 'POSITION_SHORT',
+            icon: 'positionShort',
+            label: 'Posição de venda',
+            hint: 'Espelho da compra: o stop fica acima da entrada e o alvo abaixo.',
+            shortcut: 'O',
+          },
+        ],
       },
     ],
   },
   {
     id: 'precision',
     label: 'Ajuda de precisão',
+    cor: '#f472b6',
     items: [
       {
         id: 'magnet',
@@ -308,6 +420,7 @@ const GRUPOS: readonly ToolbarGroup[] = Object.freeze([
   {
     id: 'history',
     label: 'Histórico',
+    cor: '#94a3b8',
     items: [
       {
         id: 'undo',
@@ -376,6 +489,18 @@ export interface DrawingToolbarProps {
    * cabecalho.
    */
   readonly shortcutsEnabled?: boolean;
+  /**
+   * ⭐ ZOOM da barra: o tamanho do icone em pixel. Default 14, recortado entre 12 e 28.
+   *
+   * Atende *"zoom de barra de ferramentas"*. ⚠️ E o ICONE que cresce, e o botao acompanha por
+   * padding — nao uma escala CSS do conjunto. `transform: scale()` ampliaria a borda e o texto
+   * do tooltip junto, e deixaria o alvo de clique fora do lugar em que o navegador o calcula
+   * para o teclado.
+   *
+   * ⚠️ Recortado e nao recusado: 8 px nao e clicavel e 60 px empurra o grafico. O consumidor
+   * pediu "grande"; entregar o maior legivel e melhor que ignorar o pedido.
+   */
+  readonly iconSize?: number;
   readonly className?: string;
   readonly style?: CSSProperties;
 }
@@ -408,6 +533,7 @@ export function DrawingToolbar({
   collapsed = false,
   onToggleCollapsed,
   shortcutsEnabled = true,
+  iconSize = 14,
   className,
   style,
 }: DrawingToolbarProps): JSX.Element {
@@ -415,6 +541,25 @@ export function DrawingToolbar({
   const barraRef = useRef<HTMLDivElement | null>(null);
   /** Item que carrega o `tabIndex=0`. `null` = ainda nao houve interacao. */
   const [itemFocado, setItemFocado] = useState<string | null>(null);
+  /**
+   * A ultima variante escolhida em cada familia, por id de familia.
+   *
+   * ⚠️ E MEMORIA, nao verdade: a variante exibida e derivada da ferramenta ativa quando ela
+   * pertence a familia (ver `varianteExibida`). Esta memoria so responde "e quando nenhuma
+   * variante desta familia esta armada?".
+   */
+  const [memoriaDeVariante, setMemoriaDeVariante] = useState<Record<string, string>>({});
+  /**
+   * Ref espelhando a memoria — lida dentro de `executar`, que vive numa ref para o ouvinte de
+   * atalho ser registrado uma vez. Ler o estado ali capturaria o valor do render em que o
+   * ouvinte nasceu.
+   */
+  const memoriaRef = useRef(memoriaDeVariante);
+  memoriaRef.current = memoriaDeVariante;
+  /** Id da familia com o menu ABERTO, ou `null`. Uma por vez. */
+  const [familiaAberta, setFamiliaAberta] = useState<string | null>(null);
+  // ⭐ Tamanho efetivo do icone, recortado. Ver a prop `iconSize`.
+  const tamanhoIcone = Math.min(28, Math.max(12, Math.round(iconSize)));
 
   /**
    * Grupos efetivamente visiveis.
@@ -442,6 +587,15 @@ export function DrawingToolbar({
     (item: ToolbarItem): { readonly ativo: boolean | undefined; readonly desabilitado: boolean } => {
       if (item.kind === 'TOOL') return { ativo: drawings.tool === item.tool, desabilitado: false };
       if (item.kind === 'TOGGLE') return { ativo: snapEnabled, desabilitado: false };
+      // ⭐ A familia esta ACESA quando QUALQUER variante dela e a ferramenta ativa. Acender so
+      // pela variante exibida seria pior de duas formas: o atalho `H` deixaria a familia apagada
+      // com a linha horizontal armada, e o operador nao teria como ver em que familia esta.
+      if (item.kind === 'FAMILY') {
+        return {
+          ativo: item.variantes.some((v) => v.tool === drawings.tool),
+          desabilitado: false,
+        };
+      }
       switch (item.action) {
         case 'undo':
           return { ativo: undefined, desabilitado: !drawings.canUndo };
@@ -461,6 +615,11 @@ export function DrawingToolbar({
       switch (item.kind) {
         case 'TOOL':
           drawings.setTool(item.tool);
+          return;
+        case 'FAMILY':
+          // Clicar na familia arma a variante EXIBIDA — o caminho de um clique para a
+          // ferramenta que o operador usou por ultimo naquela familia.
+          drawings.setTool(varianteExibida(item, drawings.tool, memoriaRef.current[item.id]).tool);
           return;
         case 'TOGGLE':
           onToggleSnap?.();
@@ -483,6 +642,9 @@ export function DrawingToolbar({
   // ⚠️ Ver a armadilha no cabecalho: item lembrado que esteja DESABILITADO nao
   // pode carregar o `tabIndex=0`, senao a barra sai inteira da ordem de tabulacao.
   const idTabulavel = useMemo<string | null>(() => {
+    // ⚠️ Familias NAO sao achatadas aqui: o roving tabindex percorre o que esta DESENHADO, e a
+    // variante escondida num menu fechado nao tem botao. Achatar poria o `tabIndex=0` num
+    // elemento inexistente e a barra sairia da ordem de tabulacao.
     const planos = gruposVisiveis.flatMap((g) => g.items);
     const habilitados = planos.filter((i) => !estadoDoItem(i).desabilitado);
     if (itemFocado !== null && habilitados.some((i) => i.id === itemFocado)) return itemFocado;
@@ -503,6 +665,10 @@ export function DrawingToolbar({
    * receber foco — dois estados espelhados divergiriam no primeiro item novo.
    */
   const aoTeclarNaBarra = useCallback((e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    // ⚠️ Com `Alt` a seta NAO move o foco: `Alt+↓` e o combo padrao de "abrir o popup" deste
+    // botao, e os dois eixos de seta ja estao ocupados pelo roving tabindex (ver o cabecalho).
+    // Sem esta linha, `Alt+↓` moveria o foco E abriria o menu de outro item.
+    if (e.altKey) return;
     const passo =
       e.key === 'ArrowDown' || e.key === 'ArrowRight'
         ? 1
@@ -574,13 +740,13 @@ export function DrawingToolbar({
       // ⚠️ Busca nos grupos VISIVEIS: recolhida, a barra nao deve ativar por
       // teclado uma ferramenta que ela nao mostra — o operador nao teria como ver
       // qual esta ativa.
-      for (const g of vivoRef.current.gruposVisiveis) {
-        for (const item of g.items) {
-          if (item.shortcut === undefined || item.shortcut.toUpperCase() !== tecla) continue;
-          e.preventDefault();
-          exec(item);
-          return;
-        }
+      // ⚠️ Aqui as familias SAO achatadas (`itensPlanos`): os atalhos das variantes tem de
+      // continuar funcionando com o menu fechado. Quem usa teclado nunca abre o menu.
+      for (const item of itensPlanos(vivoRef.current.gruposVisiveis)) {
+        if (item.shortcut === undefined || item.shortcut.toUpperCase() !== tecla) continue;
+        e.preventDefault();
+        exec(item);
+        return;
       }
     };
 
@@ -621,6 +787,8 @@ export function DrawingToolbar({
             }}
             ativo={undefined}
             desabilitado={false}
+            cor="#94a3b8"
+            tamanhoIcone={tamanhoIcone}
             tabulavel={idTabulavel === 'collapse'}
             placement={lado}
             onFocado={setItemFocado}
@@ -643,12 +811,39 @@ export function DrawingToolbar({
           >
             {g.items.map((item) => {
               const { ativo, desabilitado } = estadoDoItem(item);
+              if (item.kind === 'FAMILY') {
+                const exibida = varianteExibida(item, drawings.tool, memoriaDeVariante[item.id]);
+                return (
+                  <BotaoFamilia
+                    key={item.id}
+                    familia={item}
+                    exibida={exibida}
+                    ativo={ativo === true}
+                    aberta={familiaAberta === item.id}
+                    cor={g.cor}
+                    tamanhoIcone={tamanhoIcone}
+                    tabulavel={idTabulavel === item.id}
+                    placement={lado}
+                    vertical={vertical}
+                    onFocado={setItemFocado}
+                    onAcionar={() => executar(item)}
+                    onAbrir={(abre) => setFamiliaAberta(abre ? item.id : null)}
+                    onEscolher={(v) => {
+                      setMemoriaDeVariante((m) => ({ ...m, [item.id]: v.id }));
+                      setFamiliaAberta(null);
+                      drawings.setTool(v.tool);
+                    }}
+                  />
+                );
+              }
               return (
                 <BotaoItem
                   key={item.id}
                   item={item}
                   ativo={ativo}
                   desabilitado={desabilitado}
+                  cor={g.cor}
+                  tamanhoIcone={tamanhoIcone}
                   tabulavel={idTabulavel === item.id}
                   placement={lado}
                   onFocado={setItemFocado}
@@ -675,6 +870,9 @@ interface BotaoItemProps {
   /** `undefined` = o botao nao e de estado, e nao leva `aria-pressed`. */
   readonly ativo: boolean | undefined;
   readonly desabilitado: boolean;
+  /** Cor da familia. Pinta SO o estado ativo — ver `ToolbarGroup.cor`. */
+  readonly cor: string;
+  readonly tamanhoIcone: number;
   readonly tabulavel: boolean;
   readonly placement: TooltipPlacement;
   readonly onFocado: (id: string) => void;
@@ -685,6 +883,8 @@ function BotaoItem({
   item,
   ativo,
   desabilitado,
+  cor,
+  tamanhoIcone,
   tabulavel,
   placement,
   onFocado,
@@ -720,13 +920,248 @@ function BotaoItem({
         ]
           .filter((c) => c !== '')
           .join(' ')}
-        style={estiloBotao(ativo === true, desabilitado)}
+        style={estiloBotao(ativo === true, desabilitado, cor, tamanhoIcone)}
         onClick={onAcionar}
         onFocus={() => onFocado(item.id)}
       >
-        <Icon name={item.icon} />
+        <Icon name={item.icon} size={tamanhoIcone} />
       </button>
     </Tooltip>
+  );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ Uma FAMILIA: um botao com menu de variantes
+// ═════════════════════════════════════════════════════════════════════════════
+
+interface BotaoFamiliaProps {
+  readonly familia: ItemFamilia;
+  readonly exibida: ItemTool;
+  readonly ativo: boolean;
+  readonly aberta: boolean;
+  readonly cor: string;
+  readonly tamanhoIcone: number;
+  readonly tabulavel: boolean;
+  readonly placement: TooltipPlacement;
+  readonly vertical: boolean;
+  readonly onFocado: (id: string) => void;
+  readonly onAcionar: () => void;
+  readonly onAbrir: (abrir: boolean) => void;
+  readonly onEscolher: (v: ItemTool) => void;
+}
+
+/**
+ * O botao de familia: clique ARMA a variante exibida, e tres gestos ABREM o menu.
+ *
+ * ⭐ Os tres caminhos de abertura existem porque cada um cobre um jeito de operar, e nenhum
+ * deles custa um alvo novo na barra:
+ *
+ *  - **clique direito** — o gesto de mouse para "outras opcoes", e aqui e um botao, nao a area
+ *    do grafico, entao nao rouba menu de contexto de nada que importe;
+ *  - **pressao longa** (400 ms) — o equivalente em TOQUE, onde nao existe clique direito;
+ *  - **`Alt+↓` / `Alt+Enter`** — o combo padrao de "abrir popup" no teclado. `Alt` esta livre
+ *    porque os dois eixos de seta ja movem o foco (roving tabindex) e o ouvinte de atalho de
+ *    tecla unica ignora eventos com modificador.
+ *
+ * ⚠️ A alternativa comum — um segundo botao de setinha ao lado — foi REJEITADA: ela devolveria
+ * a barra aos dezoito alvos que a familia existe para reduzir. O triangulo no canto e a
+ * affordance visual, e o `hint` do tooltip diz como abrir.
+ *
+ * ⚠️ `role="menu"` com `menuitemradio` e nao `listbox`: sao ACOES que tambem tem estado de
+ * escolha, e `radio` e o que anuncia "uma destas esta selecionada".
+ */
+function BotaoFamilia({
+  familia,
+  exibida,
+  ativo,
+  aberta,
+  cor,
+  tamanhoIcone,
+  tabulavel,
+  placement,
+  vertical,
+  onFocado,
+  onAcionar,
+  onAbrir,
+  onEscolher,
+}: BotaoFamiliaProps): JSX.Element {
+  const pressaoRef = useRef<number | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const botaoRef = useRef<HTMLButtonElement | null>(null);
+
+  // ⚠️ Ao abrir, o foco vai para o menu: sem isso o teclado continuaria na barra e as setas
+  // moveriam o foco por tras de um menu aberto — o operador veria o menu e navegaria outra coisa.
+  useEffect(() => {
+    if (!aberta) return;
+    const primeiro = menuRef.current?.querySelector<HTMLButtonElement>('button');
+    primeiro?.focus();
+  }, [aberta]);
+
+  const cancelarPressao = (): void => {
+    if (pressaoRef.current !== null) {
+      window.clearTimeout(pressaoRef.current);
+      pressaoRef.current = null;
+    }
+  };
+
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}>
+      <Tooltip
+        label={exibida.label}
+        hint={`${exibida.hint} · ${familia.hint}`}
+        shortcut={exibida.shortcut}
+        placement={placement}
+      >
+        <button
+          ref={botaoRef}
+          type="button"
+          aria-label={exibida.label}
+          aria-pressed={ativo}
+          // ⭐ Anuncia que ha um menu, e se ele esta aberto. Sem isto o leitor de tela nao teria
+          // como saber que existem outras variantes atras deste botao.
+          aria-haspopup="menu"
+          aria-expanded={aberta}
+          {...(exibida.shortcut === undefined ? {} : { 'aria-keyshortcuts': exibida.shortcut })}
+          data-item-id={familia.id}
+          data-family-current={exibida.id}
+          tabIndex={tabulavel ? 0 : -1}
+          className={[
+            'robustus-drawing-toolbar__button',
+            `robustus-drawing-toolbar__button--${familia.id}`,
+            ativo ? 'robustus-drawing-toolbar__button--active' : '',
+          ]
+            .filter((c) => c !== '')
+            .join(' ')}
+          style={estiloBotao(ativo, false, cor, tamanhoIcone)}
+          onClick={onAcionar}
+          onFocus={() => onFocado(familia.id)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            onAbrir(!aberta);
+          }}
+          onPointerDown={() => {
+            cancelarPressao();
+            pressaoRef.current = window.setTimeout(() => onAbrir(true), 400);
+          }}
+          onPointerUp={cancelarPressao}
+          onPointerLeave={cancelarPressao}
+          onKeyDown={(e) => {
+            if (e.altKey && (e.key === 'ArrowDown' || e.key === 'Enter')) {
+              e.preventDefault();
+              e.stopPropagation();
+              onAbrir(true);
+            }
+          }}
+        >
+          <Icon name={exibida.icon} size={tamanhoIcone} />
+          {/* ⚠️ A affordance de "ha mais aqui": um triangulo no canto inferior direito, em CSS
+              puro. Um icone extra ocuparia espaco do proprio icone da ferramenta a 14 px. */}
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              right: 2,
+              bottom: 2,
+              width: 0,
+              height: 0,
+              borderLeft: '3px solid transparent',
+              borderTop: '3px solid transparent',
+              borderRight: `3px solid ${ativo ? cor : 'rgba(148,163,184,0.55)'}`,
+              borderBottom: `3px solid ${ativo ? cor : 'rgba(148,163,184,0.55)'}`,
+            }}
+          />
+        </button>
+      </Tooltip>
+
+      {aberta && (
+        <div
+          ref={menuRef}
+          role="menu"
+          aria-label={`Variantes de ${familia.label}`}
+          className="robustus-drawing-toolbar__menu"
+          style={{
+            position: 'absolute',
+            zIndex: 40,
+            ...(vertical ? { left: '100%', top: 0, marginLeft: 6 } : { top: '100%', left: 0, marginTop: 6 }),
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            padding: 4,
+            minWidth: 190,
+            borderRadius: 7,
+            border: '1px solid rgba(148,163,184,0.28)',
+            background: 'rgba(15,23,42,0.97)',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.45)',
+          }}
+          onKeyDown={(e) => {
+            // ⚠️ `stopPropagation` em tudo: as setas aqui navegam o MENU, e sem isto elas
+            // subiriam para o roving tabindex da barra e moveriam o foco para fora do menu.
+            if (e.key === 'Escape') {
+              e.stopPropagation();
+              onAbrir(false);
+              botaoRef.current?.focus();
+              return;
+            }
+            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+            e.preventDefault();
+            e.stopPropagation();
+            const itens = Array.from(
+              menuRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? [],
+            );
+            const i = itens.findIndex((b) => b === document.activeElement);
+            const passo = e.key === 'ArrowDown' ? 1 : -1;
+            itens[(Math.max(0, i) + passo + itens.length) % itens.length]?.focus();
+          }}
+          // Clicar fora fecha: o `blur` do container cobre mouse e teclado de uma vez.
+          onBlur={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onAbrir(false);
+          }}
+        >
+          {familia.variantes.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={v.id === exibida.id}
+              data-item-id={`${familia.id}:${v.id}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                width: '100%',
+                padding: '5px 7px',
+                fontSize: 11,
+                fontFamily: 'inherit',
+                textAlign: 'left',
+                borderRadius: 5,
+                border: '1px solid transparent',
+                borderColor: v.id === exibida.id ? cor : 'transparent',
+                background: v.id === exibida.id ? 'rgba(148,163,184,0.14)' : 'transparent',
+                color: '#e2e8f0',
+                cursor: 'pointer',
+              }}
+              onClick={() => onEscolher(v)}
+            >
+              <Icon name={v.icon} size={14} />
+              <span style={{ flex: 1 }}>{v.label}</span>
+              {v.shortcut !== undefined && (
+                <kbd
+                  style={{
+                    fontSize: 9,
+                    padding: '0 3px',
+                    borderRadius: 3,
+                    border: '1px solid rgba(148,163,184,0.3)',
+                    opacity: 0.75,
+                  }}
+                >
+                  {v.shortcut}
+                </kbd>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -791,23 +1226,44 @@ const estiloGrupo: CSSProperties = {
   gap: 2,
 };
 
-function estiloBotao(ativo: boolean, desabilitado: boolean): CSSProperties {
+/**
+ * O estilo de um botao da barra.
+ *
+ * ⭐ A COR da familia entra aqui, e SO no estado ativo (ver `ToolbarGroup.cor`). Em repouso o
+ * icone e neutro: dez icones coloridos ao mesmo tempo e uma barra sem hierarquia, onde tudo
+ * grita e nada informa. A cor responde "onde eu estou".
+ *
+ * ⚠️ Tres pistas para o mesmo estado, e nao uma: fundo, BORDA e o icone tingido. Quem nao
+ * distingue matiz le a borda; quem esta a um metro da tela le o fundo. Uma pista so — a cor —
+ * excluiria os dois.
+ *
+ * ⭐ O ZOOM cresce o icone E o botao junto (`tamanho`), em vez de escalar o conjunto por CSS.
+ * `transform: scale()` ampliaria a borda, o raio e o tooltip, e deixaria o alvo de clique
+ * calculado pelo navegador fora do lugar desenhado.
+ */
+function estiloBotao(
+  ativo: boolean,
+  desabilitado: boolean,
+  cor = '#38bdf8',
+  tamanhoIcone = 14,
+): CSSProperties {
+  // 26 px e o menor alvo que ainda se acerta com o mouse sem mirar; abaixo disso o operador erra
+  // o botao vizinho. O `+12` de folga mantem essa proporcao quando o icone cresce.
+  const lado = Math.max(26, tamanhoIcone + 12);
   return {
+    position: 'relative',
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
-    // 26 px e o menor alvo que ainda se acerta com o mouse sem mirar; abaixo disso
-    // o operador erra o botao vizinho.
-    width: 26,
-    height: 26,
+    width: lado,
+    height: lado,
     padding: 0,
     borderRadius: 5,
     border: '1px solid',
-    borderColor: ativo ? 'rgba(56,189,248,0.55)' : 'transparent',
-    background: ativo ? 'rgba(56,189,248,0.18)' : 'transparent',
-    // ⚠️ O destaque do ativo NAO e so a cor de fundo: quem nao distingue matiz
-    // precisa da borda. Duas pistas para o mesmo estado.
-    color: 'inherit',
+    borderColor: ativo ? cor : 'transparent',
+    background: ativo ? `${cor}2e` : 'transparent',
+    // ⚠️ O icone tingido e a TERCEIRA pista, e a que sobrevive a tema claro.
+    color: ativo ? cor : 'inherit',
     cursor: desabilitado ? 'default' : 'pointer',
     opacity: desabilitado ? 0.35 : 1,
   };

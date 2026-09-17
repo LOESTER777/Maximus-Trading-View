@@ -274,14 +274,35 @@ describe('DrawingToolbar — estrutura e grupos', () => {
     const d = fakeDrawings();
     render(<DrawingToolbar drawings={d} onToggleSnap={() => undefined} />);
 
-    const atalhos = within(screen.getByRole('toolbar', { name: 'Ferramentas de desenho' }))
+    // ⚠️ Agora a barra tem FAMILIAS, e as variantes vivem num menu fechado. Ler so os botoes
+    // visiveis mediria 7 atalhos de 16 — e a colisao entre duas variantes de familias diferentes
+    // passaria. Entao o teste ABRE cada familia e recolhe tudo.
+    const barra = screen.getByRole('toolbar', { name: 'Ferramentas de desenho' });
+    const atalhos: string[] = [];
+
+    // ⚠️ O botao de FAMILIA e excluido daqui: o `aria-keyshortcuts` dele e o da variante
+    // exibida, que tambem aparece no menu. Contar os dois criaria uma "colisao" que nao existe.
+    for (const b of within(barra).getAllByRole('button')) {
+      if (b.getAttribute('aria-haspopup') === 'menu') continue;
+      const a = b.getAttribute('aria-keyshortcuts');
+      if (a !== null && a !== '') atalhos.push(a);
+    }
+
+    // E as variantes, uma familia por vez.
+    for (const familia of within(barra)
       .getAllByRole('button')
-      .map((b) => b.getAttribute('aria-keyshortcuts'))
-      .filter((a): a is string => a !== null && a !== '');
+      .filter((b) => b.getAttribute('aria-haspopup') === 'menu')) {
+      fireEvent.contextMenu(familia);
+      for (const m of within(barra).getAllByRole('menuitemradio')) {
+        const kbd = m.querySelector('kbd')?.textContent ?? '';
+        if (kbd !== '') atalhos.push(kbd);
+      }
+      fireEvent.contextMenu(familia);
+    }
 
     // Guarda de vacuidade: sem atalho lido, a assercao de unicidade seria vazia.
-    expect(atalhos.length).toBeGreaterThan(8);
-    expect(new Set(atalhos).size).toBe(atalhos.length);
+    expect(atalhos.length, `atalhos lidos: ${atalhos.join(',')}`).toBeGreaterThan(12);
+    expect(new Set(atalhos).size, `repetidos em: ${atalhos.join(',')}`).toBe(atalhos.length);
   });
 
   it('honra orientation horizontal', () => {
@@ -320,7 +341,9 @@ describe('DrawingToolbar — estrutura e grupos', () => {
     const d = fakeDrawings({ canUndo: true, canRedo: true, selectedIds: ['a'] });
     render(<DrawingToolbar drawings={d} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Régua' }));
+    // ⚠️ A régua vive na família "Medição" agora: abre o menu e escolhe.
+    fireEvent.contextMenu(screen.getByRole('button', { name: /Fibonacci/ }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Régua/ }));
     expect(d.chamadas.tools).toEqual(['MEASURE']);
 
     fireEvent.click(screen.getByRole('button', { name: 'Desfazer' }));
@@ -554,5 +577,158 @@ describe('DrawingToolbar — navegacao por teclado na barra', () => {
       .filter((b) => b.getAttribute('tabindex') === '0');
     expect(tabulaveis).toHaveLength(1);
     expect((tabulaveis[0] as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ FAMILIAS, cores e zoom — a barra "viva"
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ RELATO: *"tem redundancia nas ferramentas da esquerda"* e *"ferramentas vivas e em cores
+// para melhor visualizacao, zoom de barra de ferramentas, auxilio"*. A redundancia era de ICONE:
+// dezoito alvos numa tira estreita, seis deles riscos de linha quase identicos a 14 px.
+describe('⭐⭐ familias de ferramenta', () => {
+  it('⭐ a barra tem MENOS alvos, e nenhuma ferramenta foi perdida', () => {
+    const d = fakeDrawings();
+    render(<DrawingToolbar drawings={d} onToggleSnap={() => undefined} />);
+    const barra = screen.getByRole('toolbar');
+    const alvos = within(barra).getAllByRole('button');
+    // Antes eram 18 (17 itens + recolher). Agora: cursor, 3 familias, 2 formas, ima, 3 de
+    // historico. O ganho e de LEITURA, e por isso e medido.
+    expect(alvos.length).toBeLessThanOrEqual(11);
+
+    // E as seis linhas continuam alcancaveis, uma a uma.
+    const familiaLinhas = within(barra).getByRole('button', { name: /Linha de tend|Raio|Reta|vertical/ });
+    fireEvent.contextMenu(familiaLinhas);
+    const variantes = within(barra).getAllByRole('menuitemradio');
+    expect(variantes).toHaveLength(6);
+  });
+
+  it('⭐⭐ escolher no menu ARMA a ferramenta e passa a ser a exibida', () => {
+    const d = fakeDrawings();
+    const { rerender } = render(<DrawingToolbar drawings={d} />);
+    const familia = screen.getByRole('button', { name: /Linha de tend/ });
+    fireEvent.contextMenu(familia);
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Linha vertical/ }));
+    expect(d.chamadas.tools).toEqual(['VERTICAL_LINE']);
+
+    // Com a ferramenta armada, a familia mostra a variante dela.
+    rerender(<DrawingToolbar drawings={fakeDrawings({ tool: 'VERTICAL_LINE' })} />);
+    expect(screen.getByRole('button', { name: 'Linha vertical' })).toBeTruthy();
+  });
+
+  it('⭐⭐ a variante exibida é DERIVADA da ferramenta ativa, não da memória de clique', () => {
+    // ⚠️ É o defeito que a derivação evita: apertar `H` pelo atalho deixaria a família mostrando
+    // "linha de tendência" ACESA enquanto a ferramenta ativa era a horizontal — a barra
+    // afirmando uma coisa e o gesto fazendo outra.
+    const d = fakeDrawings({ tool: 'HORIZONTAL_RAY' });
+    render(<DrawingToolbar drawings={d} />);
+    const botao = screen.getByRole('button', { name: 'Raio horizontal' });
+    expect(botao.getAttribute('aria-pressed')).toBe('true');
+    expect(botao.dataset['familyCurrent']).toBe('horizontalRay');
+  });
+
+  it('a família fica ACESA com QUALQUER variante dela armada', () => {
+    for (const [tool, nome] of [
+      ['RAY', /Raio$/],
+      ['EXTENDED_LINE', /Reta estendida/],
+      ['MEASURE', /Régua/],
+      ['POSITION_SHORT', /Posição de venda/],
+    ] as const) {
+      const { unmount } = render(<DrawingToolbar drawings={fakeDrawings({ tool })} />);
+      expect(screen.getByRole('button', { name: nome }).getAttribute('aria-pressed')).toBe('true');
+      unmount();
+    }
+  });
+
+  it('clicar na família arma a variante EXIBIDA (um clique para a de sempre)', () => {
+    const d = fakeDrawings();
+    render(<DrawingToolbar drawings={d} />);
+    fireEvent.click(screen.getByRole('button', { name: /Linha de tend/ }));
+    expect(d.chamadas.tools).toEqual(['TRENDLINE']);
+  });
+
+  it('⚠️ o atalho de uma variante ESCONDIDA continua funcionando', () => {
+    // Quem usa teclado nunca abre o menu. Perder o atalho ao agrupar seria trocar um problema
+    // de leitura por um de acesso.
+    const d = fakeDrawings();
+    render(<DrawingToolbar drawings={d} />);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true }));
+    expect(d.chamadas.tools).toEqual(['VERTICAL_LINE']);
+  });
+
+  it('o menu anuncia qual variante está escolhida', () => {
+    render(<DrawingToolbar drawings={fakeDrawings({ tool: 'RAY' })} />);
+    fireEvent.contextMenu(screen.getByRole('button', { name: /Raio$/ }));
+    const marcados = screen
+      .getAllByRole('menuitemradio')
+      .filter((m) => m.getAttribute('aria-checked') === 'true');
+    expect(marcados).toHaveLength(1);
+    expect(marcados[0]?.textContent).toMatch(/Raio/);
+  });
+
+  it('⭐ `Alt+↓` abre o menu pelo TECLADO, e Escape fecha', () => {
+    render(<DrawingToolbar drawings={fakeDrawings()} />);
+    const familia = screen.getByRole('button', { name: /Linha de tend/ });
+    expect(familia.getAttribute('aria-haspopup')).toBe('menu');
+    expect(familia.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.keyDown(familia, { key: 'ArrowDown', altKey: true });
+    expect(familia.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByRole('menuitemradio').length).toBe(6);
+
+    fireEvent.keyDown(screen.getAllByRole('menuitemradio')[0] as HTMLElement, { key: 'Escape' });
+    expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
+  });
+
+  it('⚠️ `Alt+seta` NÃO move o foco da barra (a seta é do menu)', () => {
+    render(<DrawingToolbar drawings={fakeDrawings()} />);
+    const barra = screen.getByRole('toolbar');
+    const primeiro = within(barra).getAllByRole('button')[0] as HTMLElement;
+    primeiro.focus();
+    fireEvent.keyDown(barra, { key: 'ArrowDown', altKey: true });
+    expect(document.activeElement).toBe(primeiro);
+  });
+
+  it('⭐ o ZOOM cresce o ícone e o botão junto, recortado nas pontas', () => {
+    const { rerender } = render(<DrawingToolbar drawings={fakeDrawings()} iconSize={24} />);
+    const alvo = screen.getByRole('button', { name: 'Selecionar' });
+    expect(alvo.style.width).toBe('36px'); // 24 + 12 de folga
+    // ⚠️ Recortado e não recusado: 8 px não é clicável e 60 px empurra o gráfico.
+    rerender(<DrawingToolbar drawings={fakeDrawings()} iconSize={4} />);
+    expect(screen.getByRole('button', { name: 'Selecionar' }).style.width).toBe('26px');
+    rerender(<DrawingToolbar drawings={fakeDrawings()} iconSize={999} />);
+    expect(screen.getByRole('button', { name: 'Selecionar' }).style.width).toBe('40px');
+  });
+
+  it('⭐ a COR da família aparece só no item ATIVO, com três pistas', () => {
+    render(<DrawingToolbar drawings={fakeDrawings({ tool: 'TRENDLINE' })} />);
+    const aceso = screen.getByRole('button', { name: /Linha de tend/ });
+    const apagado = screen.getByRole('button', { name: 'Selecionar' });
+    // Fundo, borda E cor do ícone — quem não distingue matiz lê a borda.
+    expect(aceso.style.borderColor).not.toBe('transparent');
+    expect(aceso.style.background).not.toBe('transparent');
+    expect(aceso.style.color).not.toBe('inherit');
+    // ⚠️ Em repouso o ícone é neutro: dez ícones coloridos ao mesmo tempo é uma barra sem
+    // hierarquia, onde tudo grita e nada informa.
+    expect(apagado.style.borderColor).toBe('transparent');
+    expect(apagado.style.background).toBe('transparent');
+  });
+
+  it('⚠️ nenhuma cor de família é verde ou vermelha', () => {
+    // Os dois significam ALTA e BAIXA em todo pixel deste gráfico: uma ferramenta acesa em
+    // verde seria lida como afirmação sobre o mercado. Mesma regra do alerta disparado em ciano.
+    const cores: string[] = [];
+    for (const tool of ['TRENDLINE', 'RECTANGLE', 'MEASURE', 'POSITION_LONG'] as const) {
+      const { unmount } = render(<DrawingToolbar drawings={fakeDrawings({ tool })} />);
+      for (const b of screen.getAllByRole('button')) {
+        if (b.getAttribute('aria-pressed') === 'true') cores.push(b.style.borderColor);
+      }
+      unmount();
+    }
+    expect(cores.length).toBeGreaterThan(3);
+    for (const c of cores) {
+      expect(c, `cor proibida: ${c}`).not.toMatch(/#16c784|#ea3943|\bgreen\b|\bred\b|#22c55e|#ef4444/i);
+    }
   });
 });

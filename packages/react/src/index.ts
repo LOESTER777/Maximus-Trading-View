@@ -236,3 +236,8 @@ export type {
   UseSymbolWorkspaceOptions,
   UseSymbolWorkspaceResult,
 } from './useSymbolWorkspace.js';
+
+// ⭐ A faixa de AUXILIO da ferramenta armada, sobre o grafico. Ver `ToolHelpStrip.tsx` — o texto
+// vem do nucleo puro `ajudaDeFerramenta` (pacote de desenho), e a faixa nao captura ponteiro.
+export { ToolHelpStrip } from './ToolHelpStrip.js';
+export type { ToolHelpStripProps } from './ToolHelpStrip.js';

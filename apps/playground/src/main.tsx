@@ -86,6 +86,7 @@ import {
   ObjectTree,
   useVisibleTimeRange,
   CorrelationInset,
+  ToolHelpStrip,
 } from '@robustus/charts-react';
 // ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
 // que já estão na tela, sem requisição nova.
@@ -327,6 +328,25 @@ export function App(): JSX.Element {
   const [alertasLigados, setAlertasLigados] = useState(true);
   const [modoReplay, setModoReplay] = useState(false);
   const [barraRecolhida, setBarraRecolhida] = useState(false);
+  /**
+   * ⭐ ZOOM da barra de ferramentas, em pixel de ícone.
+   *
+   * ⚠️ Preferência de ACESSIBILIDADE, não enfeite: 14 px é confortável num monitor de mesa e
+   * pequeno numa tela de alta densidade ou para quem tem baixa visão. Vive no `localStorage`
+   * porque é preferência da PESSOA, não do gráfico — não entra no documento de estado da aba
+   * (senão trocar de aba mudaria o tamanho dos ícones).
+   */
+  const [zoomDaBarra, setZoomDaBarra] = useState<number>(() => {
+    const bruto = Number(localStorage.getItem('robustus-zoom-barra'));
+    return Number.isFinite(bruto) && bruto >= 12 && bruto <= 28 ? bruto : 14;
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('robustus-zoom-barra', String(zoomDaBarra));
+    } catch {
+      /* cota cheia: a preferência vale para a sessão */
+    }
+  }, [zoomDaBarra]);
   const [paletaAberta, setPaletaAberta] = useState(false);
   const [tick, setTick] = useState(0);
   /** Indicador clicado no gráfico, com nonce para reabrir no clique repetido. */
@@ -1612,7 +1632,43 @@ export function App(): JSX.Element {
             onToggleSnap={() => setImaLigado((v) => !v)}
             collapsed={barraRecolhida}
             onToggleCollapsed={() => setBarraRecolhida((v) => !v)}
+            iconSize={zoomDaBarra}
           />
+          {/*
+            ⭐ O ZOOM da barra, no pé dela. ⚠️ Fica AQUI e não no painel lateral de propósito: é
+            uma preferência sobre ESTA barra, e um controle de tamanho a três painéis de
+            distância do que ele redimensiona obriga o operador a comparar de memória.
+
+            ⚠️ Escondido quando a barra está recolhida — recolher existe para devolver espaço ao
+            gráfico, e um controle sobrevivendo ali contradiria o gesto.
+          */}
+          {!barraRecolhida && (
+            <label
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 2,
+                marginTop: 6,
+                fontSize: 9,
+                opacity: 0.6,
+              }}
+            >
+              <span aria-hidden>Aa</span>
+              <input
+                type="range"
+                min={12}
+                max={28}
+                step={2}
+                value={zoomDaBarra}
+                aria-label="Tamanho dos ícones da barra de ferramentas"
+                onChange={(e) => setZoomDaBarra(Number(e.target.value))}
+                // ⚠️ Vertical e estreito: um slider horizontal aqui alargaria a coluna da barra,
+                // que é justamente o espaço que ela economiza do gráfico.
+                style={{ width: 46, accentColor: '#38bdf8' }}
+              />
+            </label>
+          )}
         </div>
 
         {/* ═══ Os painéis de gráfico ═══ */}
@@ -1735,6 +1791,17 @@ export function App(): JSX.Element {
                   onFechar={() => setAtivoCorrelacao(null)}
                 />
               )}
+              {/*
+                ⭐⭐ O AUXÍLIO da ferramenta armada, sobre o gráfico.
+                *"ferramentas vivas [...] auxílio"*.
+
+                ⚠️ O `Tooltip` da barra morre quando o cursor sai do botão — que é exatamente o
+                instante em que a mão vai ao gráfico e a pergunta muda de "para que serve" para
+                "clico onde primeiro?". Esta faixa vive enquanto a ferramenta está armada, e ela
+                NÃO captura ponteiro (senão engoliria o primeiro clique da ferramenta que acabou
+                de ser escolhida). Ver `ToolHelpStrip.tsx` e `tool-help.core.ts`.
+              */}
+              <ToolHelpStrip tool={desenho.tool} />
             </div>
 
             {comparar && (

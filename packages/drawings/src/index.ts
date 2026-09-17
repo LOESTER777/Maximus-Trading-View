@@ -224,3 +224,19 @@ export type {
 // Apelidos em ingles
 // ═════════════════════════════════════════════════════════════════════════════
 export { DrawingsPrimitive as DrawingsLayer } from './DrawingsPrimitive.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐ O AUXILIO de cada ferramenta — nucleo PURO
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ O `Tooltip` da barra morre quando o cursor sai do botao, que e exatamente o instante em que
+// o operador precisa saber O QUE FAZER AGORA. Este auxilio e de PASSOS e vive enquanto a
+// ferramenta esta armada. Ver o cabecalho de `tool-help.core.ts`.
+export {
+  ajudaDeFerramenta,
+  ancorasDaFerramenta,
+  ferramentasSemAjuda,
+  /** Os passos de uma ferramenta, no imperativo. `null` para o modo de selecao. */
+  ajudaDeFerramenta as toolHelp,
+} from './tool-help.core.js';
+export type { AjudaDeFerramenta } from './tool-help.core.js';
