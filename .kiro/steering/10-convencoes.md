@@ -99,6 +99,47 @@ Um `⚠️` marca armadilha; um `⭐` marca a parte que importa mais. Use.
   resultado. Ver `consistencia.spec.ts`, que simula o `timeToCoordinate` devolvendo
   `null`.
 
+## ⚠️⚠️ Editar código por script é proibido. E verificar por pipe também.
+
+Dois erros de MÉTODO que produziram um commit quebrado pushado em 17/09/2026
+(`4c542e8`: `lacuna: null,0,` mais um retorno sem campo obrigatório). O código estava
+certo; o jeito de escrevê-lo e de conferi-lo, não.
+
+**1. Não edite fonte com `sed -i` nem com `str.replace()` em Python.**
+
+A diferença que importa é o modo de falhar. A ferramenta de substituição de texto do
+editor **falha alto**: se o trecho não bate exatamente, ela recusa e diz. Um
+`s.replace(a, b)` de Python **falha em silêncio** — não encontrou, não substituiu,
+segue em frente — e quando encontra *parcialmente* (dois blocos parecidos, um já
+alterado) produz duplicata ou fragmento órfão. Foi exatamente isso: um `0,` sobrou de
+um bloco meio substituído, no meio de um objeto literal.
+
+Script é aceitável para **inspeção** (contar, procurar, medir). Para escrever fonte,
+use a edição por trecho exato, um ponto por vez.
+
+**2. `comando | tail` MASCARA o código de saída.** Num pipeline, `$?` é do ÚLTIMO
+processo — o `tail`, que sempre sai 0. Então isto **mente**:
+
+```bash
+npm run verify 2>&1 | tail -8          # parece OK mesmo reprovando
+npx tsc -p pkg 2>&1 | head -5 && echo "OK"   # imprime OK mesmo com erro
+```
+
+O certo é capturar e conferir o código:
+
+```bash
+npm run verify >/tmp/v.log 2>&1; RC=$?
+echo "exit=$RC"; [ $RC -eq 0 ] || grep -E "error TS|FAIL" /tmp/v.log
+```
+
+⭐ Há uma pista visual grátis: o `verify` encadeia com `&&`, então **se o typecheck
+reprova os testes NÃO rodam**. Ver `Tests 2232 passed` na saída prova que o typecheck
+passou; não ver nada dos testes é o sinal de que parou antes.
+
+⭐ Guarda mecânica: `.kiro/hooks/typecheck-antes-do-commit.json` roda `npm run
+typecheck` antes de qualquer `git commit` e **bloqueia** se reprovar. Barreira, não
+convenção — a convenção já existia e não impediu.
+
 ## Git
 
 Identidade **local** do repositório: `LOESTER777 <loester.rodrigo@gmail.com>`. O

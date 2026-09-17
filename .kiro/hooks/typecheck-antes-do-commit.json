@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Typecheck antes do commit",
+      "trigger": "PreToolUse",
+      "description": "Antes de um git commit, roda o typecheck do monorepo e BLOQUEIA se reprovar. Existe porque um commit com erro de sintaxe foi pushado: a saida do verify foi lida por pipe (| tail), que mascara o exit code.",
+      "matcher": "execute_bash",
+      "action": {
+        "type": "command",
+        "command": "CMD=$(cat 2>/dev/null); case \"$CMD\" in *\"git commit\"*) R=$(git rev-parse --show-toplevel 2>/dev/null || pwd); cd \"$R\" || exit 0; [ -f package.json ] || exit 0; if ! npm run typecheck >/tmp/hook-typecheck.log 2>&1; then echo \"BLOQUEADO: o typecheck reprovou — nao commite assim.\" >&2; grep -E \"error TS\" /tmp/hook-typecheck.log | head -10 >&2; exit 2; fi ;; esac; exit 0",
+        "timeout": 180
+      }
+    }
+  ]
+}

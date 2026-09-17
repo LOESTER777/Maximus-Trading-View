@@ -560,7 +560,6 @@ export function emendarSeries(
       sobrepostas: 0,
       descartadasPeloCorte: 0,
       foraDaGrade: 0,
-      lacuna: null,0,
       lacuna: null,
       parcialEm: null,
     };
@@ -582,6 +581,7 @@ export function emendarSeries(
       doHistorico: historico.length,
       doAoVivo: 0,
       sobrepostas: 0,
+      descartadasPeloCorte: 0,
       foraDaGrade,
       lacuna: null,
       parcialEm: null,
