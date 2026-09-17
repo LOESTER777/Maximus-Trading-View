@@ -285,7 +285,23 @@ export function useMesaBars(params: {
     const delta = new Map<number, number>();
 
     for (const b of barras) {
-      candles.push({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
+      // ⭐⭐ O AGRESSOR viaja NA VELA, e não só no mapa de delta: é o insumo dos indicadores de
+      // fluxo (`delta`, `cvd`, `delta_ratio`), que o leem de `buyVolume`/`sellVolume` da barra.
+      // Sem isto eles devolveriam `null` para sempre num ativo que TEM a classificação.
+      //
+      // ⚠️ Campo AUSENTE quando a fonte não classifica — nunca zero. Ver a disciplina em
+      // `order-flow.ts`: zero significa "equilíbrio", e ausência não é leitura nenhuma.
+      candles.push({
+        time: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+        ...(b.volume === undefined ? {} : { volume: b.volume }),
+        ...(b.buyVolume === undefined || b.sellVolume === undefined
+          ? {}
+          : { buyVolume: b.buyVolume, sellVolume: b.sellVolume }),
+      });
       if (b.volume !== undefined) {
         volume.push({
           time: b.time,

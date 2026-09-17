@@ -80,6 +80,18 @@ describe('incremental == batch (a prova de correcao)', () => {
     // SuperTrend, SAR Parabolico, Ichimoku, Donchian, VWAP com bandas, MFI, CMF,
     // Awesome Oscillator e Pontos de Pivo. Se este numero cair, alguma fabrica
     // saiu do registry — e sair do registry e sair das duas provas de propriedade.
-    expect(builtInFactories.length).toBeGreaterThanOrEqual(29);
+    //
+    // ⭐ Foi para 45 com dezesseis novos, em tres frentes:
+    //   FLUXO DE ORDEM (3) — delta, CVD e delta %. Leem `buyVolume`/`sellVolume`, o insumo que
+    //     quase nenhum provedor entrega e que o historico da mesa entrega. Sao os unicos do
+    //     pacote que respondem "quem AGREDIU" em vez de "quanto negociou".
+    //   MEDIAS ADAPTATIVAS (5) — HMA, VWMA, KAMA, LSMA e TRIX. Todas atacam o ATRASO da media
+    //     movel por caminhos diferentes (construcao, volume, adaptacao ao regime, regressao).
+    //   OSCILADORES (8) — PPO, Stoch RSI, Aroon, Choppiness, BOP, ADL, Force Index e Elder Ray.
+    //     ⭐ Nenhum e "mais um oscilador de momento": cada um responde uma pergunta que o RSI
+    //     nao responde (percentual comparavel entre ativos, posicao do RSI na propria faixa,
+    //     TEMPO desde o extremo, tendencia-ou-range, quem ganhou por dentro da barra, posicao do
+    //     fechamento pesada por volume, forca com volume, e pressao de compra e venda SEPARADAS).
+    expect(builtInFactories.length).toBeGreaterThanOrEqual(45);
   });
 });

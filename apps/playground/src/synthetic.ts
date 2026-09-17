@@ -34,6 +34,18 @@ export interface SyntheticCandle {
   high: number;
   low: number;
   close: number;
+  /**
+   * ⭐⭐ Volume TOTAL e volume por AGRESSOR, quando a fonte classifica.
+   *
+   * ⚠️ Opcionais, e é o que permite a MESMA forma de vela servir ao gerador sintético (que não
+   * tem livro) e ao histórico da mesa (que tem, em 5.163 dos 6.376 dias do WIN). Sem eles na
+   * vela, os indicadores de fluxo — delta, CVD, delta % — não têm insumo: eles leem
+   * `buyVolume`/`sellVolume` da barra, e uma vela que não os carrega faz os três devolverem
+   * `null` para sempre num ativo que TEM o dado.
+   */
+  volume?: number;
+  buyVolume?: number;
+  sellVolume?: number;
 }
 
 export interface SyntheticBundle {

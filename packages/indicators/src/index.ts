@@ -39,6 +39,28 @@ import {
   keltnerFactory,
 } from './built-in/volatility.js';
 import { macdFactory, adxFactory, obvFactory, vwapFactory } from './built-in/trend-volume.js';
+// ⭐⭐ FLUXO DE ORDEM: quem AGREDIU o livro. Quase nenhum provedor entrega o insumo
+// (`buyVolume`/`sellVolume`); o historico da mesa entrega em 5.163 dos 6.376 dias do WIN.
+import { deltaFactory, cvdFactory, deltaRatioFactory } from './built-in/order-flow.js';
+// ⭐ Medias que atacam o ATRASO por caminhos diferentes (construcao, volume, adaptacao, regressao).
+import {
+  hmaFactory,
+  vwmaFactory,
+  kamaFactory,
+  lsmaFactory,
+  trixFactory,
+} from './built-in/adaptive-averages.js';
+// ⭐ Osciladores que respondem perguntas que o RSI NAO responde — ver o cabecalho do arquivo.
+import {
+  ppoFactory,
+  stochRsiFactory,
+  aroonFactory,
+  choppinessFactory,
+  bopFactory,
+  adlFactory,
+  forceIndexFactory,
+  elderRayFactory,
+} from './built-in/range-oscillators.js';
 import {
   supertrendFactory,
   parabolicSarFactory,
@@ -133,6 +155,25 @@ export const builtInFactories: readonly IndicatorFactory[] = [
   cmfFactory,
   awesomeOscillatorFactory,
   pivotPointsFactory,
+  // ── Fluxo de ordem (exigem `buyVolume`/`sellVolume`; devolvem `null` sem eles) ──
+  deltaFactory,
+  cvdFactory,
+  deltaRatioFactory,
+  // ── Medias adaptativas ──
+  hmaFactory,
+  vwmaFactory,
+  kamaFactory,
+  lsmaFactory,
+  trixFactory,
+  // ── Osciladores de faixa e de regime ──
+  ppoFactory,
+  stochRsiFactory,
+  aroonFactory,
+  choppinessFactory,
+  bopFactory,
+  adlFactory,
+  forceIndexFactory,
+  elderRayFactory,
 ];
 
 /**

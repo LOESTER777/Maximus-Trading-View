@@ -60,6 +60,29 @@ export interface IndicatorBar {
   readonly low: number;
   readonly close: number;
   readonly volume?: number;
+  /**
+   * ⭐⭐ Volume executado por AGRESSOR DE COMPRA (bateu na oferta de venda).
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * POR QUE ISTO EXISTE, E POR QUE E OPCIONAL
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * Quase nenhum provedor de dado entrega isto. O historico da mesa entrega: 5.163 dos 6.376
+   * dias do WIN trazem `buy_vol`/`sell_vol`. E o insumo do DELTA — quem agrediu o livro, e nao
+   * so quanto negociou — e a diferenca entre "houve volume" e "houve pressao".
+   *
+   * ⚠️ OPCIONAL, e por isso a versao do contrato NAO subiu: barra sem os campos le exatamente
+   * como antes. Todo indicador que os usa devolve `null` na ausencia, NUNCA zero — zero em
+   * delta significa "compra e venda se equilibraram", que e uma leitura de mercado; "nao ha
+   * classificacao de agressor" nao e leitura nenhuma. Confundir os dois desenharia equilibrio
+   * perfeito num ativo sobre o qual nao se sabe nada. Mesma disciplina do MFI sem volume.
+   *
+   * ⚠️ E `buyVolume + sellVolume` nao precisa ser igual a `volume`: leilao e negocio direto
+   * entram no total e nao tem agressor. Nenhum indicador aqui assume essa igualdade.
+   */
+  readonly buyVolume?: number;
+  /** Volume executado por AGRESSOR DE VENDA (bateu na oferta de compra). Ver `buyVolume`. */
+  readonly sellVolume?: number;
 }
 
 /**

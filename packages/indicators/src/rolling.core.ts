@@ -109,6 +109,20 @@ export class RingWindow {
     return this.count;
   }
 
+  /**
+   * O valor MAIS ANTIGO da janela — o que sairia no proximo `push`. `null` se vazia.
+   *
+   * ⭐ Existe para os `peek` de acumuladores com identidade de deslizamento (WMA, LSMA)
+   * poderem projetar o proximo valor SEM mutar: eles precisam saber o que vai sair para
+   * descontar. Sem isto, cada um teria de manter uma copia paralela do buffer — duas fontes da
+   * mesma verdade, que divergem no primeiro `reset` esquecido.
+   */
+  oldest(): number | null {
+    if (this.count === 0) return null;
+    const idx = (this.head - this.count + this.capacity * 2) % this.capacity;
+    return this.buf[idx] as number;
+  }
+
   /** Itera os valores na ordem de insercao (mais antigo -> mais novo). */
   forEach(fn: (x: number) => void): void {
     for (let i = 0; i < this.count; i++) {
