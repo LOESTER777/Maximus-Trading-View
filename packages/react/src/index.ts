@@ -91,6 +91,65 @@ export type { UseChartStateResult, CaptureInput } from './useChartState.js';
 export { RobustusChart } from './RobustusChart.js';
 export type { RobustusChartProps } from './RobustusChart.js';
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Cromo de interface — a caixa de ferramentas, as barras e a paleta
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⭐ Sao pecas de BIBLIOTECA, nao do playground: qualquer projeto do usuario monta
+// a mesma interface sem reescrever barra, tooltip nem busca. Zero terceiros —
+// icone e SVG proprio, busca e nucleo puro, animacao e transicao CSS.
+//
+// A divisao responde ao pedido de "separar o que e grafico do que e e para que":
+//   `DrawingToolbar`  — barra VERTICAL: o que DESENHA sobre o preco
+//   `ChartToolbar`    — barra HORIZONTAL: como o preco e desenhado + camadas +
+//                       ambiente + acoes, cada um um grupo nomeado
+//   `CommandPalette`  — TODO recurso por busca (Ctrl+K), para a tela nao virar
+//                       parede de botao
+//   `CollapsiblePanel`— mostrar/ocultar sem esconder que ha algo ali (badge)
+//   `Tooltip`         — nome + PARA QUE + atalho, no hover E no foco
+//   `ChartLegend`     — O/H/L/C sob o cursor, sobre o grafico
+
+export { Icon, ICON_NAMES } from './icons.js';
+export type { IconName, IconProps } from './icons.js';
+
+export { Tooltip } from './Tooltip.js';
+export type { TooltipProps, TooltipPlacement } from './Tooltip.js';
+
+export { DrawingToolbar } from './DrawingToolbar.js';
+export type { DrawingToolbarProps } from './DrawingToolbar.js';
+
+export { SegmentedControl, useChromeStyles, joinClasses } from './SegmentedControl.js';
+export type { SegmentedControlProps, SegmentedOption } from './SegmentedControl.js';
+
+export {
+  ChartToolbar,
+  CHART_TOOLBAR_GROUP_LABELS,
+  CHART_TYPE_OPTIONS,
+} from './ChartToolbar.js';
+export type {
+  ChartToolbarProps,
+  ChartTypeId,
+  ToolbarToggleItem,
+  ToolbarActionItem,
+} from './ChartToolbar.js';
+
+export { CollapsiblePanel } from './CollapsiblePanel.js';
+export type { CollapsiblePanelProps } from './CollapsiblePanel.js';
+
+export { CommandPalette, useCommandPaletteHotkey, rankCommands } from './CommandPalette.js';
+export type {
+  Command,
+  CommandPaletteProps,
+  RankedCommand,
+  RankedGroup,
+} from './CommandPalette.js';
+
+export { fuzzyMatch, fuzzyRank, foldChar } from './fuzzy.core.js';
+export type { FuzzyMatch } from './fuzzy.core.js';
+
+export { ChartLegend } from './ChartLegend.js';
+export type { ChartLegendProps, ChartLegendSeries } from './ChartLegend.js';
+
 // Reexporta o vocabulario para o consumidor nao precisar instalar o pacote do
 // motor so para tipar as props.
 export type {
