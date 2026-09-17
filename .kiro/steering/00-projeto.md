@@ -60,6 +60,31 @@ afirma não haver passado. Use `janelaAnterior` (anda pelo `from` PEDIDO) e `alc
 serviço: 8 lotes atravessando sábado, domingo e o feriado de 7/9 = 570 barras únicas, zero
 duplicadas.
 
+## Rodada de 17/09/2026 — o que mais entrou
+
+- **Cinco ferramentas de desenho**: raio horizontal, seta, extensão de Fibonacci e **posição
+  de compra/venda** (entrada + stop, alvo derivado do múltiplo de risco, zonas de risco e
+  retorno pintadas na proporção). ⚠️ A ponta da seta é feita de TRAÇOS, não de forma nova no
+  renderizador — herda cor, acerto de ponteiro e recorte de graça.
+- **Árvore de objetos** (`ObjectTree`): tudo o que está no gráfico em lista, com visibilidade,
+  remoção e atalho para propriedades.
+- **Perfil de volume da JANELA VISÍVEL** (`useVisibleTimeRange`), com guarda de frequência em
+  duas partes (coalescência por quadro + zona morta em segundos).
+- **Templates de layout NOMEADOS** (`layout-templates.core.ts`): os setups do operador.
+- **Alerta desenhado com ESTADO** (`alert-line.core.ts`): armado é tracejado âmbar, disparado é
+  sólido ciano. ⚠️ Ciano e não vermelho/verde — esses dois já significam alta e baixa.
+- **Leitura do ativo** (`asset-readout.core.ts` + `AssetReadout`): desempenho por janela,
+  sazonalidade normalizada por ano, termômetro dos indicadores ligados.
+- **Correlação entre ativos** (`correlacao.core.ts` + `CorrelationInset`): duas séries em base
+  100 num inset SVG mais o coeficiente dos RETORNOS. ⚠️ Sobre retorno e nunca sobre preço — em
+  preço, dois ativos que subiram no ano dão quase 1 mesmo tendo subido em meses diferentes.
+- **Altura de sub-painel** configurável (`setPaneHeightFraction`), que sobrevive a ligar outro
+  indicador.
+
+⛔ **Duas coisas NÃO existem, e a ausência é declarada:** grade de sub-painéis em COLUNAS
+(exige eixo de tempo por pane e deixa de alinhar com o preço — decisão pendente) e estrutura a
+termo de volatilidade implícita (exige cadeia de opções, que nenhuma base tem).
+
 ## Origem do código — leia antes de mexer
 
 A maior parte dos núcleos foi **copiada** de um cockpit de mesa em produção:
@@ -91,7 +116,7 @@ cosmética.
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test            # 1695 testes, 88 arquivos
+npm test            # 1791 testes, 93 arquivos
 npm run build       # todos os pacotes
 npm run verify      # ⭐ typecheck + typecheck:playground + check ESM + testes
 npm run smoke:consumo  # empacota, instala FORA do workspace e importa em Node ESM puro

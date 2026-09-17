@@ -239,3 +239,24 @@ export type {
   LeituraTecnica as TechnicalReading,
   TermometroTecnico as TechnicalGauge,
 } from './asset-readout.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Comparar dois ativos — base 100 e correlacao de RETORNOS
+// ═════════════════════════════════════════════════════════════════════════════
+
+export {
+  normalizarBase100,
+  alinharPorTempo,
+  correlacaoDeRetornos,
+  leituraDeCorrelacao,
+  MIN_AMOSTRAS_CORRELACAO,
+  /** Reescala para base 100 na primeira barra — o que torna dois precos comparaveis. */
+  normalizarBase100 as rebaseTo100,
+  /** Pearson sobre RETORNOS (nunca sobre preco). `null` com amostra fraca. */
+  correlacaoDeRetornos as returnsCorrelation,
+} from './correlacao.core.js';
+export type {
+  BarraComparavel as ComparableBar,
+  PontoNormalizado as RebasedPoint,
+  ResultadoDeCorrelacao as CorrelationResult,
+} from './correlacao.core.js';

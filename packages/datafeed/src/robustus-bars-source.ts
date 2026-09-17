@@ -78,7 +78,9 @@ export function criarFonteDeBarrasDaMesa(opts: FonteDeBarrasDaMesaOptions): Bars
       // não pode lançar — exceção aqui subiria pelo ciclo de desenho.
       return caminho === null ? '' : `${base}${caminho}`;
     },
-    parseBars: (body) => parseBarrasDaMesa(body),
+    // ⚠️ O PERÍODO vai ao parser porque o `D1` da base tem duas convenções de virada de dia e
+    // precisa ser colapsado — ver a nota longa em `parseBarrasDaMesa`.
+    parseBars: (body, request) => parseBarrasDaMesa(body, request.periodSeconds),
     headers: () => {
       const chave = opts.apiKey?.();
       return {

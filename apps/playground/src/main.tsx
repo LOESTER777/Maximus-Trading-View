@@ -83,11 +83,14 @@ import {
   AssetReadout,
   ObjectTree,
   useVisibleTimeRange,
+  CorrelationInset,
 } from '@robustus/charts-react';
 // ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
 // que já estão na tela, sem requisição nova.
 import {
   desempenhoPorJanela,
+  correlacaoDeRetornos,
+  normalizarBase100,
   sazonalidadePorAno,
   termometroTecnico,
   votoDeMedia,
@@ -196,6 +199,13 @@ function App(): JSX.Element {
    */
   const [alturaOsciladores, setAlturaOsciladores] = useState<number | null>(0.11);
   const [ativoMesa, setAtivoMesa] = useState('WIN');
+  /**
+   * ⭐ O ativo do INSET de correlação. `null` = inset fechado.
+   *
+   * ⚠️ Só faz sentido com dado da mesa: correlacionar o sintético com ele mesmo produziria 1,00
+   * e ensinaria a leitura errada. O controle nem aparece em modo sintético.
+   */
+  const [ativoCorrelacao, setAtivoCorrelacao] = useState<string | null>(null);
   const [mostrarBookmap, setMostrarBookmap] = useState(true);
   const [mostrarPerfil, setMostrarPerfil] = useState(false);
   /** O perfil segue a JANELA VISÍVEL (default) ou agrega o dia inteiro. */
@@ -256,6 +266,20 @@ function App(): JSX.Element {
   const mesa = useMesaBars({
     ligado: fonte === 'mesa',
     symbol: ativoMesa,
+    periodSeconds: tf.seconds,
+  });
+
+  /**
+   * ⭐ O SEGUNDO ativo, para o inset de correlação.
+   *
+   * ⚠️ Mesmo período do principal, de propósito: correlacionar 5min com D1 pareia coisas que
+   * não são comparáveis, e o alinhamento por tempo devolveria pouquíssimos pares — o número
+   * sairia com amostra fraca e o núcleo o recusaria (o que é o certo, mas o operador não
+   * entenderia por quê).
+   */
+  const mesaCorrelacao = useMesaBars({
+    ligado: fonte === 'mesa' && ativoCorrelacao !== null,
+    symbol: ativoCorrelacao ?? 'WIN',
     periodSeconds: tf.seconds,
   });
 
@@ -455,6 +479,26 @@ function App(): JSX.Element {
       });
     return termometroTecnico(votos);
   }, [indicadores.plots, indicadores.active, velasBase]);
+
+  /**
+   * ⭐ A CORRELAÇÃO: as duas séries em base 100 mais o coeficiente dos RETORNOS.
+   *
+   * ⚠️ Base 100 é o que torna a comparação possível — WIN em 188.000 e PETR4 em 38 na mesma
+   * escala dariam uma linha e um risco no chão. E o coeficiente é sobre RETORNO e nunca sobre
+   * preço: dois ativos que subiram no período dão quase 1 em preço mesmo que um tenha subido em
+   * janeiro e o outro em dezembro. Ver `correlacao.core.ts`.
+   */
+  const correlacao = useMemo(() => {
+    if (ativoCorrelacao === null) return null;
+    const a = velasBase.map((c) => ({ time: c.time, close: c.close }));
+    const b = mesaCorrelacao.candles.map((c) => ({ time: c.time, close: c.close }));
+    if (a.length < 2 || b.length < 2) return null;
+    return {
+      a: { label: simboloExibido, color: '#38bdf8', pontos: normalizarBase100(a) },
+      b: { label: ativoCorrelacao, color: '#f59e0b', pontos: normalizarBase100(b) },
+      ...correlacaoDeRetornos(a, b),
+    };
+  }, [ativoCorrelacao, velasBase, mesaCorrelacao.candles, simboloExibido]);
 
   const barsSnap = useMemo<SnapBar[]>(
     () =>
@@ -1235,6 +1279,36 @@ function App(): JSX.Element {
               />
               Comparar
             </label>
+            {/*
+              ⭐ O ativo do INSET de correlação. ⚠️ Só em modo mesa: correlacionar o sintético
+              com ele mesmo daria 1,00 e ensinaria a leitura errada. E o ativo principal sai da
+              lista — correlação de um ativo consigo é 1 por definição, e oferecer isso é
+              oferecer um número que não informa.
+            */}
+            {fonte === 'mesa' && (
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+                <span style={{ opacity: 0.6 }}>Correlação</span>
+                <select
+                  value={ativoCorrelacao ?? ''}
+                  onChange={(e) => setAtivoCorrelacao(e.target.value === '' ? null : e.target.value)}
+                  style={{
+                    background: 'rgba(15,23,42,0.6)',
+                    color: '#cbd5e1',
+                    border: '1px solid rgba(148,163,184,0.28)',
+                    borderRadius: 4,
+                    fontSize: 11,
+                    padding: '2px 4px',
+                  }}
+                >
+                  <option value="">nenhuma</option>
+                  {ATIVOS_DA_MESA.filter((x) => x.symbol !== ativoMesa).map((x) => (
+                    <option key={x.symbol} value={x.symbol}>
+                      {x.symbol}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             {comparar && (
               <TimeframeSelector
                 timeframes={tfsDisponiveis}
@@ -1261,6 +1335,20 @@ function App(): JSX.Element {
                 precision={1}
               />
               <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+              {/*
+                ⭐ O gráfico DENTRO do gráfico. Fica na célula `position: relative` junto da
+                legenda, e é SVG e não um segundo motor — ver `CorrelationInset.tsx`.
+              */}
+              {correlacao !== null && (
+                <CorrelationInset
+                  a={correlacao.a}
+                  b={correlacao.b}
+                  coeficiente={correlacao.coeficiente}
+                  leitura={correlacao.leitura}
+                  amostras={correlacao.amostras}
+                  onFechar={() => setAtivoCorrelacao(null)}
+                />
+              )}
             </div>
 
             {comparar && (

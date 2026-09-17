@@ -334,3 +334,72 @@ describe('alcancouInicio — o único critério honesto de "fim do histórico"',
     expect(alcancouInicio({ fromSeconds: 1 }, Number.NaN)).toBe(false);
   });
 });
+
+describe('⭐⭐ D1 com DUAS convenções de virada de dia — o defeito do DADO', () => {
+  /**
+   * Amostra REAL, capturada do serviço em 17/09/2026 (`PETR4`, `D1`):
+   * dois registros do MESMO pregão, um a 00:00 UTC e outro a 03:00 UTC (meia-noite de
+   * Brasília). A base tem dois pipelines com convenções diferentes, e nenhum está errado —
+   * errado é conviverem na mesma série.
+   */
+  const DOIS_POR_DIA = {
+    cols: ['bar_epoch', 'open', 'high', 'low', 'close', 'volume'],
+    rows: [
+      [1_780_012_800, 41.2, 41.5, 41.0, 41.43, 63_690], // 2026-05-29T00:00Z
+      [1_780_023_600, 41.4, 42.0, 41.3, 41.87, 31_318], // 2026-05-29T03:00Z — mesmo dia
+      [1_780_272_000, 41.8, 42.0, 41.5, 41.79, 97_977], // 2026-06-01T00:00Z
+      [1_780_282_800, 41.9, 42.5, 41.8, 42.36, 51_093], // 2026-06-01T03:00Z — mesmo dia
+    ],
+  };
+
+  it('⭐⭐ em D1, o par do mesmo pregão é COLAPSADO', () => {
+    // ⚠️ O sintoma não é visível no gráfico (duas velas parecidas passam por dois dias), mas o
+    // retorno entre as duas barras do mesmo dia é ruído puro — e foi o que fez a correlação
+    // entre PETR4 e VALE3 sair em −0,04, duas blue chips que andam claramente juntas.
+    const barras = parseBarrasDaMesa(DOIS_POR_DIA, 86_400)!;
+    expect(barras).toHaveLength(2);
+    expect(barras.map((b) => b.time)).toEqual([1_780_023_600, 1_780_282_800]);
+  });
+
+  it('⭐ mantém a barra MAIS TARDIA — o volume mostra que os recortes são diferentes', () => {
+    // 63.690 contra 31.318 no mesmo dia: os dois registros cobrem trechos distintos da sessão.
+    // O último a fechar é o mais próximo do fechamento real; o primeiro é um dia parcial.
+    const barras = parseBarrasDaMesa(DOIS_POR_DIA, 86_400)!;
+    expect(barras[0]!.close).toBe(41.87);
+    expect(barras[1]!.close).toBe(42.36);
+  });
+
+  it('⚠️ INTRADIÁRIO não é colapsado — lá os baldes são alinhados e não há ambiguidade', () => {
+    // Aplicar a colapsagem em 5min fundiria barras legítimas: duas barras de 5min distam 300 s,
+    // muito abaixo da folga de 12 h, e o dia inteiro viraria uma barra.
+    const cincoMin = {
+      cols: ['bar_epoch', 'open', 'high', 'low', 'close'],
+      rows: [
+        [1_789_473_600, 1, 2, 0, 1],
+        [1_789_473_900, 1, 2, 0, 1],
+        [1_789_474_200, 1, 2, 0, 1],
+      ],
+    };
+    expect(parseBarrasDaMesa(cincoMin, 300)).toHaveLength(3);
+    // E sem período informado também não colapsa: sem saber o período, mexer seria palpite.
+    expect(parseBarrasDaMesa(cincoMin)).toHaveLength(3);
+  });
+
+  it('dias LEGÍTIMOS (24 h de distância) não são fundidos', () => {
+    const umPorDia = {
+      cols: ['bar_epoch', 'open', 'high', 'low', 'close'],
+      rows: [
+        [1_780_012_800, 1, 2, 0, 1],
+        [1_780_099_200, 1, 2, 0, 2],
+        [1_780_185_600, 1, 2, 0, 3],
+      ],
+    };
+    expect(parseBarrasDaMesa(umPorDia, 86_400)).toHaveLength(3);
+  });
+
+  it('semanal também colapsa (período >= D1), e barra única passa intacta', () => {
+    expect(parseBarrasDaMesa(DOIS_POR_DIA, 604_800)).toHaveLength(2);
+    const uma = { cols: ['bar_epoch', 'open', 'high', 'low', 'close'], rows: [[1, 1, 2, 0, 1]] };
+    expect(parseBarrasDaMesa(uma, 86_400)).toHaveLength(1);
+  });
+});

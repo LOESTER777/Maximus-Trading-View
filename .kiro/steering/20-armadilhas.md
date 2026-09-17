@@ -494,3 +494,39 @@ símbolo novo no core aparece como `TS2305: has no exported member` até `npm ru
 
 E a referência é a ÚLTIMA barra ANTES do limite, não a primeira depois — a convenção de
 mesa é comparar com o último fechamento conhecido antes da janela.
+
+## ⭐⭐ O `D1` da mesa tem DUAS convenções de virada de dia (medido 17/09/2026)
+
+Achado ao ligar a correlação entre ativos, e ele envenena tudo que é DERIVADO de barra
+diária. Medido no serviço, `PETR4` em `D1`:
+
+```
+2026-05-29T00:00:00Z  fecha 41.43  vol 63.690
+2026-05-29T03:00:00Z  fecha 41.87  vol 31.318   ⇠ o MESMO pregão, outra vez
+2026-06-01T00:00:00Z  fecha 41.79  vol 97.977
+2026-06-01T03:00:00Z  fecha 42.36  vol 51.093
+```
+
+São dois registros do mesmo dia: meia-noite UTC e meia-noite de Brasília (03:00 UTC no
+inverno). A base tem dois pipelines de ingestão com convenções diferentes. **277 dos ~314
+dias de `PETR4` na janela medida estão duplicados.**
+
+⚠️ **O sintoma NÃO aparece no gráfico** — duas velas parecidas passam por dois dias. O
+estrago é no derivado: o retorno entre as duas barras do mesmo dia é ruído puro.
+
+⭐ Corrigido em `parseBarrasDaMesa` (`packages/datafeed/src/robustus-bars.core.ts`):
+período >= D1 colapsa barras a menos de **12 h** de distância, mantendo a mais tardia. 12 h
+separa "dois registros do mesmo pregão" (3 h) de "dois pregões" (24 h). Intradiário NÃO é
+colapsado (baldes de 5min distam 300 s e a colapsagem fundiria o dia inteiro numa barra).
+
+**A correção é MEDÍVEL:** `WIN × WDO` em retornos diários passou de **−0,19 para −0,59**
+(moderada, inversa) — que é a relação conhecida entre índice e dólar. `WIN × PETR4` foi de
+−0,02 para +0,25.
+
+⚠️ **RESÍDUO NÃO RESOLVIDO, e não é do nosso lado:** ação × ação continua perto de zero
+(`PETR4 × VALE3` = −0,06; `PETR4 × ITUB4` = +0,09), quando duas blue chips do mesmo índice
+deveriam correlacionar positivo. Testei as três estratégias de colapsagem (manter a última,
+a primeira, a de maior volume) e **as três dão o mesmo número** — logo não é a escolha do
+registro. É qualidade da série de ações na `bars_agg` (elas vieram por outro pipeline, sem
+fluxo). Para conta entre ativos, confie em `WIN`/`WDO`; a série de ações precisa de auditoria
+na ingestão, do lado do CopyTrader.

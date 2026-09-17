@@ -221,3 +221,8 @@ export type { ObjectTreeProps, ObjectTreeGroup, ObjectTreeItem } from './ObjectT
 // ⭐ A janela visivel em TEMPO — insumo do "perfil da janela visivel". Ver `useVisibleTimeRange.ts`.
 export { useVisibleTimeRange } from './useVisibleTimeRange.js';
 export type { FaixaDeTempoVisivel, UseVisibleTimeRangeParams } from './useVisibleTimeRange.js';
+
+// ⭐ O grafico DENTRO do grafico: correlacao em base 100. Ver `CorrelationInset.tsx` — e SVG e
+// nao um segundo motor, porque o inset e leitura de RELACAO e nao um grafico operavel.
+export { CorrelationInset } from './CorrelationInset.js';
+export type { CorrelationInsetProps, SerieDoInset } from './CorrelationInset.js';

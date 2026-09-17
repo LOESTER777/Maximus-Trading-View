@@ -266,7 +266,14 @@ function numeroOuAusente(v: number | null | undefined): number | undefined {
  * sobre a liquidez do topo do livro; ausência é a verdade. O contrato de `Bar` não tem
  * campo para eles justamente porque livro é outra capacidade.
  */
-export function parseBarrasDaMesa(body: unknown): readonly Bar[] | null {
+/**
+ * ⭐⭐ FOLGA MÍNIMA entre barras diárias, em segundos. Ver `parseBarrasDaMesa`.
+ *
+ * 12 h: separa "dois registros do MESMO pregão" (3 h de diferença) de "dois pregões" (24 h).
+ */
+const FOLGA_MINIMA_D1 = 12 * 3600;
+
+export function parseBarrasDaMesa(body: unknown, periodSeconds?: number): readonly Bar[] | null {
   if (!ehCorpoDeBarras(body)) return null;
 
   const idx = new Map<string, number>();
@@ -330,6 +337,47 @@ export function parseBarrasDaMesa(body: unknown): readonly Bar[] | null {
       ...(buyVolume === undefined ? {} : { buyVolume }),
       ...(sellVolume === undefined ? {} : { sellVolume }),
     });
+  }
+
+  // ⭐⭐ D1 DA MESA TEM DUAS CONVENÇÕES DE VIRADA DE DIA, E ISSO É UM DEFEITO DO DADO.
+  //
+  // ⚠️ Medido contra o serviço em 17/09/2026, `PETR4` em `D1`:
+  //
+  // ```
+  // 2026-05-29T00:00:00Z  fecha 41.43  vol 63.690
+  // 2026-05-29T03:00:00Z  fecha 41.87  vol 31.318   ⇠ o MESMO pregão, outra vez
+  // 2026-06-01T00:00:00Z  fecha 41.79  vol 97.977
+  // 2026-06-01T03:00:00Z  fecha 42.36  vol 51.093   ⇠ idem
+  // ```
+  //
+  // São DOIS registros do mesmo dia: um a meia-noite UTC e outro a meia-noite de Brasília
+  // (03:00 UTC no inverno). A base tem dois pipelines de ingestão com convenções diferentes de
+  // virada de dia, e nenhum dos dois está "errado" — errado é conviverem na mesma série.
+  //
+  // ⚠️ **O sintoma NÃO é visível no gráfico**: duas velas quase idênticas lado a lado passam
+  // por dois dias parecidos. O estrago aparece em tudo que é DERIVADO: o retorno entre as duas
+  // barras do mesmo dia é ruído puro, e foi o que fez a correlação de retornos entre PETR4 e
+  // VALE3 sair em −0,04 (duas blue chips do mesmo índice, que andam claramente juntas). Também
+  // envenena janela de desempenho, sazonalidade e qualquer média.
+  //
+  // ⭐ A COLAPSAGEM mantém a barra MAIS TARDIA do par, e a razão é o volume: 63.690 contra
+  // 31.318 na amostra acima mostra que os dois registros cobrem RECORTES diferentes do dia. O
+  // último a fechar é o que mais se aproxima do fechamento da sessão — e escolher a primeira
+  // daria o fechamento de um dia parcial.
+  //
+  // ⚠️ Só para período DIÁRIO ou maior. Em 5min os baldes são alinhados por `floor(epoch/300)`
+  // e não há ambiguidade; aplicar a colapsagem lá fundiria barras legítimas.
+  if (periodSeconds !== undefined && periodSeconds >= 86_400 && barras.length > 1) {
+    const colapsadas: Bar[] = [];
+    for (const b of barras) {
+      const anterior = colapsadas[colapsadas.length - 1];
+      if (anterior !== undefined && b.time - anterior.time < FOLGA_MINIMA_D1) {
+        colapsadas[colapsadas.length - 1] = b;
+        continue;
+      }
+      colapsadas.push(b);
+    }
+    return colapsadas;
   }
 
   return barras;
