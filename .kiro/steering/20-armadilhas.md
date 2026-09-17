@@ -530,3 +530,73 @@ a primeira, a de maior volume) e **as três dão o mesmo número** — logo não
 registro. É qualidade da série de ações na `bars_agg` (elas vieram por outro pipeline, sem
 fluxo). Para conta entre ativos, confie em `WIN`/`WDO`; a série de ações precisa de auditoria
 na ingestão, do lado do CopyTrader.
+
+## ⭐⭐ Dependência de dado em ARRAY é por CONTEÚDO, nunca por identidade
+
+Esta é a **terceira vez** que o mesmo mecanismo produz defeito neste projeto, e as três
+tiveram sintomas diferentes. Vale como regra: hook que reage a uma série de barras decide por
+CONTEÚDO.
+
+| Onde | Sintoma |
+|---|---|
+| `useAlerts` | **laço infinito** com `bars={[...]}` literal em JSX; travou o processo de teste por 120 s |
+| `legend-rail` (`notasIguais`) | re-render 60×/s num gráfico parado |
+| `useReplay` | ⭐ **a posição do replay voltava a ZERO** no meio da reprodução |
+
+O caso do `useReplay` só apareceu quando o replay passou a receber dado **REAL**, e é por isso
+que ele escapou por tanto tempo: com dado sintético o array nasce de um `useMemo([])` e a
+identidade **nunca** muda. `useMesaBars` devolve um array NOVO a cada re-render que ela provoca
+— e ela provoca um a cada vez que a bandeira `carregando` vira — com exatamente as mesmas
+barras dentro. O efeito de `[bars]` então recriava o `ReplayController`, matava o timer e
+zerava a posição, sem nada na tela explicando por quê.
+
+⭐ Corrigido com `chaveDaSerie` = `` `${bars.length}:${primeira.time}:${ultima.time}` `` e o
+efeito dependendo da CHAVE.
+
+⚠️ A chave não detecta troca no MEIO da série mantendo as pontas e o tamanho, e a escolha é
+deliberada: série de barras cresce no fim (barra nova) ou no começo (backfill), e as duas mexem
+numa das pontas. Somar todos os tempos seria O(n) a cada render de uma série de 18 anos para
+cobrir um caso que a camada de dado não produz.
+
+⚠️⚠️ **A guarda tem uma propriedade incômoda que vale registrar:** revertendo o efeito para
+`[bars]`, a bancada **não termina** — laço síncrono, que `--testTimeout` não interrompe. Ou
+seja, o sintoma da regressão é "o teste travou", não "o teste reprovou". Ao mexer nisso, rode a
+suíte com `timeout` externo.
+
+## ⭐⭐ Trocar de aba: gravar a que SAI antes de ativar a que ENTRA
+
+`chart-workspace.core.ts`. A ordem invertida — ativar e depois gravar — grava o estado da aba
+NOVA no slot da ANTIGA. O estrago é nas duas pontas: o trabalho da aba que se deixou **não é
+guardado**, e o documento da aba de destino **é sobrescrito** por um que não é dela.
+
+⚠️ E é a ordem natural de escrever o código: `setAtiva(id)` primeiro, porque é a linha que muda
+a tela. Por isso a API **não oferece** os dois passos soltos como caminho normal —
+`trocarDeAba(estado, id, documentoDaAtual, agora)` e `abrirEtrocar(...)` recebem o documento
+como ARGUMENTO, e passar o documento só é possível capturando antes.
+
+Se algum dia alguém "simplificar" isso em dois passos, o teste
+`⭐⭐ GUARDA: a ordem invertida à mão perde o trabalho` em
+`packages/engine/src/__tests__/chart-workspace.core.spec.ts` reconstrói o mundo errado e assere
+o estrago; e no hook, `⭐⭐ ir e voltar devolve o desenho de CADA aba` reprova (medido: 1 de 21).
+
+⚠️ Corolário: **id de aba não pode ser derivado de `symbol@periodo`.** Derivar quebra na
+primeira troca de período — a identidade mudaria e a aba ativa deixaria de existir no meio da
+operação. O id é opaco (`aba-<n>`); símbolo e período são atributos.
+
+⚠️ E ao persistir a área de trabalho, use `paraGravar()` e não `serializarAbas(estado)`: o
+documento da aba ATIVA só entra no estado quando há uma troca, então gravar direto persiste o
+documento da última troca. Quem desenha e recarrega sem nunca trocar de aba veria o gráfico
+voltar no tempo.
+
+## ⚠️ Ciclo de declaração no playground: quem decide o ATIVO precisa do estado que ele grava
+
+As abas decidem o ativo → o ativo é insumo do dado → o dado é insumo do estado que a aba grava.
+`useSymbolWorkspace` precisa ser declarado ANTES de `useMesaBars` (que consome o símbolo), mas
+seus callbacks `capturar`/`aplicar` precisam de `indicadores`, `desenho` e `capture`, que são
+declarados depois.
+
+Resolvido com duas refs (`capturarDaTela`, `aplicarNaTela`) preenchidas por efeito e lidas
+**somente dentro de manipulador de evento**, nunca durante o render. É o mesmo padrão do ciclo
+do perfil de volume (`volumeProfile: null` na criação + um efeito como único dono): quando duas
+coisas se precisam, uma delas passa a ser preenchida depois — e nunca as duas em ordem
+dependente da declaração dos hooks.

@@ -67,6 +67,8 @@ import {
   useCrosshair,
   useLayerLegends,
   useChartState,
+  // ⭐⭐ ABAS por ativo: cada aba e um DOCUMENTO de estado. Ver `useSymbolWorkspace.ts`.
+  useSymbolWorkspace,
   // ── Cromo de interface ──
   Icon,
   Tooltip,
@@ -99,7 +101,13 @@ import {
   ROTULO_TECNICO,
 } from '@robustus/charts-core';
 import type { SnapBar } from '@robustus/charts-drawings';
-import type { ChartEngine, PriceSeriesType, ChartPriceLine } from '@robustus/charts-engine';
+import type {
+  ChartEngine,
+  PriceSeriesType,
+  ChartPriceLine,
+  ChartState,
+  EstadoDeAbas,
+} from '@robustus/charts-engine';
 import { registry } from '@robustus/charts-indicators';
 import type { AlertSpec } from '@robustus/charts-react';
 // ⭐ O alerta DESENHADO: o estado (armado/disparado) virando cor e traço. Ver
@@ -115,6 +123,11 @@ import {
   salvarTemplate,
   serializarTemplates,
   type ColecaoDeTemplates,
+  // ⭐⭐ O nucleo PURO das abas. Ver `chart-workspace.core.ts` — a ordem "gravar a que sai
+  // antes de ativar a que entra" e a regra que ele torna inexprimivel de errar.
+  criarAbas,
+  desserializarAbas,
+  serializarAbas,
 } from '@robustus/charts-engine';
 import {
   makeOlderCandles,
@@ -151,20 +164,41 @@ const INDICADORES_INICIAIS = [
   { name: 'rsi', params: { period: 14 } },
 ] as const;
 
+/**
+ * ⭐ O simbolo que significa "dado gerado aqui". E um SIMBOLO como os outros de propósito:
+ * assim a aba tem um dono só do par (ativo, período), e não existe o estado impossível
+ * "fonte sintética com ativo PETR4".
+ */
+const SIMBOLO_SINTETICO = 'SINTETICO';
+
+/** Chave do armazenamento da área de trabalho (as abas + o documento de cada uma). */
+const CHAVE_ABAS = 'robustus-abas';
+
+/**
+ * Lê a área de trabalho gravada, ou cria a inicial.
+ *
+ * ⚠️ NUNCA lança, em nenhum caminho: `JSON.parse` cercado (gravação truncada por cota
+ * estourada) mais a validação do núcleo, que descarta aba corrompida e devolve `null` quando
+ * não há nada aproveitável. Perder as abas é ruim; não montar a aplicação é pior.
+ */
+function lerAbasGravadas(): EstadoDeAbas {
+  const inicial = (): EstadoDeAbas =>
+    criarAbas({ symbol: SIMBOLO_SINTETICO, periodSeconds: 300 }, Math.floor(Date.now() / 1000));
+  const bruto = localStorage.getItem(CHAVE_ABAS);
+  if (bruto === null) return inicial();
+  try {
+    return desserializarAbas(JSON.parse(bruto)).estado ?? inicial();
+  } catch {
+    return inicial();
+  }
+}
+
 function App(): JSX.Element {
   const bundle = useMemo(() => makeSyntheticBundle(240, 300, 42), []);
   const grid = useMemo(() => decodeColumnar(bundle.depth), [bundle]);
 
   // ── Estado de interface ───────────────────────────────────────────────────
   const [modo, setModo] = useState<ModoGrafico>('Candlestick');
-  /**
-   * Período corrente.
-   *
-   * ⚠️ O dado sintético nasce em M5 (`makeSyntheticBundle(240, 300, ...)`), então M5 é a
-   * BASE: só os múltiplos inteiros dela são oferecidos. Oferecer M1 e mostrar tela vazia
-   * seria pior que não oferecer — ver `timeframesAgregaveisDe`.
-   */
-  const [tfId, setTfId] = useState('M5');
   /**
    * Período do painel de COMPARAÇÃO, e se ele está na tela.
    *
@@ -174,18 +208,6 @@ function App(): JSX.Element {
    */
   const [comparar, setComparar] = useState(false);
   const [tfComparacao, setTfComparacao] = useState('H1');
-  /** Ativo corrente. Uma aba só até o playground ganhar segunda fonte de dado. */
-  const [ativo, setAtivo] = useState('SINTETICO');
-  /**
-   * ⭐ A FONTE do dado. `sintetico` continua o default, e é decisão:
-   *
-   * ⚠️ O sintético não depende de rede, é determinístico (semente fixa) e faz o playground
-   * funcionar em qualquer máquina. A mesa depende do túnel para a máquina B estar no ar —
-   * e ele JÁ FICOU quatro dias fora sem ninguém notar, segundo o registro do projeto de
-   * origem. Nascer apontando para uma dependência que pode estar ausente faria a primeira
-   * impressão do playground ser uma tela de erro.
-   */
-  const [fonte, setFonte] = useState<'sintetico' | 'mesa'>('sintetico');
   /**
    * ⭐ A altura dos sub-painéis de indicador, em três degraus.
    *
@@ -198,7 +220,6 @@ function App(): JSX.Element {
    * `null` = repartição automática (o comportamento histórico, 38% divididos).
    */
   const [alturaOsciladores, setAlturaOsciladores] = useState<number | null>(0.11);
-  const [ativoMesa, setAtivoMesa] = useState('WIN');
   /**
    * ⭐ O ativo do INSET de correlação. `null` = inset fechado.
    *
@@ -229,20 +250,86 @@ function App(): JSX.Element {
   // ── Caixa de ferramentas de indicadores ───────────────────────────────────
   const indicadores = useIndicatorCatalog({ registry, initial: INDICADORES_INICIAIS });
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ⭐⭐ ABAS POR ATIVO — cada aba é um DOCUMENTO, não um seletor de símbolo
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // A barra de abas existia com UMA aba fixa; o `<select>` "Ativo" era quem trocava de
+  // instrumento. O que faltava é o que o operador percebe: ele marca o suporte no WIN, vai ao
+  // PETR4, volta, e o suporte não está lá. Pior — as marcações do PETR4 continuam desenhadas
+  // no gráfico do WIN, em preços que naquele mercado não existem.
+  //
+  // ⭐ Agora a ABA é a dona única do par (ativo, período). Não há mais estado `fonte`,
+  // `ativoMesa` nem `tfId`: os três são DERIVADOS da aba ativa. Dois donos da mesma verdade
+  // é o defeito clássico, e aqui ele seria visível — o seletor apontando para um ativo e o
+  // gráfico mostrando outro.
+  //
+  // ⚠️⚠️ O CICLO DE DECLARAÇÃO, resolvido por ref: as abas decidem o ATIVO, que é insumo do
+  // dado, que é insumo do estado que a aba grava. `capturar` e `aplicar` precisam de
+  // `indicadores`, `desenho` e `capture`, que são declarados MAIS ABAIXO. As duas refs abaixo
+  // quebram o ciclo — elas são preenchidas por efeito, e só são LIDAS dentro de manipulador
+  // de evento, nunca durante o render.
+  const capturarDaTela = useRef<() => ChartState | null>(() => null);
+  const aplicarNaTela = useRef<(documento: ChartState | null) => void>(() => {});
+
+  const abas = useSymbolWorkspace({
+    estadoInicial: lerAbasGravadas,
+    capturar: () => capturarDaTela.current(),
+    aplicar: (documento) => aplicarNaTela.current(documento),
+    // ⚠️ A gravação é cercada: cota de `localStorage` estourada deixa o estado em memória
+    // intacto (o operador não perde a sessão) e a próxima mudança tenta de novo.
+    onChange: (estado) => {
+      try {
+        localStorage.setItem(CHAVE_ABAS, JSON.stringify(serializarAbas(estado)));
+      } catch {
+        /* cota cheia: segue em memória */
+      }
+    },
+  });
+
+  /** A aba na tela. É daqui que sai TODO o resto: fonte, ativo e período. */
+  const aba = abas.aba;
+  /**
+   * A FONTE do dado, derivada do símbolo da aba.
+   *
+   * ⚠️ O sintético continua o DEFAULT (a aba inicial nasce nele) e é decisão: ele não depende
+   * de rede, é determinístico (semente fixa) e faz o playground funcionar em qualquer
+   * máquina. A mesa depende do túnel para a máquina B estar no ar — e ele já ficou quatro
+   * dias fora sem ninguém notar. Nascer apontando para uma dependência que pode estar ausente
+   * faria a primeira impressão do playground ser uma tela de erro.
+   */
+  const fonte: 'sintetico' | 'mesa' = aba.symbol === SIMBOLO_SINTETICO ? 'sintetico' : 'mesa';
+  const ativoMesa = fonte === 'mesa' ? aba.symbol : 'WIN';
+
   // ── Período (timeframe) ────────────────────────────────────────────────────
   //
   // ⭐ O dado base é M5; períodos maiores saem por AGREGAÇÃO (`rollupBars`), que é o
   // mesmo caminho de um provedor real que só entrega o período mínimo.
   const TF_BASE = useMemo(() => timeframePorId('M5') as Timeframe, []);
+  /** Todos os períodos alcançáveis a partir da base, sem filtro de fonte. */
+  const tfsTodos = useMemo(() => timeframesAgregaveisDe(TF_BASE), [TF_BASE]);
   const tfsDisponiveis = useMemo(() => {
-    const agregaveis = timeframesAgregaveisDe(TF_BASE);
     // ⚠️ Em modo mesa só os períodos MATERIALIZADOS são oferecidos. A base não tem M1, e
     // oferecer para depois mostrar tela vazia é pior que não oferecer.
     return fonte === 'mesa'
-      ? agregaveis.filter((x) => PERIODOS_DA_MESA_IDS.includes(x.id))
-      : agregaveis;
-  }, [TF_BASE, fonte]);
-  const tf = useMemo(() => timeframePorId(tfId) ?? TF_BASE, [tfId, TF_BASE]);
+      ? tfsTodos.filter((x) => PERIODOS_DA_MESA_IDS.includes(x.id))
+      : tfsTodos;
+  }, [tfsTodos, fonte]);
+  /**
+   * O período corrente vem da ABA, e a busca é por SEGUNDOS.
+   *
+   * ⚠️ Segundos e não id: o id é apresentação (`'M5'`), os segundos são a verdade, e é o que
+   * a aba guarda. Guardar o id faria a aba depender do vocabulário de rótulos.
+   */
+  const tf = useMemo(
+    () => tfsTodos.find((x) => x.seconds === aba.periodSeconds) ?? TF_BASE,
+    [tfsTodos, TF_BASE, aba.periodSeconds],
+  );
+  /** O rótulo do período de uma aba qualquer — a segunda linha da aba na barra. */
+  const rotuloDePeriodo = useCallback(
+    (segundos: number): string => tfsTodos.find((x) => x.seconds === segundos)?.label ?? `${segundos}s`,
+    [tfsTodos],
+  );
 
   // ── Perfil de volume (histograma por LINHA) ────────────────────────────────
   //
@@ -866,18 +953,84 @@ function App(): JSX.Element {
   });
   const [nomeDoTemplate, setNomeDoTemplate] = useState('');
 
-  /** O documento de estado corrente — o que qualquer "salvar" guarda. */
-  const documentoAtual = useCallback(
-    () =>
+  /**
+   * O documento de estado corrente. É o que "salvar setup" guarda E o que a ABA grava ao
+   * sair da tela — um só lugar a manter, em vez de dois `capture` que divergiriam.
+   */
+  const documentoDeEstado = useCallback(
+    (): ChartState =>
       capture({
         symbol: simboloExibido,
         priceSeriesType: serieDoModo(modo),
         indicators: indicadores.states,
         alerts: alertSpecs.map((s) => ({ key: s.key, condition: s.condition, mode: s.options?.mode })),
         drawings: desenho.drawings,
-      }) as unknown as Record<string, unknown>,
+      }),
     [alertSpecs, capture, desenho.drawings, indicadores.states, modo, simboloExibido],
   );
+
+  /** A mesma coisa na forma que os templates guardam (documento OPACO). */
+  const documentoAtual = useCallback(
+    () => documentoDeEstado() as unknown as Record<string, unknown>,
+    [documentoDeEstado],
+  );
+
+  /**
+   * ⭐ Aplica um documento de estado na tela. É o caminho ÚNICO de restauração: templates,
+   * layout salvo e troca de aba passam todos por aqui.
+   *
+   * ⚠️ `null` significa "não sei" e NÃO "gráfico vazio": a aba nunca guardou nada, então a
+   * tela FICA como está. Limpar por não saber apagaria o trabalho do operador.
+   */
+  const aplicarDocumento = useCallback(
+    (documento: ChartState | null): void => {
+      if (documento === null) return;
+      setModo(documento.priceSeriesType as ModoGrafico);
+      indicadores.load(documento.indicators);
+      // ⚠️ `?? []` e não `if`: documento sem a lista de desenhos (gravado à mão, ou de versão
+      // antiga) deve LIMPAR os desenhos, não deixar os do ativo anterior na tela.
+      desenho.load(((documento.drawings as { drawings?: unknown }).drawings ?? []) as never);
+      setTick((n) => n + 1);
+    },
+    [desenho, indicadores],
+  );
+
+  /**
+   * ⚠️⚠️ O FECHO DO CICLO declarado lá em cima (ver o bloco das abas): as duas refs que o
+   * `useSymbolWorkspace` chama são preenchidas AQUI, onde `documentoDeEstado` e
+   * `aplicarDocumento` já existem.
+   *
+   * Efeito SEM dependência de propósito: as duas funções trocam de identidade quando os
+   * desenhos ou os indicadores mudam, e listá-las como dependência só faria o efeito
+   * reexecutar sem nenhum ganho — ele só assinala referência.
+   */
+  useEffect(() => {
+    capturarDaTela.current = documentoDeEstado;
+    aplicarNaTela.current = aplicarDocumento;
+  });
+
+  /**
+   * ⭐ Grava a área de trabalho ao SAIR da página, com o documento vivo da aba ativa.
+   *
+   * ⚠️ Sem isto, o `onChange` do hook só grava quando a coleção muda — abrir, trocar, fechar.
+   * Quem desenha e recarrega a página sem nunca trocar de aba veria o gráfico voltar no tempo,
+   * porque o documento gravado seria o da última troca. `paraGravar` captura a ativa antes de
+   * serializar, que é exatamente o buraco que ele existe para tapar.
+   */
+  useEffect(() => {
+    const aoSair = (): void => {
+      try {
+        localStorage.setItem(CHAVE_ABAS, JSON.stringify(abas.paraGravar()));
+      } catch {
+        /* cota cheia, ou já saindo: nada a fazer */
+      }
+    };
+    window.addEventListener('beforeunload', aoSair);
+    return () => window.removeEventListener('beforeunload', aoSair);
+    // ⚠️ Depende do `paraGravar` (estável, é `useCallback`) e não do objeto `abas`, que é novo
+    // a cada render: com o objeto, o ouvinte seria removido e recolocado 60 vezes por segundo
+    // durante um arrasto.
+  }, [abas.paraGravar]);
 
   const gravarTemplates = useCallback((colecao: ColecaoDeTemplates): void => {
     setTemplates(colecao);
@@ -903,12 +1056,9 @@ function App(): JSX.Element {
       const t = acharTemplate(templates, nome);
       if (t === null) return;
       const { state } = restore(t.documento);
-      setModo(state.priceSeriesType as ModoGrafico);
-      indicadores.load(state.indicators);
-      desenho.load(state.drawings.drawings as never);
-      setTick((n) => n + 1);
+      aplicarDocumento(state);
     },
-    [desenho, indicadores, restore, templates],
+    [aplicarDocumento, restore, templates],
   );
 
   const salvarLayout = useCallback((): void => {
@@ -932,12 +1082,8 @@ function App(): JSX.Element {
     } catch {
       return;
     }
-    const { state } = restore(parsed);
-    setModo(state.priceSeriesType as ModoGrafico);
-    indicadores.load(state.indicators);
-    desenho.load(state.drawings.drawings as never);
-    setTick((n) => n + 1);
-  }, [desenho, indicadores, restore]);
+    aplicarDocumento(restore(parsed).state);
+  }, [aplicarDocumento, restore]);
 
   // ── Grupos da barra horizontal ────────────────────────────────────────────
   //
@@ -1160,23 +1306,24 @@ function App(): JSX.Element {
           combinação impossível — fonte sintética com ativo `PETR4` — e o operador teria de
           administrar um estado que não significa nada. Um `select` também não enche a tela
           de botões, que é a regra desta barra.
+
+          ⭐⭐ E ele agora ABRE ABA em vez de mudar um estado global: escolher um ativo que já
+          tem aba VAI para ela (com os desenhos dela), e escolher um ativo novo cria a aba
+          herdando os indicadores. O `<select>` mostra o ativo da aba ATIVA — uma verdade só,
+          com um dono só.
         */}
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
           <span style={{ opacity: 0.6 }}>Ativo</span>
           <select
-            value={fonte === 'mesa' ? ativoMesa : 'SINTETICO'}
+            value={aba.symbol}
             onChange={(e) => {
               const v = e.target.value;
-              if (v === 'SINTETICO') {
-                setFonte('sintetico');
-                return;
-              }
-              setFonte('mesa');
-              setAtivoMesa(v);
-              // ⚠️ Período que a mesa não tem cai para M5 em vez de mostrar tela vazia: o
-              // sintético oferece M1 e a mesa não, então trocar de fonte com M1 escolhido
-              // deixaria o seletor apontando para um período inexistente.
-              if (!PERIODOS_DA_MESA_IDS.includes(tf.id)) setTfId('M5');
+              // ⚠️ Período que a fonte de destino não tem cai para M5 em vez de mostrar tela
+              // vazia: o sintético oferece M1 e a mesa não, então abrir aba da mesa com M1
+              // escolhido deixaria o seletor apontando para um período inexistente.
+              const destinoTemOPeriodo =
+                v === SIMBOLO_SINTETICO || PERIODOS_DA_MESA_IDS.includes(tf.id);
+              abas.abrir(v, destinoTemOPeriodo ? tf.seconds : TF_BASE.seconds);
             }}
             style={{
               background: 'rgba(15,23,42,0.6)',
@@ -1187,7 +1334,7 @@ function App(): JSX.Element {
               padding: '2px 4px',
             }}
           >
-            <option value="SINTETICO">SINTÉTICO (local)</option>
+            <option value={SIMBOLO_SINTETICO}>SINTÉTICO (local)</option>
             {ATIVOS_DA_MESA.map((a) => (
               <option key={a.symbol} value={a.symbol}>
                 {a.label}
@@ -1195,10 +1342,15 @@ function App(): JSX.Element {
             ))}
           </select>
         </label>
+        {/*
+          ⭐ O período é da ABA, não da tela: trocar de período mexe na aba ATIVA e preserva a
+          identidade e o documento dela. Para ter o MESMO ativo em dois períodos, duplique a
+          aba (o botão ao lado das abas) e mude o período da cópia.
+        */}
         <TimeframeSelector
           timeframes={tfsDisponiveis}
           value={tf.id}
-          onChange={(novo) => setTfId(novo.id)}
+          onChange={(novo) => abas.mudarPeriodo(novo.seconds)}
         />
         <span aria-hidden style={{ width: 1, alignSelf: 'stretch', background: 'rgba(148,163,184,0.18)' }} />
         <ChartToolbar
@@ -1261,14 +1413,41 @@ function App(): JSX.Element {
 
         {/* ═══ Os painéis de gráfico ═══ */}
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0 }}>
-          {/* Abas de ATIVO. Uma só enquanto o playground tem uma fonte de dado; a barra
-              existe para a montagem estar demonstrada e testável. */}
+          {/*
+            ⭐⭐ ABAS DE ATIVO, cada uma com o SEU documento. Trocar de aba grava o que está na
+            tela na aba que sai e restaura o da que entra — ver `useSymbolWorkspace` e
+            `chart-workspace.core.ts`.
+
+            ⚠️ O `+` DUPLICA a aba corrente, e não abre um ativo qualquer: um `+` que
+            precisasse perguntar "qual ativo?" exigiria um diálogo que não existe, e o
+            `<select>` "Ativo" já é o caminho de abrir ativo novo. Duplicar é o que fecha o
+            único buraco que sobrava — o mesmo ativo em DOIS períodos.
+
+            ⚠️ `closable` cai para `false` com uma aba só: a barra vazia deixaria a tela sem
+            gráfico e sem caminho de volta. O núcleo recusa de todo modo, mas esconder o `✕`
+            é melhor que oferecer um botão que não funciona.
+          */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px 0' }}>
             <SymbolTabs
-              tabs={[{ id: 'SINTETICO', label: 'SINTÉTICO', hint: tf.label, closable: false }]}
-              value={ativo}
-              onChange={setAtivo}
+              tabs={abas.abas.map((a) => ({
+                id: a.id,
+                label: a.symbol === SIMBOLO_SINTETICO ? 'SINTÉTICO' : a.symbol,
+                hint: rotuloDePeriodo(a.periodSeconds),
+                closable: abas.abas.length > 1,
+              }))}
+              value={aba.id}
+              onChange={abas.trocar}
+              onClose={abas.fechar}
+              onAdd={abas.duplicar}
+              addLabel="Duplicar esta aba (para ver o mesmo ativo em outro período)"
             />
+            {abas.recusa !== null && (
+              // ⚠️ A recusa é DITA. Um clique sem resposta (teto de abas, última aba) parece
+              // defeito, e o operador tenta de novo achando que errou o alvo.
+              <span role="status" style={{ fontSize: 10, color: '#fbbf24', whiteSpace: 'nowrap' }}>
+                {abas.recusa}
+              </span>
+            )}
             <span style={{ flex: 1 }} />
             {/* ⭐ Comparação lado a lado: o MESMO ativo em outro período, sincronizado. */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
@@ -1583,10 +1762,20 @@ function App(): JSX.Element {
             title="Replay de mercado"
             icon="replay"
             badge={modoReplay ? `${estado.position}/${estado.length}` : 'off'}
-            hint="Reproduz o pregão barra a barra, como um vídeo, para treinar leitura."
+            hint="Reproduz o pregão barra a barra, como um vídeo, para treinar leitura. Reproduz a série que está na tela — em modo mesa, o histórico REAL do ativo da aba."
             defaultOpen={false}
           >
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {/*
+                ⭐ QUE série está sendo reproduzida, dito na tela. O replay começou como recurso
+                de dado sintético, e agora recebe o histórico real da mesa pelo mesmo caminho
+                (`bars: velasDaFonte`). Sem esta linha, "posição 240/6376" não diz de que ativo
+                nem de que período — e treinar leitura no ativo errado é pior que não treinar.
+              */}
+              <span style={{ fontSize: 10, opacity: 0.7 }}>
+                {simboloExibido} · {tf.label} · {velasDaFonte.length} barra(s)
+                {fonte === 'mesa' ? ' · histórico REAL da mesa' : ' · dado sintético'}
+              </span>
               <button type="button" onClick={() => setModoReplay((v) => !v)} style={botaoPequeno}>
                 {modoReplay ? 'Desligar replay' : 'Ligar replay'}
               </button>

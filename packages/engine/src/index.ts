@@ -141,3 +141,52 @@ export type {
   ResultadoDeTemplate,
   MotivoDeRecusa,
 } from './layout-templates.core.js';
+// ═════════════════════════════════════════════════════════════════════════════
+// ABAS por ativo — uma aba e um DOCUMENTO de estado, nao um seletor de simbolo
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ Nucleo PURO: sem persistencia, sem relogio, sem id sorteado. O id da aba nova e
+// DERIVADO do conjunto (`proximoIdDeAba`), entao o teste nao aceita "algum id".
+//
+// ⭐⭐ Use `trocarDeAba` e `abrirEtrocar`, NAO a dupla `gravarDocumento` + ativar: a ordem
+// invertida grava o estado da aba nova no slot da antiga. Ver o cabecalho do modulo.
+
+export {
+  criarAbas,
+  abrirAba,
+  abrirEtrocar,
+  duplicarAba,
+  trocarDeAba,
+  fecharAba,
+  gravarDocumento,
+  mudarPeriodoDaAba,
+  mudarSimboloDaAba,
+  abaAtiva,
+  acharAba,
+  documentoParaAbaNova,
+  normalizarSimbolo,
+  periodoValido,
+  proximoIdDeAba,
+  mesmaCombinacao,
+  serializarAbas,
+  desserializarAbas,
+  ABAS_SCHEMA_VERSION,
+  MAX_ABAS,
+  MAX_SIMBOLO,
+  /** Grava o documento da aba corrente e ativa outra, NESTA ordem. */
+  trocarDeAba as switchTab,
+  /** Abre (ou ativa) gravando antes o documento da aba corrente e herdando a analise. */
+  abrirEtrocar as openTab,
+  /** Le a area de trabalho de valor desconhecido. NUNCA lanca. */
+  desserializarAbas as parseWorkspaceTabs,
+} from './chart-workspace.core.js';
+export type {
+  AbaDeAtivo,
+  EstadoDeAbas,
+  PedidoDeAba,
+  ResultadoDeAbertura,
+  ResultadoDeTroca,
+  ResultadoDeFechamento,
+  AbasSerializadas,
+  LeituraDeAbas,
+} from './chart-workspace.core.js';

@@ -80,10 +80,57 @@ duplicadas.
   preço, dois ativos que subiram no ano dão quase 1 mesmo tendo subido em meses diferentes.
 - **Altura de sub-painel** configurável (`setPaneHeightFraction`), que sobrevive a ligar outro
   indicador.
+- ⭐⭐ **ABAS POR ATIVO com estado próprio** (`chart-workspace.core.ts` + `useSymbolWorkspace`):
+  uma aba é um DOCUMENTO de gráfico, não um seletor de símbolo. Ver a seção própria abaixo.
+- ⭐ **Replay sobre dado REAL** — e a ligação achou um defeito no `useReplay` (ver
+  `20-armadilhas.md`): ele reiniciava por IDENTIDADE do array de barras.
 
 ⛔ **Duas coisas NÃO existem, e a ausência é declarada:** grade de sub-painéis em COLUNAS
 (exige eixo de tempo por pane e deixa de alinhar com o preço — decisão pendente) e estrutura a
 termo de volatilidade implícita (exige cadeia de opções, que nenhuma base tem).
+
+## ⭐⭐ Abas por ativo — uma aba é um DOCUMENTO
+
+`SymbolTabs` já desenhava a barra e `serializeChartState` já capturava o estado. Faltava o
+pedaço do meio, que é o que o operador percebe: ele marca o suporte no WIN, vai ao PETR4,
+volta, e o suporte não está lá — pior, as marcações do PETR4 continuam desenhadas no gráfico do
+WIN, em preços que naquele mercado não existem.
+
+Três camadas, na disciplina do projeto: `packages/engine/src/chart-workspace.core.ts` (regra,
+PURO), `packages/react/src/useSymbolWorkspace.ts` (costura), `SymbolTabs` (aparência).
+
+⭐⭐ **A ORDEM É O DEFEITO, e a API a torna inexprimível.** Trocar de aba é gravar o documento
+da aba que SAI e ativar a que ENTRA. Invertido — ativar e depois gravar — o estado da aba NOVA
+é gravado no slot da ANTIGA: o operador perde o trabalho da aba que acabou de deixar E a aba de
+destino é sobrescrita. É a ordem natural de escrever o código (`setAtiva(id)` primeiro, porque é
+a linha que muda a tela). Então **use `trocarDeAba` / `abrirEtrocar`**, que recebem o documento
+como ARGUMENTO — passar o documento só é possível capturando antes.
+
+Decisões que valem lembrar:
+
+- ⚠️ **`id` é OPACO (`aba-<n>`), nunca derivado de `symbol@periodo`.** Derivar quebra na
+  primeira troca de período: a identidade mudaria e a aba ativa deixaria de existir. Símbolo e
+  período são ATRIBUTOS. `proximoIdDeAba` é determinístico e **não reaproveita** id de aba
+  fechada.
+- ⚠️ **Aba nova herda a ANÁLISE, não as MARCAÇÕES** (`documentoParaAbaNova`): vêm o tipo de
+  série e os indicadores (EMA 20 significa o mesmo em qualquer instrumento); ficam de fora
+  desenhos, alertas e viewport (presos a PREÇO — alerta herdado dispara na hora no ativo novo).
+- ⭐ **`duplicarAba` é a única duplicata de conteúdo permitida**, e existe porque sem ela "o
+  mesmo ativo em DOIS períodos" é INALCANÇÁVEL pela interface: `abrirAba` deduplica por conteúdo
+  de propósito (quem escolhe PETR4 duas vezes quer ir ao PETR4). A cópia leva o documento — é o
+  mesmo instrumento, os preços valem.
+- `fecharAba` recusa a última (barra vazia = tela sem gráfico e sem volta), elege o vizinho da
+  DIREITA, e devolve `destino` non-null **só** quando a fechada era a ativa — é o sinal de "há
+  documento a aplicar", e sem ele o consumidor teria de comparar `ativa` antes e depois.
+- `MAX_ABAS = 12` **recusa** em vez de fechar a mais antiga: fechar descartaria um documento que
+  o operador passou o pregão montando, por causa de um clique num seletor.
+- ⭐ `paraGravar()` captura a aba ATIVA antes de serializar. Persistir `serializarAbas(estado)`
+  direto grava o documento da última troca — quem nunca troca de aba veria o gráfico voltar no
+  tempo ao recarregar.
+
+No playground os estados `fonte`, `ativoMesa`, `tfId` e `ativo` **deixaram de existir**: os
+quatro são DERIVADOS da aba ativa. `SIMBOLO_SINTETICO = 'SINTETICO'` é um símbolo como os
+outros, e é o que mata o estado impossível "fonte sintética com ativo PETR4".
 
 ## Origem do código — leia antes de mexer
 
@@ -109,14 +156,14 @@ cosmética.
 | `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador + vocabulário de TIMEFRAME + ⭐ **fonte de barras da MESA** (histórico real) | ~168 |
 | `@robustus/charts-indicators` | 29 indicadores incrementais (warmup+update+preview O(1)), registry | 79 |
 | `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 |
-| `@robustus/charts-engine` | motor sem framework | 18 novos |
-| `@robustus/charts-react` | hooks (`useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, **`useHistoryBackfill`**, **`useChartSync`**) + UI própria (`ChartToolbar`, `DrawingToolbar`, `IndicatorToolbox`, `CommandPalette`, `ChartLegend`, **`TimeframeSelector`**, **`SymbolTabs`**, **`ChartGrid`**) + **`<ChartProvider>`** | ~250 |
+| `@robustus/charts-engine` | motor sem framework + persistencia de layout + templates nomeados + ⭐⭐ **abas por ativo** (`chart-workspace.core.ts`) | 18 + 28 + 48 |
+| `@robustus/charts-react` | hooks (`useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, `useHistoryBackfill`, `useChartSync`, `useLayerLegends`, `useVisibleTimeRange`, ⭐⭐ **`useSymbolWorkspace`**) + UI própria (`ChartToolbar`, `DrawingToolbar`, `IndicatorToolbox`, `CommandPalette`, `ChartLegend`, `TimeframeSelector`, `SymbolTabs`, `ChartGrid`, `AssetReadout`, `ObjectTree`, `CorrelationInset`) + **`<ChartProvider>`** | ~300 |
 | `@robustus/charts-alerts` | motor PURO de alerta de preço, máquina ARMED→TRIGGERED sem repique; condições CROSS/TOUCH/ENTER_ZONE/EXIT_ZONE/PERCENT_CHANGE/**SERIES_CROSS**; `AlertStore` | 46 |
 | `@robustus/charts-replay` | controlador de replay de mercado determinístico, `TimerLike` injetado, pausa no fim sem loop | 31 novos |
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test            # 1791 testes, 93 arquivos
+npm test            # 1868 testes, 96 arquivos
 npm run build       # todos os pacotes
 npm run verify      # ⭐ typecheck + typecheck:playground + check ESM + testes
 npm run smoke:consumo  # empacota, instala FORA do workspace e importa em Node ESM puro

@@ -41,8 +41,12 @@ import {
 /** O que o hook recebe. */
 export interface UseReplayParams {
   /**
-   * A serie completa a reproduzir. Mudar a identidade recria o controlador
-   * (novo pregao) — memoize se nao quiser reiniciar o replay a cada render.
+   * A serie completa a reproduzir.
+   *
+   * ⭐⭐ O reinicio e decidido por CONTEUDO (quantidade + tempo da primeira e da ultima
+   * barra), NAO pela identidade do array. Ver `chaveDaSerie` — e a mesma correcao que o
+   * `useAlerts` precisou, e aqui ela virou requisito quando o replay passou a receber dado
+   * REAL de provedor.
    */
   readonly bars: readonly ReplayBar[];
   /** Velocidade inicial em barras/segundo. Default 4. */
@@ -120,8 +124,35 @@ export function useReplay(params: UseReplayParams): UseReplayResult {
   }));
 
   // As opcoes iniciais numa ref: nao devem recriar o controlador quando mudam,
-  // so a identidade de `bars` recria (novo pregao). Sao lidas na construcao.
+  // so uma serie NOVA recria (novo pregao). Sao lidas na construcao.
   const iniciais = useRef({ speed, tickMs, startAtEnd });
+
+  /**
+   * ⭐⭐ A identidade da SERIE, por CONTEUDO — e nao a referencia do array.
+   *
+   * ⚠️ O defeito que isto corrige apareceu quando o replay passou a receber dado REAL: uma
+   * fonte de provedor devolve um array NOVO a cada re-render que ela provoca (aqui, cada vez
+   * que a bandeira "carregando" vira), com exatamente as mesmas barras dentro. Com a decisao
+   * por identidade, o efeito abaixo recriava o `ReplayController`, matava o timer e voltava a
+   * posicao a ZERO — o operador via o replay saltar para o inicio do pregao no meio da
+   * reproducao, sem nada na tela explicando por que.
+   *
+   * ⭐ E a MESMA correcao que o `useAlerts` precisou (lá o sintoma foi pior: laco infinito com
+   * `bars={[...]}` literal em JSX). A licao virou regra do projeto: dependencia de dado em
+   * array e por CONTEUDO.
+   *
+   * ⚠️ A chave e "quantidade + tempo da primeira + tempo da ultima". Ela nao detecta troca no
+   * MEIO da serie mantendo as pontas e o tamanho — e a escolha e deliberada: serie de barras
+   * cresce no fim (barra nova) ou no comeco (backfill), e as duas mexem numa das pontas. O
+   * alternativo honesto seria somar todos os tempos, o que custaria O(n) a cada render de uma
+   * serie de 18 anos para cobrir um caso que a camada de dado nao produz.
+   */
+  const chaveDaSerie = useMemo(() => {
+    if (bars.length === 0) return '0';
+    const primeira = bars[0] as ReplayBar;
+    const ultima = bars[bars.length - 1] as ReplayBar;
+    return `${bars.length}:${primeira.time}:${ultima.time}`;
+  }, [bars]);
 
   // ── Cria o controlador por conjunto de barras; descarta ao trocar/desmontar ──
   //
@@ -144,7 +175,11 @@ export function useReplay(params: UseReplayParams): UseReplayResult {
       controller.dispose();
       controllerRef.current = null;
     };
-  }, [bars]);
+    // ⚠️ Depende de `chaveDaSerie` e NAO de `bars` — ver o comentario da chave. O `bars` lido
+    // aqui e o do render que criou este efeito, e o conteudo dele casa com a chave por
+    // construcao; um array novo com o mesmo conteudo nao reexecuta, o que e exatamente o
+    // ponto. (`eslint-disable` seria necessario se a regra de exaustividade estivesse ligada.)
+  }, [chaveDaSerie]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Espelha o estado apos um comando manual (play/pause/step/seek/setSpeed). O
   // `onAdvance` cobre o avanco automatico; os comandos manuais precisam empurrar

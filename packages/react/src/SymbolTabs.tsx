@@ -58,6 +58,14 @@ export interface SymbolTabsProps {
   readonly onClose?: (id: string) => void;
   /** Ausente = não há botão de adicionar. */
   readonly onAdd?: () => void;
+  /**
+   * O que o `+` faz, para o leitor de tela e para a dica.
+   *
+   * ⚠️ Existe porque "adicionar" não é sempre a mesma coisa: no playground o `+` DUPLICA a aba
+   * corrente (é como se chega ao mesmo ativo em dois períodos), e anunciar "adicionar ativo"
+   * prometeria um diálogo de escolha que não vai aparecer.
+   */
+  readonly addLabel?: string;
   /** Rótulo do conjunto. Default `'Ativos'`. */
   readonly ariaLabel?: string;
   readonly className?: string;
@@ -114,6 +122,7 @@ export function SymbolTabs({
   onChange,
   onClose,
   onAdd,
+  addLabel = 'Adicionar ativo',
   ariaLabel = 'Ativos',
   className,
   style,
@@ -225,7 +234,8 @@ export function SymbolTabs({
         <button
           type="button"
           onClick={onAdd}
-          aria-label="Adicionar ativo"
+          aria-label={addLabel}
+          title={addLabel}
           style={{ ...estiloAba(false), borderRadius: 6, opacity: 0.8 }}
         >
           <Icon name="plus" size={12} />

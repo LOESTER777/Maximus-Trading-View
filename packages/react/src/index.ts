@@ -226,3 +226,13 @@ export type { FaixaDeTempoVisivel, UseVisibleTimeRangeParams } from './useVisibl
 // nao um segundo motor, porque o inset e leitura de RELACAO e nao um grafico operavel.
 export { CorrelationInset } from './CorrelationInset.js';
 export type { CorrelationInsetProps, SerieDoInset } from './CorrelationInset.js';
+// ⭐⭐ ABAS por ativo, cada uma com o SEU documento de grafico. Ver `useSymbolWorkspace.ts`.
+//
+// ⚠️ Este hook e a costura; `SymbolTabs` e a aparencia; `chart-workspace.core.ts` (no engine)
+// e a regra. Trocar de aba GRAVA a que sai antes de ativar a que entra — a ordem invertida
+// grava o estado da aba nova no lugar do da antiga, e o operador perde o trabalho.
+export { useSymbolWorkspace } from './useSymbolWorkspace.js';
+export type {
+  UseSymbolWorkspaceOptions,
+  UseSymbolWorkspaceResult,
+} from './useSymbolWorkspace.js';
