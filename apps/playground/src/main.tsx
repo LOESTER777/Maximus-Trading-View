@@ -87,6 +87,7 @@ import {
   useVisibleTimeRange,
   CorrelationInset,
   ToolHelpStrip,
+  PaneChrome,
 } from '@robustus/charts-react';
 // ⭐ Os núcleos puros da LEITURA do ativo. Ver `asset-readout.core.ts`: tudo sai das barras
 // que já estão na tela, sem requisição nova.
@@ -938,7 +939,7 @@ export function App(): JSX.Element {
     return m;
   }, [alturaOsciladores, indicadores.plots]);
 
-  useIndicators({
+  const plotados = useIndicators({
     engine,
     plots: indicadores.plots,
     paneHeights: alturasDeIndicador,
@@ -949,6 +950,39 @@ export function App(): JSX.Element {
     onIndicatorClick: (plotId) =>
       setIndicadorClicado((atual) => ({ id: plotId, nonce: (atual?.nonce ?? 0) + 1 })),
   });
+
+  /**
+   * ⭐⭐ Os itens do CROMO de sub-painel: a faixa em HTML sobre cada pane de indicador.
+   *
+   * ⚠️ Só indicadores com pane PRÓPRIA entram (`paneIndexOf` devolve `null` para quem plota
+   * sobre o preço): uma faixa flutuando no painel de preço estaria dizendo "este é o sub-painel
+   * da EMA" sobre um sub-painel que não existe.
+   *
+   * ⚠️ `tick` na dependência: `paneIndexOf` lê o plotter DIRETO (não um espelho em estado), e o
+   * plotter muda quando um indicador é ligado. Sem o gatilho, a faixa nova não apareceria até o
+   * próximo render por outro motivo.
+   */
+  const itensDoCromo = useMemo(
+    () =>
+      indicadores.active
+        .map((a) => {
+          const paneIndex = plotados.paneIndexOf(a.id);
+          if (paneIndex === null) return null;
+          const cor = a.colors?.['value'] ?? plotados.effectiveColors(a.id)['value'];
+          return {
+            paneIndex,
+            label: indicadores.entryOf(a.name)?.label ?? a.name,
+            ...(cor === undefined ? {} : { color: cor }),
+            visible: a.visible,
+            onToggleVisible: () => indicadores.setVisible(a.id, !a.visible),
+            onRemove: () => indicadores.remove(a.id),
+            onOpenSettings: () =>
+              setIndicadorClicado((atual) => ({ id: a.id, nonce: (atual?.nonce ?? 0) + 1 })),
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null),
+    [indicadores, plotados, tick],
+  );
 
   const ohlc = useCrosshair({ engine });
   // ⭐ A trilha: o que cada camada de canvas tem a dizer, enfileirado pelo motor na ordem
@@ -1802,6 +1836,29 @@ export function App(): JSX.Element {
                 de ser escolhida). Ver `ToolHelpStrip.tsx` e `tool-help.core.ts`.
               */}
               <ToolHelpStrip tool={desenho.tool} />
+              {/*
+                ⭐⭐ O CROMO dos sub-painéis: nome, cor, esconder, remover, propriedades — e a
+                ALÇA que reordena com o mouse.
+                *"os histogramas deve ter o recurso de mover com mouse, para poder trocar de
+                posição"*.
+
+                ⚠️ HTML para o cromo, canvas para o DADO. Uma div por sub-painel (a outra metade
+                do pedido) foi recusada: cada div seria um canvas próprio, o crosshair pararia de
+                atravessar as panes e voltariam N janelas que podem divergir. Ver o cabeçalho de
+                `PaneChrome.tsx`.
+
+                ⚠️ E a camada NÃO captura ponteiro fora dos controles — ela cobre toda a área das
+                panes, e sem a guarda engoliria o pan, o zoom e o crosshair.
+              */}
+              <PaneChrome
+                engine={engine}
+                items={itensDoCromo}
+                onReorder={(paneIndex, posicao) => {
+                  engine?.api.movePane(paneIndex, posicao);
+                  // A geometria mudou; o rótulo do arranjo e o cromo releem.
+                  setTick((n) => n + 1);
+                }}
+              />
             </div>
 
             {comparar && (

@@ -335,6 +335,17 @@ export class RobustusChartCore implements IChartApi {
   /** Estado do arrasto vertical do eixo de preco. */
   private scalingPriceAxis = false;
   private scalingPane: Pane | null = null;
+  /**
+   * ⭐⭐ Ouvintes de LAYOUT: chamados quando a geometria das panes muda.
+   *
+   * ⚠️ Existem porque uma camada HTML sobre o canvas nao tem como saber que os retangulos
+   * mudaram. Sem isto, o unico caminho seria pesquisar `paneRectOf` a cada quadro de animacao —
+   * um laco de rAF permanente para um evento que acontece ao redimensionar a janela, ligar um
+   * indicador ou arrastar uma divisoria. Raro, e sem aviso viraria custo continuo.
+   *
+   * ⚠️ Emitido de `measure()`, que e o ponto UNICO onde a geometria e recalculada.
+   */
+  private readonly layoutListeners = new Set<() => void>();
   private readonly rangeListeners = new Set<(r: LogicalRange | null) => void>();
   private readonly clickListeners = new Set<(p: MouseEventParams) => void>();
   private readonly crosshairListeners = new Set<(p: MouseEventParams) => void>();
@@ -497,6 +508,15 @@ export class RobustusChartCore implements IChartApi {
     this.totalHeight = h;
     this.distributePaneHeights(h);
     this.scheduleRender();
+    // ⚠️ Emitido DEPOIS de `distributePaneHeights`: quem ouve vai ler `paneRectOf`, e ler
+    // durante o calculo devolveria a geometria do quadro anterior.
+    for (const l of this.layoutListeners) {
+      try {
+        l();
+      } catch {
+        /* ouvinte que lanca nao derruba o redimensionamento */
+      }
+    }
   }
 
   /**
@@ -1029,6 +1049,66 @@ export class RobustusChartCore implements IChartApi {
   /** O peso de largura fixado para um sub-painel, ou `null` quando ele divide por igual. */
   paneWidthFraction(paneIndex: number): number | null {
     return this.panes.find((p) => p.index === paneIndex)?.widthFractionFixa ?? null;
+  }
+
+  subscribeLayoutChange(handler: () => void): void {
+    this.layoutListeners.add(handler);
+  }
+
+  unsubscribeLayoutChange(handler: () => void): void {
+    this.layoutListeners.delete(handler);
+  }
+
+  /**
+   * ⭐⭐ REORDENA um sub-painel: move-o para outra posicao entre os sub-paineis.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O PEDIDO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * *"os histogramas deve ter o recurso de mover com mouse, para poder trocar de posicao"*.
+   *
+   * ⭐ Barato porque a grade JA preenche as linhas na ordem do array de panes (ver
+   * `calcularArranjo`): reordenar e mover um elemento nesse array e remedir. Nao ha geometria
+   * a recalcular a mao, e a mesma operacao serve para o modo empilhado e para a grade.
+   *
+   * `novaPosicao` e o indice entre os SUB-PAINEIS (0 = o primeiro depois do preco), recortado.
+   *
+   * ⚠️ A pane 0 nao participa: ela e o preco e fica sempre primeira. Um pedido para move-la, ou
+   * para mover algo para a posicao dela, e ignorado em vez de reordenar o grafico inteiro.
+   *
+   * ⚠️ Reordenar NAO mexe em altura nem em largura. As fracoes viajam com a pane — o operador
+   * moveu o sub-painel, nao pediu para redimensiona-lo. Um `rebalancePanes` aqui apagaria a
+   * altura que ele tinha ajustado a mao.
+   */
+  movePane(paneIndex: number, novaPosicao: number): void {
+    if (this.disposed || paneIndex === 0) return;
+    if (!Number.isFinite(novaPosicao)) return;
+    const de = this.panes.findIndex((p) => p.index === paneIndex);
+    if (de <= 0) return;
+
+    // Posicoes contadas ENTRE os sub-paineis: a lista sem a pane principal.
+    const subs = this.panes.slice(1);
+    const deSub = subs.findIndex((p) => p.index === paneIndex);
+    if (deSub < 0) return;
+    const alvo = Math.min(subs.length - 1, Math.max(0, Math.floor(novaPosicao)));
+    if (alvo === deSub) return;
+
+    const movida = subs.splice(deSub, 1)[0] as Pane;
+    subs.splice(alvo, 0, movida);
+    this.panes = [this.panes[0] as Pane, ...subs];
+    this.measure();
+  }
+
+  /**
+   * A ordem corrente das panes, por indice estavel. O primeiro e sempre o preco (0).
+   *
+   * ⭐ Publicado porque a POSICAO nao e derivavel do indice: o indice e estavel e nunca
+   * reusado, e a posicao muda com `movePane`. Sem isto, uma camada de cromo HTML nao teria como
+   * saber que ordem desenhar nem para que posicao esta arrastando.
+   */
+  paneOrder(): readonly number[] {
+    return this.panes.map((p) => p.index);
   }
 
   /** O retangulo de uma pane na tela, em pixel logico. Ver `PaneRect`. */

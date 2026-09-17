@@ -557,6 +557,28 @@ export interface IChartApi extends IChartApiBase {
   paneWidthFraction(index: number): number | null;
   /** O RETANGULO de uma pane na tela. Ver `PaneRect`. */
   paneRectOf(index: number): PaneRect;
+  /**
+   * ⭐⭐ REORDENA um sub-painel. `novaPosicao` conta ENTRE os sub-paineis (0 = o primeiro).
+   *
+   * Atende *"os histogramas deve ter o recurso de mover com mouse, para poder trocar de
+   * posicao"*. A pane principal (0) nao participa — ela e o preco e fica sempre primeira.
+   *
+   * ⚠️ Reordenar NAO mexe em altura nem largura: as fracoes viajam com a pane. Rebalancear aqui
+   * apagaria o ajuste manual que o operador tinha feito.
+   */
+  movePane(index: number, novaPosicao: number): void;
+  /** A ordem corrente das panes, por indice estavel. O primeiro e sempre o preco (0). */
+  paneOrder(): readonly number[];
+  /**
+   * ⭐ Avisa quando a GEOMETRIA das panes muda (redimensionar, ligar indicador, arrastar
+   * divisoria, reordenar).
+   *
+   * ⚠️ Existe para uma camada HTML sobre o canvas poder se realinhar. Sem o aviso, o unico
+   * caminho seria pesquisar `paneRectOf` a cada quadro — um laco permanente para um evento
+   * raro. Idempotente por `Set`.
+   */
+  subscribeLayoutChange(handler: () => void): void;
+  unsubscribeLayoutChange(handler: () => void): void;
   subscribeClick(handler: (param: MouseEventParams) => void): void;
   subscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
   /**

@@ -129,6 +129,15 @@ export interface UseIndicatorsResult {
     readonly x: number;
     readonly y: number;
   }) => { readonly plotId: string; readonly outputKey: string | null } | null;
+  /**
+   * ⭐ O ÍNDICE DE PANE de um indicador, ou `null` quando ele plota sobre o preço.
+   *
+   * Existe para a camada de cromo em HTML (`PaneChrome`) poder alinhar a faixa de cada
+   * sub-painel ao retângulo dele — e o retângulo é consultado POR ÍNDICE (`paneRectOf`). A
+   * interface conhece o indicador; o motor conhece a pane; o plotter é o único que tem os dois
+   * lados.
+   */
+  readonly paneIndexOf: (plotId: string) => number | null;
 }
 
 /**
@@ -331,7 +340,13 @@ export function useIndicators(params: UseIndicatorsParams): UseIndicatorsResult 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine, onIndicatorClick === undefined, indicatorAt]);
 
-  return { effectiveColors, indicatorAt };
+  const paneIndexOf = useCallback((plotId: string): number | null => {
+    // ⚠️ Lê o plotter DIRETO, sem espelhar em estado: o índice de pane é do motor, e uma cópia no
+    // React divergiria no instante em que um indicador é ligado ou desligado.
+    return plotterRef.current?.paneIndexOf(plotId) ?? null;
+  }, []);
+
+  return { effectiveColors, indicatorAt, paneIndexOf };
 }
 
 /**

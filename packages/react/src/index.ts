@@ -241,3 +241,9 @@ export type {
 // vem do nucleo puro `ajudaDeFerramenta` (pacote de desenho), e a faixa nao captura ponteiro.
 export { ToolHelpStrip } from './ToolHelpStrip.js';
 export type { ToolHelpStripProps } from './ToolHelpStrip.js';
+
+// ⭐⭐ O CROMO de sub-painel em HTML sobre o canvas: alca de arrasto para REORDENAR, nome, cor e
+// acoes. Ver `PaneChrome.tsx` — HTML para o cromo, canvas para o dado. Dividir em N canvas foi
+// RECUSADO (o crosshair pararia de atravessar as panes e voltariam N janelas que divergem).
+export { PaneChrome } from './PaneChrome.js';
+export type { PaneChromeProps, PaneChromeItem } from './PaneChrome.js';

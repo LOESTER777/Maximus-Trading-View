@@ -403,6 +403,18 @@ export class IndicatorPlotter {
     return this.alturasPorPlot.get(plotId) ?? null;
   }
 
+  /**
+   * ⭐ O INDICE DE PANE de um indicador, ou `null` quando ele plota sobre o preco.
+   *
+   * Exposto porque uma camada de cromo em HTML sobre o canvas precisa alinhar cada faixa ao
+   * retangulo de uma pane, e o retangulo e consultado POR INDICE (`paneRectOf`). A interface
+   * conhece o indicador; o motor conhece a pane; este metodo e o unico lugar que tem os dois
+   * lados — a mesma razao de `plotIdOfSeries` existir.
+   */
+  paneIndexOf(plotId: string): number | null {
+    return this.panesVivas.find((p) => p.plotId === plotId)?.paneIndex ?? null;
+  }
+
   /** O indicador esta visivel? Plot desconhecido conta como visivel (o default). */
   isVisible(plotId: string): boolean {
     return this.visiveis.get(plotId) !== false;
