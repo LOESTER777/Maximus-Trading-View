@@ -28,6 +28,13 @@ export interface DesempenhoDeJanela {
 export interface AnoSazonal {
   readonly ano: number;
   readonly pontos: readonly { readonly dia: number; readonly acumulado: number }[];
+  /**
+   * Dias DISTINTOS do ano cobertos por este ano de dado.
+   *
+   * ⚠️ Opcional para não quebrar consumidor que já monta este objeto à mão. Ausente conta como
+   * "não sei", e o componente então usa a contagem de pontos como aproximação pessimista.
+   */
+  readonly diasCobertos?: number;
 }
 
 export interface TermometroLido {
@@ -49,6 +56,13 @@ export interface AssetReadoutProps {
   readonly gauge?: TermometroLido;
   /** Rótulos legíveis da leitura técnica (`{ COMPRA_FORTE: 'Compra forte' }`). */
   readonly rotulosTecnicos?: Readonly<Record<string, string>>;
+  /**
+   * ⭐⭐ Cobertura MÍNIMA de dias do ano para a sazonalidade ser desenhada. Default 60.
+   *
+   * Ver `DIAS_MINIMOS_DE_SAZONALIDADE` no `charts-core` — a regra é a mesma, e o número entra
+   * por prop para o consumidor poder apertar (não para afrouxar em silêncio).
+   */
+  readonly diasMinimosSazonalidade?: number;
   readonly className?: string;
   readonly style?: CSSProperties;
 }
@@ -67,9 +81,35 @@ export function AssetReadout({
   seasonality,
   gauge,
   rotulosTecnicos,
+  diasMinimosSazonalidade = 60,
   className,
   style,
 }: AssetReadoutProps): JSX.Element {
+  /**
+   * ⭐⭐ A sazonalidade tem COBERTURA para significar algo?
+   *
+   * ⚠️ Relato: *"Card Sazonalidade tem apenas uma barra vertical"*. O cálculo estava certo — a
+   * série era de 20 horas, então todos os pontos caíam no MESMO dia do ano e a curva virava um
+   * traço vertical. O erro era o widget DESENHAR em vez de dizer que não tinha o que dizer, e
+   * é a pior categoria num painel de leitura: o operador não distingue "o mercado não tem
+   * sazonalidade" de "não há dado" — as duas coisas viram um risco.
+   *
+   * ⚠️ `diasCobertos` ausente cai na contagem de PONTOS, que é pessimista de propósito: um
+   * consumidor que monte o objeto à mão sem o campo não passa a guarda por acidente.
+   */
+  const sazonalidadeUtil =
+    seasonality !== undefined &&
+    seasonality.some((a) => (a.diasCobertos ?? a.pontos.length) >= diasMinimosSazonalidade);
+
+  /**
+   * ⭐ Alguma janela de desempenho tem resposta?
+   *
+   * ⚠️ As três guardas de `desempenhoPorJanela` recusam janela que a série não ALCANÇA, e com
+   * razão. Mas seis chips escritos `—` não comunicam "história curta": parecem defeito. Quando
+   * NENHUMA janela responde, a seção diz o motivo em vez de mostrar a grade vazia.
+   */
+  const algumDesempenho =
+    performance !== undefined && performance.some((p) => p.variacao !== null);
   return (
     <section
       className={className ?? 'robustus-readout'}
@@ -79,22 +119,32 @@ export function AssetReadout({
       {performance !== undefined && performance.length > 0 && (
         <div>
           <h4 style={estiloTitulo}>Desempenho</h4>
-          <div style={estiloGrade}>
-            {performance.map((p) => (
-              <Chip
-                key={p.janela}
-                rotulo={rotulos?.[p.janela] ?? p.janela}
-                variacao={p.variacao}
-              />
-            ))}
-          </div>
+          {algumDesempenho ? (
+            <div style={estiloGrade}>
+              {performance.map((p) => (
+                <Chip
+                  key={p.janela}
+                  rotulo={rotulos?.[p.janela] ?? p.janela}
+                  variacao={p.variacao}
+                />
+              ))}
+            </div>
+          ) : (
+            <SemDado texto="A série na tela é curta demais para comparar janelas. Carregue mais histórico (arraste para a esquerda) ou escolha um período maior." />
+          )}
         </div>
       )}
 
       {seasonality !== undefined && seasonality.length > 0 && (
         <div>
           <h4 style={estiloTitulo}>Sazonalidade</h4>
-          <Sazonalidade anos={seasonality} />
+          {sazonalidadeUtil ? (
+            <Sazonalidade anos={seasonality} />
+          ) : (
+            <SemDado
+              texto={`Sazonalidade compara o CAMINHO de anos diferentes, e exige pelo menos ${diasMinimosSazonalidade} dias de pregão num ano. A série na tela cobre ${maiorCobertura(seasonality)}.`}
+            />
+          )}
         </div>
       )}
 
@@ -141,6 +191,41 @@ function Chip({ rotulo, variacao }: { rotulo: string; variacao: number | null })
       </strong>
       <span style={{ fontSize: 9, opacity: 0.65 }}>{rotulo}</span>
     </div>
+  );
+}
+
+/** A maior cobertura, em dias, entre os anos — para a mensagem dizer o que HÁ. */
+function maiorCobertura(anos: readonly AnoSazonal[]): string {
+  const maior = anos.reduce((m, a) => Math.max(m, a.diasCobertos ?? a.pontos.length), 0);
+  return maior === 1 ? '1 dia' : `${maior} dia${maior === 0 ? 's' : 's'}`;
+}
+
+/**
+ * ⭐ A ausência de dado, DITA — e não um espaço em branco nem um traço.
+ *
+ * ⚠️ É o padrão que faltava neste painel. Um widget de leitura que não pode responder tem de
+ * dizer POR QUE e O QUE FAZER; sem isso o operador conclui que a ferramenta está quebrada, e é
+ * uma conclusão razoável — nada na tela contradiz.
+ *
+ * `role="note"` e não `alert`: é informação de contexto, não um evento que interrompe.
+ */
+function SemDado({ texto }: { texto: string }): JSX.Element {
+  return (
+    <p
+      role="note"
+      style={{
+        margin: 0,
+        fontSize: 10,
+        lineHeight: 1.45,
+        color: 'rgba(148,163,184,0.85)',
+        background: 'rgba(148,163,184,0.07)',
+        border: '1px dashed rgba(148,163,184,0.25)',
+        borderRadius: 5,
+        padding: '5px 7px',
+      }}
+    >
+      {texto}
+    </p>
   );
 }
 

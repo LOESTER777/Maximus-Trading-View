@@ -16,6 +16,8 @@ import {
   votoDeMedia,
   votoDeOscilador,
   type BarraDeLeitura,
+  sazonalidadeUtilizavel,
+  DIAS_MINIMOS_DE_SAZONALIDADE,
 } from '../asset-readout.core.js';
 
 const DIA = 86_400;
@@ -284,5 +286,99 @@ describe('votos — a convenção de mesa, e o ruído que a tolerância remove',
     expect(votoDeMedia(100, null)).toBeNull();
     expect(votoDeMedia(null, 100)).toBeNull();
     expect(votoDeMedia(100, 0)).toBeNull();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ A COBERTURA da sazonalidade — o defeito da "única barra vertical"
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ RELATO: *"Card Sazonalidade tem apenas uma barra vertical"*. O cálculo estava CERTO: a
+// série era o dado sintético do playground, 240 barras de 5 minutos = 20 HORAS. Um ano só, e
+// todos os ~240 pontos caindo no MESMO dia do ano. O eixo é dia do ano, então a curva virou um
+// segmento vertical de 240 vértices.
+//
+// ⭐ O defeito era de DECLARAÇÃO, não de conta — e é a pior categoria num painel de leitura,
+// porque "o mercado não tem sazonalidade" e "não há dado" viram o mesmo traço na tela.
+describe('⭐⭐ cobertura da sazonalidade (dias DISTINTOS, não barras)', () => {
+  /** Barras de `n` minutos consecutivos a partir de um instante. */
+  function intradiario(inicio: number, quantas: number, passoSeg: number): BarraDeLeitura[] {
+    return Array.from({ length: quantas }, (_, i) => ({
+      time: inicio + i * passoSeg,
+      close: 100 + Math.sin(i / 9) * 3,
+    }));
+  }
+
+  /** Barras diárias consecutivas. */
+  function diarias(inicio: number, dias: number): BarraDeLeitura[] {
+    return Array.from({ length: dias }, (_, i) => ({
+      time: inicio + i * 86_400,
+      close: 100 + i * 0.3,
+    }));
+  }
+
+  const PRIMEIRO_DE_MARCO_2025 = Date.UTC(2025, 2, 1) / 1000;
+
+  it('⭐⭐ 240 barras de 5min (20 h) cobrem UM dia — e a guarda RECUSA', () => {
+    const barras = intradiario(PRIMEIRO_DE_MARCO_2025, 240, 300);
+    const anos = sazonalidadePorAno(barras);
+
+    // O cálculo continua produzindo a série: não é ele que está errado.
+    expect(anos).toHaveLength(1);
+    expect(anos[0]?.pontos.length).toBe(240);
+    // ⭐ Mas a cobertura real é de 1 dia — e é o número que faltava existir.
+    expect(anos[0]?.diasCobertos).toBe(1);
+    expect(sazonalidadeUtilizavel(anos)).toBe(false);
+  });
+
+  it('⚠️ contar BARRAS enganaria: 240 pontos parecem série cheia', () => {
+    const anos = sazonalidadePorAno(intradiario(PRIMEIRO_DE_MARCO_2025, 240, 300));
+    // É esta diferença que fazia o card parecer cheio de dado quando não havia nenhum.
+    expect(anos[0]?.pontos.length).toBeGreaterThan(DIAS_MINIMOS_DE_SAZONALIDADE);
+    expect(anos[0]?.diasCobertos).toBeLessThan(DIAS_MINIMOS_DE_SAZONALIDADE);
+  });
+
+  it('⭐ com um ano de barras diárias a guarda ACEITA', () => {
+    const anos = sazonalidadePorAno(diarias(Date.UTC(2025, 0, 2) / 1000, 250));
+    expect(anos).toHaveLength(1);
+    expect(anos[0]?.diasCobertos).toBe(250);
+    expect(sazonalidadeUtilizavel(anos)).toBe(true);
+  });
+
+  it('⚠️ o piso é de 60 dias e NÃO de um ano completo', () => {
+    // Exigir o ano inteiro esconderia a sazonalidade do ano CORRENTE até dezembro, e é
+    // justamente ela que o operador está lendo.
+    const anos = sazonalidadePorAno(diarias(Date.UTC(2025, 0, 2) / 1000, 60));
+    expect(sazonalidadeUtilizavel(anos)).toBe(true);
+    const curto = sazonalidadePorAno(diarias(Date.UTC(2025, 0, 2) / 1000, 59));
+    expect(sazonalidadeUtilizavel(curto)).toBe(false);
+  });
+
+  it('UM ano com cobertura basta, mesmo com outros curtos', () => {
+    const anos = sazonalidadePorAno([
+      ...diarias(Date.UTC(2024, 0, 2) / 1000, 200),
+      ...diarias(Date.UTC(2025, 0, 2) / 1000, 3),
+    ]);
+    expect(anos.length).toBeGreaterThanOrEqual(2);
+    expect(sazonalidadeUtilizavel(anos)).toBe(true);
+  });
+
+  it('coleção vazia não é utilizável, e não lança', () => {
+    expect(sazonalidadeUtilizavel([])).toBe(false);
+    expect(sazonalidadeUtilizavel(sazonalidadePorAno([]))).toBe(false);
+  });
+
+  it('barras REPETIDAS no mesmo dia não inflam a cobertura', () => {
+    // ⚠️ É o caso do D1 da mesa, que tem duas convenções de virada de dia: se a contagem fosse
+    // por barra, um mês de dado duplicado passaria por dois meses.
+    const base = diarias(Date.UTC(2025, 0, 2) / 1000, 30);
+    const anos = sazonalidadePorAno([...base, ...base].sort((a, b) => a.time - b.time));
+    expect(anos[0]?.diasCobertos).toBe(30);
+  });
+
+  it('o piso é ajustável para MAIS, para quem quer ser mais exigente', () => {
+    const anos = sazonalidadePorAno(diarias(Date.UTC(2025, 0, 2) / 1000, 100));
+    expect(sazonalidadeUtilizavel(anos, 90)).toBe(true);
+    expect(sazonalidadeUtilizavel(anos, 200)).toBe(false);
   });
 });

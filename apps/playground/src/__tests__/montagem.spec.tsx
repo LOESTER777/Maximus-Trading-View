@@ -26,7 +26,8 @@
  * camada, ouvinte que não se remove, estado inicial recalculado) reprova aqui.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
+import { screen, waitFor, cleanup, fireEvent, render } from '@testing-library/react';
+import { StrictMode } from 'react';
 
 /**
  * ⚠️ `fireEvent` e nao `@testing-library/user-event`: o projeto nao acrescenta dependencia,
@@ -52,14 +53,77 @@ function clicar(elemento: HTMLElement): void {
  * anterior, que é vacuidade.
  */
 async function montarPlayground(): Promise<void> {
+  vi.resetModules();
+  const { App } = (await import('../main.js')) as { App: () => JSX.Element };
+  render(
+    // ⭐⭐ `StrictMode` porque é assim que o módulo real monta: render e efeito DOBRADOS, então
+    // efeito não idempotente (dois donos da mesma camada, ouvinte que não se remove) reprova
+    // aqui.
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+  // A montagem do React 18 é agendada; esperar por um marco da árvore é o sinal de que ela
+  // aconteceu — mais honesto que um `setTimeout` arbitrário.
+  await waitFor(() => expect(screen.getByText('Robustus')).toBeTruthy());
+}
+
+/**
+ * Monta pelo CAMINHO DO NAVEGADOR: cria `#root` e deixa o `createRoot` do módulo agir.
+ *
+ * ⚠️ Usado UMA vez, de propósito. Ele prova que o ponto de entrada de verdade boota — o que
+ * `render(<App/>)` não prova — mas a raiz criada assim NÃO é desmontável pelo `cleanup()`, e
+ * instâncias vivas de casos anteriores seguiriam gravando em `localStorage`, tornando a suíte
+ * dependente de ORDEM. Por isso é um caso só, e o último.
+ */
+async function montarPeloPontoDeEntrada(): Promise<void> {
   const raiz = document.createElement('div');
   raiz.id = 'root';
   document.body.appendChild(raiz);
   vi.resetModules();
   await import('../main.js');
-  // A montagem do React 18 é agendada; esperar por um marco da árvore é o sinal de que ela
-  // aconteceu — mais honesto que um `setTimeout` arbitrário.
   await waitFor(() => expect(screen.getByText('Robustus')).toBeTruthy());
+}
+
+/**
+ * Semeia a área de trabalho no armazenamento, para a aba de partida ser DETERMINÍSTICA.
+ *
+ * ⚠️ Existe porque o default passou a ser o WIN da mesa, e em jsdom não há mesa: a montagem
+ * fresca cai para o sintético por um caminho ASSÍNCRONO. Um teste que precise de uma aba estável
+ * não pode depender de quem ganha essa corrida — ele semeia o que quer.
+ *
+ * ⚠️⚠️ E a aba semeada leva DOCUMENTO, e isso não é detalhe: uma aba sintética sozinha e SEM
+ * documento é, por definição, o default nunca tocado — e o app a substitui pelo WIN, que é
+ * exatamente o comportamento desejado. Foi o próprio teste que bateu nessa guarda ao tentar
+ * semear `SINTETICO` com documento nulo. O documento é o que torna a área de trabalho uma
+ * ESCOLHA do operador. Ver `pareceDefaultNaoTocado` em `main.tsx`.
+ */
+const DOCUMENTO_VAZIO = {
+  version: 1,
+  priceSeriesType: 'Candlestick',
+  indicators: [],
+  alerts: [],
+  drawings: { version: 1, drawings: [] },
+} as const;
+function semearAreaDeTrabalho(
+  abas: readonly { readonly symbol: string; readonly periodSeconds: number }[],
+  ativa = 0,
+): void {
+  localStorage.setItem(
+    'robustus-abas',
+    JSON.stringify({
+      version: 1,
+      ativa: `aba-${ativa + 1}`,
+      abas: abas.map((a, i) => ({
+        id: `aba-${i + 1}`,
+        symbol: a.symbol,
+        periodSeconds: a.periodSeconds,
+        documento: DOCUMENTO_VAZIO,
+        abertaEm: 1_700_000_000,
+        atualizadoEm: 1_700_000_000,
+      })),
+    }),
+  );
 }
 
 beforeEach(() => {
@@ -95,7 +159,8 @@ describe('a tela monta', () => {
     espia.mockRestore();
   });
 
-  it('a aba inicial é a do dado sintético, com o período no rótulo', async () => {
+  it('a aba mostra o período no rótulo, e é a ativa', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
     const abas = screen.getAllByRole('tab');
     expect(abas).toHaveLength(1);
@@ -107,7 +172,51 @@ describe('a tela monta', () => {
     expect(abas[0]?.getAttribute('aria-selected')).toBe('true');
   });
 
+  it('⭐⭐ o ativo de PARTIDA é o WIN da mesa, em D1', async () => {
+    // ⚠️ Relato: *"pq estou vendo ativo Sintético ainda? e não o mini índice?"*. O default era
+    // meu e otimizava para o dia em que o túnel cai.
+    //
+    // ⭐ A asserção é sobre a DECISÃO (as constantes), e não sobre a tela montada: em jsdom não
+    // existe mesa, então a tela cai para o sintético por um caminho assíncrono, e medir a tela
+    // aqui seria medir quem ganha a corrida. A chegada é o caso seguinte.
+    const { SIMBOLO_INICIAL, PERIODO_INICIAL_SEG } = (await import('../main.js')) as unknown as {
+      SIMBOLO_INICIAL: string;
+      PERIODO_INICIAL_SEG: number;
+    };
+    expect(SIMBOLO_INICIAL).toBe('WIN');
+    // ⭐ D1 e não M5: é o único período em que "Leitura do ativo" consegue responder (desempenho
+    // por janela precisa alcançar 1 ano; sazonalidade precisa de 60 dias de pregão).
+    expect(PERIODO_INICIAL_SEG).toBe(86_400);
+  });
+
+  it('⭐⭐ sem a MESA no ar, a tela cai para o sintético e DIZ por quê', async () => {
+    // ⚠️ Uma tela que troca de fonte sozinha e não explica é pior que uma tela de erro: o
+    // operador acha que está lendo o mini índice e está lendo um gerador.
+    await montarPlayground();
+    await waitFor(
+      () => {
+        const abas = screen.getAllByRole('tab');
+        expect(abas[0]?.textContent).toContain('SINTÉTICO');
+      },
+      { timeout: 3000 },
+    );
+    // E o motivo aparece na trilha de legendas, não num canto novo.
+    await waitFor(() => expect(screen.getByText(/Dado sintetico:/i)).toBeTruthy());
+  });
+
+  it('⭐⭐ depois de RECARREGAR, a aba que o operador escolheu NÃO cai para o sintético', async () => {
+    // ⚠️ Foi um defeito REAL do meu primeiro desenho: a queda usava "primeiro render deste
+    // componente", e depois de um F5 isso é verdade outra vez — VALE3 escolhido a dedo era
+    // trocado pelo gerador local em silêncio. A pergunta certa é "esta aba veio do DEFAULT?".
+    semearAreaDeTrabalho([{ symbol: 'VALE3', periodSeconds: 86_400 }]);
+    await montarPlayground();
+    await new Promise((r) => setTimeout(r, 400));
+    expect(screen.getAllByRole('tab')[0]?.textContent).toContain('VALE3');
+    expect(screen.queryByText(/Dado sintetico:/i)).toBeNull();
+  });
+
   it('⚠️ a última aba NÃO oferece o ✕ (a barra vazia deixaria a tela sem gráfico)', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
     expect(screen.queryByRole('button', { name: /^Fechar / })).toBeNull();
   });
@@ -115,6 +224,7 @@ describe('a tela monta', () => {
 
 describe('⭐⭐ as abas, na tela', () => {
   it('escolher um ativo da mesa ABRE uma segunda aba e a ativa', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
 
     escolher('Ativo', 'PETR4');
@@ -128,6 +238,7 @@ describe('⭐⭐ as abas, na tela', () => {
   });
 
   it('escolher o MESMO ativo de novo não duplica a aba — vai para ela', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
     const seletor = screen.getByLabelText('Ativo');
 
@@ -143,6 +254,7 @@ describe('⭐⭐ as abas, na tela', () => {
   });
 
   it('⭐ trocar de aba pela barra volta o ativo daquela aba', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
 
     escolher('Ativo', 'WDO');
@@ -157,6 +269,7 @@ describe('⭐⭐ as abas, na tela', () => {
   });
 
   it('⭐ o + DUPLICA a aba, e o período muda só na cópia', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
 
     clicar(screen.getByRole('button', { name: /duplicar esta aba/i }));
@@ -176,6 +289,7 @@ describe('⭐⭐ as abas, na tela', () => {
   });
 
   it('com duas abas o ✕ aparece, e fechar a ativa elege a vizinha', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
 
     escolher('Ativo', 'WIN');
@@ -189,6 +303,7 @@ describe('⭐⭐ as abas, na tela', () => {
   });
 
   it('⭐ a área de trabalho SOBREVIVE ao recarregamento da página', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
     escolher('Ativo', 'VALE3');
     await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
@@ -217,6 +332,7 @@ describe('⭐⭐ as abas, na tela', () => {
 
 describe('os controles que a rodada mexeu respondem', () => {
   it('o período da barra troca sem lançar, e o rótulo da aba acompanha', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
 
     clicar(screen.getByRole('radio', { name: '1h' }));
@@ -245,6 +361,7 @@ describe('os controles que a rodada mexeu respondem', () => {
   });
 
   it('o painel de replay diz QUE série está na tela', async () => {
+    semearAreaDeTrabalho([{ symbol: 'SINTETICO', periodSeconds: 300 }]);
     await montarPlayground();
 
     clicar(screen.getByRole('button', { name: /replay de mercado/i }));
@@ -255,5 +372,17 @@ describe('os controles que a rodada mexeu respondem', () => {
     expect(linha.textContent).toMatch(/SINTÉTICO/);
     expect(linha.textContent).toMatch(/5m/);
     expect(linha.textContent).toMatch(/barra\(s\)/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+describe('o PONTO DE ENTRADA', () => {
+  it('⭐ o `createRoot` do módulo boota quando existe `#root`', async () => {
+    // ⚠️ Último caso do arquivo de propósito: a raiz criada aqui não é desmontável pelo
+    // `cleanup()`, e uma instância viva seguiria gravando na área de trabalho — o que tornaria
+    // os casos seguintes dependentes de ORDEM. Foi exatamente esse defeito que fez um caso
+    // passar sozinho e reprovar no conjunto.
+    await montarPeloPontoDeEntrada();
+    expect(screen.getByRole('tablist', { name: 'Ativos' })).toBeTruthy();
   });
 });

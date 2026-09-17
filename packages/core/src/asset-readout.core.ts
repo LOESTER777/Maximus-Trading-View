@@ -209,6 +209,51 @@ export interface PontoDeSazonalidade {
 export interface AnoDeSazonalidade {
   readonly ano: number;
   readonly pontos: readonly PontoDeSazonalidade[];
+  /**
+   * Quantos DIAS DISTINTOS do ano este ano cobre.
+   *
+   * ⭐ Publicado para quem desenha poder recusar. Ver `DIAS_MINIMOS_DE_SAZONALIDADE`.
+   */
+  readonly diasCobertos: number;
+}
+
+/**
+ * ⭐⭐ Cobertura MÍNIMA, em dias distintos do ano, para a sazonalidade significar algo.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O DEFEITO QUE ISTO CORRIGE — RELATADO NA TELA
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * *"Card Sazonalidade tem apenas uma barra vertical"*.
+ *
+ * ⚠️ E o cálculo estava CERTO. A série na tela era o dado sintético do playground: 240 barras
+ * de 5 minutos = **20 horas**. Um ano só, e todos os ~240 pontos caindo no MESMO dia do ano.
+ * O eixo é dia do ano (`(dia-1)/365 × largura`), então a `polyline` recebeu 240 vértices
+ * praticamente no mesmo X — um risco vertical.
+ *
+ * ⭐ O defeito não era de CONTA, era de DECLARAÇÃO: o widget desenhava algo sem significado em
+ * vez de dizer que não tinha o que dizer. E é a pior categoria de defeito num painel de
+ * leitura, porque o operador não tem como distinguir "o mercado não tem sazonalidade" de "não
+ * há dado" — as duas coisas viram um traço.
+ *
+ * ⚠️ 60 dias e não "um ano completo": exigir o ano inteiro esconderia a sazonalidade do ano
+ * CORRENTE até dezembro, e é justamente ela que o operador está lendo. 60 dias distintos são
+ * ~3 meses de pregão — o suficiente para a curva ter forma em vez de ser um segmento.
+ */
+export const DIAS_MINIMOS_DE_SAZONALIDADE = 60;
+
+/**
+ * O ano tem cobertura suficiente para a curva dele ser desenhada?
+ *
+ * ⭐ Núcleo puro exportado, e não uma regra escondida no componente: quem consome esta
+ * biblioteca por outro caminho (um relatório, um robô) precisa da MESMA decisão, e duplicá-la
+ * no desenho a faria divergir no primeiro ajuste.
+ */
+export function sazonalidadeUtilizavel(
+  anos: readonly AnoDeSazonalidade[],
+  diasMinimos = DIAS_MINIMOS_DE_SAZONALIDADE,
+): boolean {
+  return anos.some((a) => a.diasCobertos >= diasMinimos);
 }
 
 /**
@@ -255,13 +300,19 @@ export function sazonalidadePorAno(
     if (base === undefined || base.close === 0) continue;
 
     const pontos: PontoDeSazonalidade[] = [];
+    const diasVistos = new Set<number>();
     for (const b of lista) {
+      const dia = diaDoAnoUtc(b.time);
+      diasVistos.add(dia);
       pontos.push({
-        dia: diaDoAnoUtc(b.time),
+        dia,
         acumulado: ((b.close - base.close) / base.close) * 100,
       });
     }
-    saida.push({ ano, pontos });
+    // ⭐ A cobertura é contada em DIAS DISTINTOS, não em barras. Vinte horas de 5min são 240
+    // barras e UM dia — e é a contagem de barras que fazia o card parecer cheio de dado
+    // quando não havia nenhum. Ver `DIAS_MINIMOS_DE_SAZONALIDADE`.
+    saida.push({ ano, pontos, diasCobertos: diasVistos.size });
   }
   return saida;
 }

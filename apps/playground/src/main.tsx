@@ -128,6 +128,7 @@ import {
   criarAbas,
   desserializarAbas,
   serializarAbas,
+  nomeDaAba,
 } from '@robustus/charts-engine';
 import {
   makeOlderCandles,
@@ -175,25 +176,105 @@ const SIMBOLO_SINTETICO = 'SINTETICO';
 const CHAVE_ABAS = 'robustus-abas';
 
 /**
+ * ⭐⭐ O ativo com que o playground ABRE — e a decisão que ele reverte.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O RELATO
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * *"pq estou vendo ativo Sintético ainda? e não o mini índice? você não conseguiu carregar os
+ * preços que temos?"*
+ *
+ * Conseguiu. O que estava errado era o DEFAULT, e ele era meu. Eu escolhi sintético com este
+ * argumento: o túnel para a máquina B já ficou quatro dias fora sem ninguém notar, e nascer
+ * apontando para uma dependência ausente faria a primeira impressão ser uma tela de erro.
+ *
+ * ⚠️ O argumento continua válido para o dia em que o túnel cai — e me fez otimizar para o dia
+ * RUIM em vez do dia normal. Na prática o playground é aberto para ver o mercado de verdade, e
+ * toda vez era preciso trocar no seletor. Agora ele abre no WIN e cai para o sintético SÓ se a
+ * mesa não responder, dizendo por que caiu.
+ *
+ * ⭐ **D1 e não M5**, e a escolha é deliberada: é o único período em que o painel "Leitura do
+ * ativo" consegue responder. Desempenho por janela precisa alcançar 1 semana, 1 mês, 1 ano; a
+ * sazonalidade precisa de pelo menos 60 dias de pregão num ano. Com M5 a primeira tela mostra
+ * uma sessão e os dois cards ficam vazios — que foi exatamente o outro defeito relatado. Trocar
+ * para M5 é um clique.
+ */
+export const SIMBOLO_INICIAL = 'WIN';
+export const PERIODO_INICIAL_SEG = 86_400;
+
+/**
+ * A área de trabalho gravada é o DEFAULT NUNCA TOCADO?
+ *
+ * ⭐⭐ Existe por uma armadilha concreta de migração: quem já abriu o playground tem
+ * `localStorage` com uma aba `SINTETICO`. Mudar o default sem isto não mudaria NADA para essa
+ * pessoa — ela continuaria vendo sintético e concluiria, com razão, que o pedido não foi
+ * atendido.
+ *
+ * ⚠️ E a condição é ESTREITA de propósito: uma aba só, símbolo sintético, e **documento nulo**
+ * (nunca gravou desenho, indicador ou alerta). Um default que ninguém tocou não é uma escolha;
+ * uma aba com trabalho dentro é. Sobrescrever a segunda seria apagar trabalho do operador para
+ * cumprir uma preferência minha.
+ */
+function pareceDefaultNaoTocado(estado: EstadoDeAbas): boolean {
+  if (estado.abas.length !== 1) return false;
+  const unica = estado.abas[0];
+  return unica !== undefined && unica.symbol === SIMBOLO_SINTETICO && unica.documento === null;
+}
+
+/**
  * Lê a área de trabalho gravada, ou cria a inicial.
  *
  * ⚠️ NUNCA lança, em nenhum caminho: `JSON.parse` cercado (gravação truncada por cota
  * estourada) mais a validação do núcleo, que descarta aba corrompida e devolve `null` quando
  * não há nada aproveitável. Perder as abas é ruim; não montar a aplicação é pior.
  */
-function lerAbasGravadas(): EstadoDeAbas {
+function lerAbasGravadas(): {
+  readonly estado: EstadoDeAbas;
+  /**
+   * ⭐⭐ A área de trabalho foi CRIADA agora pelo default, e não restaurada?
+   *
+   * ⚠️ É o que autoriza a queda automática para o sintético — e a distinção foi encontrada por
+   * um TESTE que reprovou. A primeira versão usava "primeiro render deste componente", e depois
+   * de um F5 isso é verdade outra vez: uma aba que o operador havia escolhido a dedo (VALE3) era
+   * tratada como escolha automática e trocada para o gerador local em silêncio.
+   *
+   * A pergunta certa não é "é a primeira montagem?", é "esta aba veio do default?".
+   */
+  readonly criouAutomatico: boolean;
+} {
   const inicial = (): EstadoDeAbas =>
-    criarAbas({ symbol: SIMBOLO_SINTETICO, periodSeconds: 300 }, Math.floor(Date.now() / 1000));
+    criarAbas(
+      { symbol: SIMBOLO_INICIAL, periodSeconds: PERIODO_INICIAL_SEG },
+      Math.floor(Date.now() / 1000),
+    );
   const bruto = localStorage.getItem(CHAVE_ABAS);
-  if (bruto === null) return inicial();
+  if (bruto === null) return { estado: inicial(), criouAutomatico: true };
   try {
-    return desserializarAbas(JSON.parse(bruto)).estado ?? inicial();
+    const lido = desserializarAbas(JSON.parse(bruto)).estado;
+    if (lido === null) return { estado: inicial(), criouAutomatico: true };
+    // Ver `pareceDefaultNaoTocado`: default intocado não é escolha do operador.
+    if (pareceDefaultNaoTocado(lido)) return { estado: inicial(), criouAutomatico: true };
+    return { estado: lido, criouAutomatico: false };
   } catch {
-    return inicial();
+    return { estado: inicial(), criouAutomatico: true };
   }
 }
 
-function App(): JSX.Element {
+/**
+ * A montagem de referência inteira.
+ *
+ * ⭐ EXPORTADA, e o motivo é de teste: a bancada de montagem precisa poder DESMONTAR o app
+ * entre casos. Enquanto ela dependia do `createRoot` que este módulo faz sozinho, as instâncias
+ * anteriores continuavam vivas — o `cleanup()` do Testing Library não desmonta uma raiz que ele
+ * não criou — e os efeitos delas seguiam gravando na área de trabalho em `localStorage`. O
+ * resultado era uma suíte com ORDEM SIGNIFICATIVA: o caso passava sozinho e reprovava no
+ * conjunto, o que é o pior tipo de bancada.
+ *
+ * ⚠️ O `createRoot` no fim do arquivo continua existindo (é o que o navegador usa) e continua
+ * guardado por `#root`.
+ */
+export function App(): JSX.Element {
   const bundle = useMemo(() => makeSyntheticBundle(240, 300, 42), []);
   const grid = useMemo(() => decodeColumnar(bundle.depth), [bundle]);
 
@@ -281,8 +362,16 @@ function App(): JSX.Element {
   const capturarDaTela = useRef<() => ChartState | null>(() => null);
   const aplicarNaTela = useRef<(documento: ChartState | null) => void>(() => {});
 
+  /**
+   * A área de trabalho de partida, lida UMA vez, junto com a informação de quem a criou.
+   *
+   * ⚠️ `useState` com fábrica e não `useMemo`: o valor tem de ser estável por toda a vida do
+   * componente, e `useMemo` não é uma promessa de cache — o React pode descartá-lo.
+   */
+  const [partida] = useState(lerAbasGravadas);
+
   const abas = useSymbolWorkspace({
-    estadoInicial: lerAbasGravadas,
+    estadoInicial: () => partida.estado,
     capturar: () => capturarDaTela.current(),
     aplicar: (documento) => aplicarNaTela.current(documento),
     // ⚠️ A gravação é cercada: cota de `localStorage` estourada deixa o estado em memória
@@ -364,6 +453,40 @@ function App(): JSX.Element {
     symbol: ativoMesa,
     periodSeconds: tf.seconds,
   });
+
+  /**
+   * ⭐⭐ A QUEDA para o sintético: por que a fonte trocou, ou `null`.
+   *
+   * ⚠️ Ela vale SÓ para a escolha AUTOMÁTICA da primeira aba, nunca para uma escolha explícita
+   * do operador. `escolhaAutomatica` marca isso. Sem a distinção, quem abrisse PETR4 de
+   * propósito com o túnel fora seria jogado para o sintético em silêncio — e, pior, a troca
+   * dispararia o efeito de novo num laço.
+   */
+  const [quedaParaSintetico, setQuedaParaSintetico] = useState<string | null>(null);
+  /**
+   * A aba corrente veio do default automático (e não de um clique)?
+   *
+   * ⚠️ Ref e não estado: ela é lida dentro do efeito de queda e mudá-la não pode re-renderizar,
+   * senão o próprio ato de desistir agendaria outro quadro.
+   */
+  const escolhaAutomatica = useRef(partida.criouAutomatico);
+
+  useEffect(() => {
+    // Já caiu uma vez: não tenta de novo. A queda é um evento, não um estado a reconciliar.
+    if (quedaParaSintetico !== null) return;
+    if (!escolhaAutomatica.current) return;
+    if (fonte !== 'mesa') return;
+    // Só desiste com ERRO declarado e nenhuma barra. "Carregando" não é falha, e lote vazio
+    // numa janela específica também não (é domingo, e o backfill anda para trás).
+    if (mesa.erro === null || mesa.candles.length > 0) return;
+
+    setQuedaParaSintetico(mesa.erro);
+    abas.mudarSimbolo(SIMBOLO_SINTETICO);
+    // ⚠️ E o PERÍODO volta para M5: o sintético tem 20 horas de série, e em D1 isso é UMA
+    // barra. Trocar só o símbolo entregaria um gráfico de uma vela — tecnicamente correto e
+    // inútil.
+    abas.mudarPeriodo(300);
+  }, [fonte, mesa.erro, mesa.candles.length, quedaParaSintetico, abas]);
 
   /**
    * ⭐ O SEGUNDO ativo, para o inset de correlação.
@@ -484,6 +607,17 @@ function App(): JSX.Element {
    * um dono de canto.
    */
   const notasDaFonte = useMemo(() => {
+    // ⭐ A QUEDA, dita na trilha. Uma tela que troca de fonte sozinha e nao explica e pior que
+    // uma tela de erro: o operador acha que esta lendo o mini indice e esta lendo um gerador.
+    if (quedaParaSintetico !== null) {
+      return [
+        {
+          fonte: 'preco',
+          linhas: [`Dado sintetico: ${quedaParaSintetico}`, 'Escolha o ativo de novo quando a mesa voltar.'],
+          alerta: true,
+        },
+      ];
+    }
     if (fonte !== 'mesa') return [];
     if (mesa.erro !== null) {
       return [{ fonte: 'preco', linhas: [mesa.erro], alerta: true }];
@@ -516,7 +650,17 @@ function App(): JSX.Element {
         ],
       },
     ];
-  }, [fonte, mesa.erro, mesa.carregando, mesa.candles, mesa.delta, mesa.esgotado, ativoMesa, tf.label]);
+  }, [
+    fonte,
+    mesa.erro,
+    mesa.carregando,
+    mesa.candles,
+    mesa.delta,
+    mesa.esgotado,
+    ativoMesa,
+    tf.label,
+    quedaParaSintetico,
+  ]);
 
   // ── A LEITURA do ativo: desempenho, sazonalidade e termômetro ──────────────
   //
@@ -814,7 +958,35 @@ function App(): JSX.Element {
   const alertas = useAlerts({ bars: velasBase, alerts: alertSpecs });
 
   /**
-   * ⭐ A ÁRVORE DE OBJETOS: tudo o que está no gráfico, em lista.
+   * ⭐⭐ A ÁRVORE DE OBJETOS — e a CATEGORIA que ela corrigiu.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O RELATO, E POR QUE ELE ESTAVA CERTO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * *"tem redundância nas ferramentas da esquerda, Objetos do gráfico estão sendo confundidos
+   * com Indicadores, linha é uma coisa (objeto) e média é indicador, são coisas distintas"*.
+   *
+   * ⚠️ Estava. Este painel listava INDICADORES, e o painel imediatamente abaixo ("Indicadores")
+   * listava os mesmos indicadores outra vez — cada um aparecia DUAS vezes em blocos
+   * consecutivos, com affordances DIFERENTES:
+   *
+   * | Painel | O que oferecia para o mesmo indicador |
+   * |---|---|
+   * | "Objetos no gráfico" | olho, lixeira, clique abre propriedades |
+   * | "Indicadores" (abaixo) | catálogo, parâmetros, cor, as mesmas ações |
+   *
+   * E nada na tela dizia qual usar.
+   *
+   * ⭐ A distinção que o operador nomeou melhor que eu: um DESENHO é um objeto que ELE
+   * colocou — tem âncoras, move com o mouse, apaga. Um INDICADOR é um CÁLCULO aplicado à
+   * série — tem parâmetros, recalcula a cada barra, e não tem posição própria. São ciclos de
+   * vida diferentes, persistências diferentes e remoções com significados diferentes (apagar
+   * um desenho perde o traço; desligar um indicador não perde nada).
+   *
+   * ⭐ Então este painel ficou com o que É objeto: desenhos e alertas. Alerta entra porque é
+   * um NÍVEL que o operador colocou — tem preço, some quando ele remove, e é indistinguível
+   * de uma linha horizontal no que importa aqui. Indicadores saíram: uma coisa, um lugar.
    *
    * ⚠️ Os desenhos são identificados por TIPO + preço, e não por id: o id é opaco
    * (`drawing-7`) e não diz nada a quem olha. "Linha horizontal · 188.420" localiza o objeto
@@ -837,22 +1009,7 @@ function App(): JSX.Element {
       POSITION_SHORT: 'Posição de venda',
     };
     return [
-      {
-        id: 'indicadores',
-        label: 'Indicadores',
-        emptyHint: 'Nenhum indicador no gráfico. Escolha um na caixa de indicadores.',
-        items: indicadores.active.map((a) => ({
-          id: a.id,
-          label: indicadores.entryOf(a.name)?.label ?? a.name,
-          ...(a.colors?.['value'] === undefined ? {} : { color: a.colors['value'] }),
-          visible: a.visible,
-          onToggleVisible: () => indicadores.setVisible(a.id, !a.visible),
-          onRemove: () => indicadores.remove(a.id),
-          // Clicar no nome abre as propriedades — o mesmo caminho do clique no gráfico.
-          onSelect: () =>
-            setIndicadorClicado((atual) => ({ id: a.id, nonce: (atual?.nonce ?? 0) + 1 })),
-        })),
-      },
+      // ⚠️ NÃO há grupo de indicadores aqui, e a ausência é a correção. Ver o cabeçalho.
       {
         id: 'desenhos',
         label: 'Desenhos',
@@ -880,7 +1037,7 @@ function App(): JSX.Element {
         })),
       },
     ];
-  }, [indicadores, desenho, alertas.alerts]);
+  }, [desenho, alertas.alerts]);
 
 
   /**
@@ -1365,6 +1522,11 @@ function App(): JSX.Element {
               // escolhido deixaria o seletor apontando para um período inexistente.
               const destinoTemOPeriodo =
                 v === SIMBOLO_SINTETICO || PERIODOS_DA_MESA_IDS.includes(tf.id);
+              // ⭐ A partir daqui a escolha é DO OPERADOR: a queda automática para o sintético
+              // não se aplica mais. Sem isto, escolher PETR4 com o túnel fora jogaria a tela
+              // para o gerador local em silêncio.
+              escolhaAutomatica.current = false;
+              setQuedaParaSintetico(null);
               abas.abrir(v, destinoTemOPeriodo ? tf.seconds : TF_BASE.seconds);
             }}
             style={{
@@ -1473,7 +1635,10 @@ function App(): JSX.Element {
             <SymbolTabs
               tabs={abas.abas.map((a) => ({
                 id: a.id,
-                label: a.symbol === SIMBOLO_SINTETICO ? 'SINTÉTICO' : a.symbol,
+                // ⭐ `nomeDaAba` é o ponto ÚNICO da decisão "nome ou símbolo" — a cópia nasce
+                // com nome (`WIN (2)`), e sem isso duas abas ficariam indistinguíveis.
+                label:
+                  nomeDaAba(a) === SIMBOLO_SINTETICO ? 'SINTÉTICO' : nomeDaAba(a),
                 hint: rotuloDePeriodo(a.periodSeconds),
                 closable: abas.abas.length > 1,
               }))}
@@ -1710,10 +1875,10 @@ function App(): JSX.Element {
           </CollapsiblePanel>
 
           <CollapsiblePanel
-            title="Objetos no gráfico"
+            title="Desenhos e alertas"
             icon="settings"
             badge={`${gruposDeObjetos.reduce((n, g) => n + g.items.length, 0)}`}
-            hint="Tudo o que está desenhado: indicadores, desenhos e alertas. Esconda, remova ou abra as propriedades daqui."
+            hint="O que VOCÊ colocou no gráfico: traços e níveis vigiados. Indicadores são cálculo, não objeto — eles ficam no painel de indicadores."
           >
             <ObjectTree groups={gruposDeObjetos} />
           </CollapsiblePanel>

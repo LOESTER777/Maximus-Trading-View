@@ -216,6 +216,11 @@ export type {
 export {
   desempenhoPorJanela,
   sazonalidadePorAno,
+  // ⭐ A guarda de COBERTURA da sazonalidade, exportada de proposito: quem desenha (ou quem
+  // gera relatorio, ou um robo) precisa da MESMA decisao. Duplicar a regra no desenho a faria
+  // divergir no primeiro ajuste. Ver o defeito relatado no cabecalho da constante.
+  sazonalidadeUtilizavel,
+  DIAS_MINIMOS_DE_SAZONALIDADE,
   termometroTecnico,
   votoDeOscilador,
   votoDeMedia,
@@ -226,6 +231,7 @@ export {
   desempenhoPorJanela as performanceByWindow,
   /** Retorno acumulado de cada ano, normalizado, num eixo de dia do ano. */
   sazonalidadePorAno as seasonalityByYear,
+  sazonalidadeUtilizavel as seasonalityIsUsable,
   /** Resume votos de indicadores numa leitura. `NEUTRO` dilui; `null` nao conta. */
   termometroTecnico as technicalGauge,
 } from './asset-readout.core.js';

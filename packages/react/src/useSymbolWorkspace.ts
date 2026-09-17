@@ -47,6 +47,7 @@ import {
   gravarDocumento,
   mudarPeriodoDaAba,
   mudarSimboloDaAba,
+  renomearAba,
   abaAtiva,
   serializarAbas,
   type AbaDeAtivo,
@@ -105,6 +106,13 @@ export interface UseSymbolWorkspaceResult {
   readonly mudarPeriodo: (periodSeconds: number) => void;
   /** Muda o símbolo da aba ATIVA (o ativo passa a ser outro, o setup fica). */
   readonly mudarSimbolo: (symbol: string) => void;
+  /**
+   * ⭐ Renomeia uma aba. `null` volta a mostrar o símbolo.
+   *
+   * O nome é SEPARADO do símbolo de propósito: `'WIN fluxo'` e `'WIN contexto'` são dois setups
+   * do mesmo ativo, e a aba é onde isso se distingue. Ver `AbaDeAtivo.rotulo`.
+   */
+  readonly renomear: (id: string, rotulo: string | null) => void;
   /** Grava o estado vivo na aba ativa. Para autossalvamento do consumidor. */
   readonly gravarAtual: () => void;
   /**
@@ -259,6 +267,13 @@ export function useSymbolWorkspace(opcoes: UseSymbolWorkspaceOptions): UseSymbol
     [publicar],
   );
 
+  const renomear = useCallback(
+    (id: string, rotulo: string | null): void => {
+      publicar(renomearAba(estadoRef.current, id, rotulo, agoraRef.current()));
+    },
+    [publicar],
+  );
+
   const paraGravar = useCallback((): AbasSerializadas => {
     const atual = estadoRef.current;
     const vivo = capturarRef.current();
@@ -285,6 +300,7 @@ export function useSymbolWorkspace(opcoes: UseSymbolWorkspaceOptions): UseSymbol
     duplicar,
     mudarPeriodo,
     mudarSimbolo,
+    renomear,
     gravarAtual,
     paraGravar,
     recusa,

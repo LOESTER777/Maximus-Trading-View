@@ -77,6 +77,30 @@ export interface AbaDeAtivo {
   /** Período em SEGUNDOS. Segundos são a verdade; rótulo é apresentação. */
   readonly periodSeconds: number;
   /**
+   * ⭐⭐ NOME da aba, quando ele difere do símbolo. `undefined` = mostra o símbolo.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O DEFEITO QUE ISTO FECHA
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `duplicarAba` produzia duas abas com o MESMO símbolo e o MESMO período — logo com o mesmo
+   * rótulo e a mesma dica. Duas abas visualmente idênticas na barra, e o operador sem como
+   * saber qual é qual.
+   *
+   * ⚠️ Isso violava uma regra que este projeto já tinha escrito, em `layout-templates.core.ts`:
+   * *"dois itens visualmente idênticos na lista é o pior desfecho possível — ele carrega um, o
+   * setup vem errado, e não há nada na tela que explique por quê"*. A regra valia para nome de
+   * template e vale igual para aba.
+   *
+   * ⭐ Nome SEPARADO do símbolo, e não um símbolo alterado: o símbolo é o identificador que a
+   * fonte de dado recebe. Renomear a aba para `'WIN fluxo'` não pode fazer o playground pedir
+   * um ativo chamado `WIN fluxo` — que é o que aconteceria se o nome morasse no mesmo campo.
+   *
+   * ⭐ E ganha um uso que o operador pediria de todo jeito: `'WIN fluxo'` e `'WIN contexto'`
+   * são dois setups do mesmo ativo, e a aba é onde isso se distingue.
+   */
+  readonly rotulo?: string;
+  /**
    * O estado do gráfico desta aba. `null` = nada a aplicar (aba que nunca guardou).
    *
    * ⚠️ `null` NÃO significa "gráfico vazio": significa "não sei". Quem restaura deve DEIXAR
@@ -213,6 +237,68 @@ export function abaAtiva(estado: EstadoDeAbas): AbaDeAtivo | null {
 /** A aba de um id, ou `null`. */
 export function acharAba(estado: EstadoDeAbas, id: string): AbaDeAtivo | null {
   return estado.abas.find((a) => a.id === id) ?? null;
+}
+
+/** Tamanho máximo do nome de uma aba, em caracteres. */
+export const MAX_ROTULO_DE_ABA = 24;
+
+/**
+ * O que a barra de abas deve ESCREVER nesta aba.
+ *
+ * ⭐ Ponto ÚNICO da decisão "nome ou símbolo". Sem ele, cada tela que desenha abas repetiria o
+ * `rotulo ?? symbol` e a primeira mudança de regra deixaria uma delas atrás.
+ */
+export function nomeDaAba(aba: AbaDeAtivo): string {
+  const r = aba.rotulo;
+  return r !== undefined && r.trim().length > 0 ? r.trim() : aba.symbol;
+}
+
+/**
+ * Renomeia uma aba. `null` volta a mostrar o símbolo.
+ *
+ * ⚠️ NÃO recusa nome repetido, diferente de `renomearTemplate`. A diferença é de consequência:
+ * dois templates com o mesmo nome fundem-se em silêncio na coleção (o nome É a chave); duas
+ * abas com o mesmo nome continuam sendo duas abas distintas, com ids distintos e documentos
+ * distintos. Recusar aqui impediria o operador de chamar as duas de `'WIN'` — o que é
+ * exatamente o estado de onde ele parte.
+ */
+export function renomearAba(
+  estado: EstadoDeAbas,
+  id: string,
+  rotulo: string | null,
+  agora: number,
+): EstadoDeAbas {
+  const i = estado.abas.findIndex((a) => a.id === id);
+  if (i < 0) return estado;
+  const atual = estado.abas[i] as AbaDeAtivo;
+  const limpo =
+    rotulo === null ? undefined : rotulo.trim().replace(/\s+/g, ' ').slice(0, MAX_ROTULO_DE_ABA);
+  const novo = limpo === undefined || limpo.length === 0 ? undefined : limpo;
+  if (novo === atual.rotulo) return estado;
+  const quando = Number.isFinite(agora) ? Math.floor(agora) : 0;
+  const abas = estado.abas.slice();
+  // ⚠️ Campo ausente e não `undefined` explícito: o documento serializado não deve carregar
+  // `"rotulo": null` para toda aba que nunca foi renomeada.
+  const semRotulo = { ...atual, atualizadoEm: quando } as AbaDeAtivo & { rotulo?: string };
+  if (novo === undefined) delete semRotulo.rotulo;
+  else semRotulo.rotulo = novo;
+  abas[i] = semRotulo;
+  return { ...estado, abas };
+}
+
+/**
+ * Um nome LIVRE para a cópia de uma aba: `WIN (2)`, `WIN (3)`, ...
+ *
+ * ⭐ Determinístico e sem relógio: procura o menor sufixo que ainda não está na barra. Sortear
+ * ou usar o id (`aba-7`) daria um nome que não diz nada a quem lê.
+ */
+export function nomeParaCopia(estado: EstadoDeAbas, base: string): string {
+  const usados = new Set(estado.abas.map((a) => nomeDaAba(a)));
+  for (let n = 2; n <= MAX_ABAS + 2; n += 1) {
+    const tentativa = `${base} (${n})`.slice(0, MAX_ROTULO_DE_ABA);
+    if (!usados.has(tentativa)) return tentativa;
+  }
+  return base;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -365,6 +451,10 @@ export function duplicarAba(
     id: proximoIdDeAba(comAtual),
     symbol: origem.symbol,
     periodSeconds: origem.periodSeconds,
+    // ⭐⭐ A cópia nasce com NOME, e é a correção do defeito relatado: sem ele as duas abas
+    // ficavam com o mesmo símbolo, o mesmo período, o mesmo rótulo e a mesma dica — duas
+    // linhas idênticas na barra, e nada na tela dizendo qual é qual. Ver `AbaDeAtivo.rotulo`.
+    rotulo: nomeParaCopia(comAtual, nomeDaAba(origem)),
     documento: origem.documento,
     abertaEm: quando,
     atualizadoEm: quando,
@@ -587,6 +677,7 @@ export interface AbasSerializadas {
     readonly id: string;
     readonly symbol: string;
     readonly periodSeconds: number;
+    readonly rotulo?: string;
     readonly documento: ChartState | null;
     readonly abertaEm: number;
     readonly atualizadoEm: number;
@@ -601,6 +692,9 @@ export function serializarAbas(estado: EstadoDeAbas): AbasSerializadas {
       id: a.id,
       symbol: a.symbol,
       periodSeconds: a.periodSeconds,
+      // Campo AUSENTE quando não há nome: `"rotulo": null` em toda aba engordaria o documento
+      // e faria a leitura ter de distinguir "sem nome" de "nome vazio".
+      ...(a.rotulo === undefined ? {} : { rotulo: a.rotulo }),
       documento: a.documento,
       abertaEm: a.abertaEm,
       atualizadoEm: a.atualizadoEm,
@@ -692,10 +786,19 @@ export function desserializarAbas(bruto: unknown): LeituraDeAbas {
     }
 
     const abertaEm = inteiroOuZero(o['abertaEm']);
+    // ⚠️ Rótulo inválido (número, objeto, string vazia) é DESCARTADO em silêncio e a aba
+    // sobrevive mostrando o símbolo: perder o ativo e o período por causa de um nome ruim seria
+    // desproporcional. Mesma disciplina da recusa parcial do documento.
+    const rotuloBruto = o['rotulo'];
+    const rotulo =
+      typeof rotuloBruto === 'string' && rotuloBruto.trim().length > 0
+        ? rotuloBruto.trim().slice(0, MAX_ROTULO_DE_ABA)
+        : undefined;
     abas.push({
       id,
       symbol,
       periodSeconds: o['periodSeconds'],
+      ...(rotulo === undefined ? {} : { rotulo }),
       documento,
       abertaEm,
       // ⚠️ Data ausente vira 0, e não "agora": um núcleo puro não tem relógio, e inventar a

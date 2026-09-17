@@ -28,6 +28,9 @@ import {
   ABAS_SCHEMA_VERSION,
   MAX_ABAS,
   type EstadoDeAbas,
+  nomeDaAba,
+  renomearAba,
+  MAX_ROTULO_DE_ABA,
 } from '../chart-workspace.core.js';
 import { serializeChartState, type ChartState } from '../chart-state.core.js';
 
@@ -586,5 +589,103 @@ describe('serialização', () => {
     });
     expect(r.estado?.abas[0]?.abertaEm).toBe(0);
     expect(r.estado?.abas[0]?.atualizadoEm).toBe(0);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ NOME de aba — o defeito das duas abas indistinguíveis
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ RELATADO na tela: duas abas escritas `SINTÉTICO`, com o mesmo período e a mesma dica.
+// Vinha do `+` (duplicar), que produzia cópia idêntica. Viola a regra que este projeto já tinha
+// escrito para nome de template: *dois itens visualmente idênticos na lista é o pior desfecho
+// possível* — o operador carrega um, o setup vem errado, e nada na tela explica.
+describe('⭐⭐ nome de aba', () => {
+  it('sem nome, a aba mostra o SÍMBOLO', () => {
+    const e = criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0);
+    expect(nomeDaAba(e.abas[0] as never)).toBe('WIN');
+  });
+
+  it('⭐⭐ a cópia nasce com nome, e as duas ficam distinguíveis', () => {
+    const e = criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0);
+    const r = duplicarAba(e, 'aba-1', doc(), T0 + 5);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const nomes = r.estado.abas.map((a) => nomeDaAba(a));
+    expect(nomes).toEqual(['WIN', 'WIN (2)']);
+    // ⭐ O SÍMBOLO não mudou: é o identificador que a fonte de dado recebe. Um nome no mesmo
+    // campo faria o playground pedir um ativo chamado "WIN (2)".
+    expect(r.destino.symbol).toBe('WIN');
+  });
+
+  it('duplicar três vezes não repete o nome', () => {
+    let estado = criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0);
+    for (let i = 0; i < 3; i += 1) {
+      const r = duplicarAba(estado, estado.ativa, null, T0 + i);
+      if (!r.ok) return;
+      estado = r.estado;
+    }
+    const nomes = estado.abas.map((a) => nomeDaAba(a));
+    expect(new Set(nomes).size, `nomes repetidos: ${nomes.join(', ')}`).toBe(nomes.length);
+  });
+
+  it('renomear troca só o nome, preservando símbolo, período e documento', () => {
+    const e = criarAbas({ symbol: 'WIN', periodSeconds: 300, documento: doc() }, T0);
+    const r = renomearAba(e, 'aba-1', '  WIN   fluxo  ', T0 + 5);
+    const a = r.abas[0] as never as { symbol: string; periodSeconds: number; documento: unknown };
+    expect(nomeDaAba(r.abas[0] as never)).toBe('WIN fluxo');
+    expect(a.symbol).toBe('WIN');
+    expect(a.periodSeconds).toBe(300);
+    expect(a.documento).not.toBeNull();
+  });
+
+  it('`null` (e nome vazio) devolvem a aba ao símbolo', () => {
+    const e = renomearAba(criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0), 'aba-1', 'X', T0);
+    expect(nomeDaAba(e.abas[0] as never)).toBe('X');
+    expect(nomeDaAba(renomearAba(e, 'aba-1', null, T0).abas[0] as never)).toBe('WIN');
+    expect(nomeDaAba(renomearAba(e, 'aba-1', '   ', T0).abas[0] as never)).toBe('WIN');
+  });
+
+  it('nome longo é RECORTADO, e nome igual devolve a MESMA referência', () => {
+    const e = criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0);
+    const r = renomearAba(e, 'aba-1', 'W'.repeat(80), T0);
+    expect(nomeDaAba(r.abas[0] as never).length).toBe(MAX_ROTULO_DE_ABA);
+    expect(renomearAba(r, 'aba-1', 'W'.repeat(MAX_ROTULO_DE_ABA), T0)).toBe(r);
+    expect(renomearAba(e, 'aba-9', 'X', T0)).toBe(e);
+  });
+
+  it('⚠️ nome REPETIDO é permitido (diferente de template)', () => {
+    // Duas abas com o mesmo nome continuam sendo duas abas, com ids e documentos distintos.
+    // Recusar impediria o operador de chamar as duas de "WIN" — o estado de onde ele parte.
+    let estado = criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0);
+    const r = duplicarAba(estado, 'aba-1', null, T0 + 1);
+    if (!r.ok) return;
+    estado = renomearAba(r.estado, r.id, 'WIN', T0 + 2);
+    expect(estado.abas.map((a) => nomeDaAba(a))).toEqual(['WIN', 'WIN']);
+    expect(estado.abas).toHaveLength(2);
+  });
+
+  it('o nome sobrevive à ida e volta pela serialização', () => {
+    const e = renomearAba(criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0), 'aba-1', 'Fluxo', T0);
+    const lido = desserializarAbas(JSON.parse(JSON.stringify(serializarAbas(e))));
+    expect(nomeDaAba(lido.estado?.abas[0] as never)).toBe('Fluxo');
+  });
+
+  it('⚠️ aba sem nome NÃO grava o campo (documento não engorda)', () => {
+    const e = criarAbas({ symbol: 'WIN', periodSeconds: 300 }, T0);
+    const bruto = JSON.parse(JSON.stringify(serializarAbas(e))) as { abas: Record<string, unknown>[] };
+    expect('rotulo' in (bruto.abas[0] as Record<string, unknown>)).toBe(false);
+  });
+
+  it('rótulo inválido no armazenamento é descartado e a aba SOBREVIVE', () => {
+    for (const lixo of [42, null, '', '   ', {}, []]) {
+      const r = desserializarAbas({
+        version: ABAS_SCHEMA_VERSION,
+        ativa: 'aba-1',
+        abas: [{ id: 'aba-1', symbol: 'WIN', periodSeconds: 300, rotulo: lixo }],
+      });
+      expect(r.estado?.abas).toHaveLength(1);
+      expect(nomeDaAba(r.estado?.abas[0] as never)).toBe('WIN');
+    }
   });
 });
