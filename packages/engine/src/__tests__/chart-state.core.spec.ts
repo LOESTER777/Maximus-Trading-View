@@ -208,3 +208,155 @@ describe('deserializeChartState — viewport e drawings', () => {
     expect(r.state.drawings).toEqual(doc);
   });
 });
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐ Visibilidade e cor do indicador — campos NOVOS, sem subir a versao
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * O que estes casos travam, e por que a versao do esquema NAO subiu.
+ *
+ * Antes, o esquema nao tinha visibilidade, e o catalogo do React so gravava os
+ * indicadores VISIVEIS. Consequencia pratica severa: desligar um indicador e salvar o
+ * layout **apagava o indicador do layout**. O operador voltava na sessao seguinte, ele
+ * nao estava mais lá, e nao havia como saber que a configuracao tinha sido perdida.
+ *
+ * `visible` e `colors` entraram como campos OPCIONAIS. Documento gravado ANTES deles
+ * le exatamente como antes — visivel, sem cor — entao subir a versao so transformaria
+ * todo layout ja salvo em "documento de versao velha" sem ganho nenhum.
+ */
+describe('⭐ IndicatorState.visible — persistir "desligado" sem perder o indicador', () => {
+  it('grava `visible: false` e o le de volta', () => {
+    const doc = serializeChartState({
+      priceSeriesType: 'Candlestick',
+      indicators: [
+        { id: 'rsi', name: 'rsi', params: { period: 14 }, visible: false },
+        { id: 'ema20', name: 'ema' },
+      ],
+      alerts: [],
+    });
+    expect(doc.indicators[0]?.visible).toBe(false);
+
+    const lido = deserializeChartState(JSON.parse(JSON.stringify(doc)));
+    expect(lido.rejected).toBe(0);
+    expect(lido.state.indicators[0]).toMatchObject({ id: 'rsi', visible: false });
+  });
+
+  /**
+   * ⚠️ `visible` so e GRAVADO quando falso. "Ausente = visivel" ja e a leitura correta,
+   * e gravar `true` em todo indicador seria ruido em cada documento salvo.
+   */
+  it('NAO grava `visible` quando o indicador esta visivel', () => {
+    const doc = serializeChartState({
+      priceSeriesType: 'Candlestick',
+      indicators: [{ id: 'ema20', name: 'ema', visible: true }],
+      alerts: [],
+    });
+    expect('visible' in (doc.indicators[0] as object)).toBe(false);
+  });
+
+  /**
+   * ⭐ COMPATIBILIDADE: documento gravado ANTES do campo existir. E o motivo de a versao
+   * do esquema nao ter subido — este documento tem de continuar valido.
+   */
+  it('documento SEM o campo le como visivel (compatibilidade)', () => {
+    const antigo = {
+      version: CHART_STATE_SCHEMA_VERSION,
+      priceSeriesType: 'Candlestick',
+      indicators: [{ id: 'ema20', name: 'ema', params: { period: 20 } }],
+      alerts: [],
+      drawings: desenhoVazio,
+    };
+    const lido = deserializeChartState(antigo);
+    expect(lido.rejected).toBe(0);
+    expect(lido.state.indicators[0]?.visible).toBeUndefined();
+  });
+
+  /**
+   * ⚠️ So `false` EXATO esconde. Um documento editado a mao com `visible: 0` esconder o
+   * indicador em silencio seria pior que ignorar o campo: o operador veria o indicador
+   * na lista, nada na tela, e nenhuma pista da causa.
+   */
+  it('valor truthy/estranho no lugar de `false` le como VISIVEL', () => {
+    for (const valor of [0, '', 'nao', null, [], {}]) {
+      const lido = deserializeChartState({
+        version: CHART_STATE_SCHEMA_VERSION,
+        priceSeriesType: 'Line',
+        indicators: [{ id: 'x', name: 'ema', visible: valor }],
+        alerts: [],
+        drawings: desenhoVazio,
+      });
+      expect(lido.state.indicators[0]?.visible).toBeUndefined();
+    }
+  });
+});
+
+describe('IndicatorState.colors — a aparencia escolhida sobrevive', () => {
+  it('round-trip das cores por chave de saida', () => {
+    const doc = serializeChartState({
+      priceSeriesType: 'Candlestick',
+      indicators: [{ id: 'bb', name: 'bollinger', colors: { upper: '#0af', lower: '#0af' } }],
+      alerts: [],
+    });
+    const lido = deserializeChartState(JSON.parse(JSON.stringify(doc)));
+    expect(lido.state.indicators[0]?.colors).toEqual({ upper: '#0af', lower: '#0af' });
+  });
+
+  it('copia o mapa — editar a cor depois de salvar nao altera o salvo', () => {
+    const cores: Record<string, string> = { value: '#111' };
+    const doc = serializeChartState({
+      priceSeriesType: 'Line',
+      indicators: [{ id: 'ema', name: 'ema', colors: cores }],
+      alerts: [],
+    });
+    cores.value = '#999';
+    expect(doc.indicators[0]?.colors).toEqual({ value: '#111' });
+  });
+
+  /**
+   * ⚠️ O FORMATO da cor nao e validado, e isso e escolha: quem consome e o canvas, que
+   * ignora cor invalida sem lancar, e uma lista branca recusaria cor legitima que o
+   * navegador aceita (`oklch`, `color-mix`). O que se barra e o que nao e cor nenhuma.
+   */
+  it('descarta entrada que nao e string nao vazia, mantendo as boas', () => {
+    const lido = deserializeChartState({
+      version: CHART_STATE_SCHEMA_VERSION,
+      priceSeriesType: 'Line',
+      indicators: [
+        {
+          id: 'x',
+          name: 'ema',
+          colors: { boa: '#abc', vazia: '', numero: 7, nulo: null, objeto: {}, exotica: 'oklch(70% 0.1 200)' },
+        },
+      ],
+      alerts: [],
+      drawings: desenhoVazio,
+    });
+    expect(lido.state.indicators[0]?.colors).toEqual({ boa: '#abc', exotica: 'oklch(70% 0.1 200)' });
+  });
+
+  it('mapa de cores todo invalido some do estado em vez de virar objeto vazio', () => {
+    const lido = deserializeChartState({
+      version: CHART_STATE_SCHEMA_VERSION,
+      priceSeriesType: 'Line',
+      indicators: [{ id: 'x', name: 'ema', colors: { a: 1, b: null } }],
+      alerts: [],
+      drawings: desenhoVazio,
+    });
+    expect(lido.state.indicators[0]?.colors).toBeUndefined();
+  });
+
+  it('`colors` que nao e objeto e ignorado, sem rejeitar o indicador', () => {
+    const lido = deserializeChartState({
+      version: CHART_STATE_SCHEMA_VERSION,
+      priceSeriesType: 'Line',
+      indicators: [{ id: 'x', name: 'ema', colors: ['#fff'] }],
+      alerts: [],
+      drawings: desenhoVazio,
+    });
+    // Recusa PARCIAL do CAMPO, nao do item: o indicador continua no layout.
+    expect(lido.rejected).toBe(0);
+    expect(lido.state.indicators[0]?.id).toBe('x');
+    expect(lido.state.indicators[0]?.colors).toBeUndefined();
+  });
+});

@@ -28,7 +28,8 @@ export type ConditionKind =
   | 'TOUCH'
   | 'ENTER_ZONE'
   | 'EXIT_ZONE'
-  | 'PERCENT_CHANGE';
+  | 'PERCENT_CHANGE'
+  | 'SERIES_CROSS';
 
 /**
  * A fonte (`sample.value`) cruza um nível DE BAIXO PARA CIMA.
@@ -105,6 +106,51 @@ export interface PercentChangeCondition {
   readonly direction: 'up' | 'down' | 'both';
 }
 
+/**
+ * ⭐ Cruzamento de DUAS SÉRIES: `value` cruza `reference` na mesma amostra.
+ *
+ * É o alerta que faltava, e é o mais pedido de todos: "avise quando a EMA de 9
+ * cruzar a de 21", "quando o preço perder a média de 200", "quando o %K cruzar o
+ * %D". Com `CROSS_ABOVE` isso era impossível de expressar — ele compara com um
+ * `level` FIXO, e uma média móvel se move a cada barra.
+ *
+ * ── O MECANISMO: SINAL DO SPREAD, NÃO COMPARAÇÃO DE LADO ─────────────────────
+ *
+ * A tentação é "value antes < reference antes && value agora > reference agora".
+ * O que o motor faz é olhar o SINAL do spread (`value - reference`) mudar de
+ * não-positivo para positivo. Dá no mesmo resultado e é mais honesto sobre o que
+ * está sendo medido: as DUAS séries se movem, e o que cruza é a diferença entre
+ * elas passando por zero. Um caso concreto em que a formulação importa: quando as
+ * duas se tocam exatamente (spread zero) e depois separam, o cruzamento é UM
+ * evento — o `<= 0` na amostra anterior garante isso, do mesmo jeito que o `<=`
+ * do `CROSS_ABOVE`.
+ *
+ * ── ⚠️ EXIGE `reference` NAS DUAS AMOSTRAS ───────────────────────────────────
+ *
+ * Sem referência anterior não há spread anterior, e sem spread anterior não há
+ * transição — a condição simplesmente não vale. É o que faz o aquecimento do
+ * indicador se resolver sozinho: enquanto a média lenta ainda é `null` o
+ * consumidor manda amostra sem `reference`, nada dispara, e o primeiro
+ * cruzamento REAL depois disso é detectado normalmente. Inventar um valor para a
+ * referência faltante produziria um disparo fantasma na barra em que o indicador
+ * termina de aquecer.
+ *
+ * `direction` escolhe o sentido, na mesma forma do `PERCENT_CHANGE`:
+ *  - `'above'` → `value` cruza `reference` de baixo para cima (compra clássica)
+ *  - `'below'` → de cima para baixo
+ *  - `'both'`  → qualquer um dos dois
+ *
+ * ⚠️ `'both'` com modo `recurring` expôs um defeito no re-armamento, hoje
+ * corrigido: cruzar para cima e voltar na amostra SEGUINTE perdia o segundo
+ * disparo, porque o motor lia "a condição ainda vale" e não re-armava. Cruzamento
+ * é evento instantâneo, então condição de transição re-arma na hora — ver
+ * `ehInstantanea` em `alert-engine.core.ts`.
+ */
+export interface SeriesCrossCondition {
+  readonly kind: 'SERIES_CROSS';
+  readonly direction: 'above' | 'below' | 'both';
+}
+
 /** União de todas as condições. Discriminada por `kind`. */
 export type AlertCondition =
   | CrossAboveCondition
@@ -112,7 +158,8 @@ export type AlertCondition =
   | TouchCondition
   | EnterZoneCondition
   | ExitZoneCondition
-  | PercentChangeCondition;
+  | PercentChangeCondition
+  | SeriesCrossCondition;
 
 /**
  * Uma amostra alimentada ao motor. `value` é a fonte; `high`/`low` são opcionais
@@ -124,4 +171,17 @@ export interface Sample {
   readonly value: number;
   readonly high?: number;
   readonly low?: number;
+  /**
+   * ⭐ A SEGUNDA série, para o `SERIES_CROSS`. Ausente/não-finita = "não sei".
+   *
+   * ⚠️ Um campo na AMOSTRA, e não na condição, de propósito. A referência muda a
+   * cada barra (é uma média móvel, uma banda, outro indicador), então gravá-la na
+   * condição significaria reescrever a condição a cada barra — e a condição é o
+   * que o consumidor PERSISTE no layout. Assim a condição continua sendo a
+   * pergunta ("cruzou para cima?") e a amostra continua sendo o dado.
+   *
+   * Mantém o pacote agnóstico do mesmo jeito que `value`: são dois números que o
+   * consumidor escolhe. O pacote não sabe que um deles é uma EMA.
+   */
+  readonly reference?: number;
 }

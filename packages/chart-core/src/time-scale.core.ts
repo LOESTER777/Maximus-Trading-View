@@ -328,7 +328,56 @@ export function zoomAtCoordinate(s: TimeScaleState, anchorX: Coordinate, factor:
  * — o comportamento esperado ao vivo. Se ele tinha rolado para o passado, a visao
  * NAO se mexe — mexer arrancaria o operador de onde ele estava investigando.
  */
+/**
+ * ⭐ Ao acrescentar barras ANTES do início (backfill de histórico), preserva o que
+ * está na tela.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O SALTO QUE ISTO EVITA
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `leftLogical` é um ÍNDICE no array de barras. Inserir `inseridas` barras na frente
+ * empurra o índice de TODAS as existentes em `inseridas` — a barra que era a 0 passa a
+ * ser a 500. Sem compensar, a janela continua apontando para o índice antigo e a tela
+ * salta 500 barras para o passado no instante em que o histórico chega.
+ *
+ * ⚠️ E o salto é justamente na hora mais sensível: o operador está arrastando para
+ * trás olhando um trecho, o backfill responde, e o trecho que ele investigava
+ * desaparece da tela. Somar `inseridas` mantém as MESMAS barras nos MESMOS pixels — o
+ * histórico simplesmente passa a existir à esquerda, que é o que ele espera.
+ *
+ * ⚠️ Não mexe em `barSpacing`: o zoom é escolha do operador, e reenquadrar aqui
+ * mudaria o zoom dele porque chegou dado que ele não vê.
+ */
+export function onBarsPrepended(s: TimeScaleState, inseridas: number): void {
+  if (!Number.isFinite(inseridas) || inseridas <= 0) return;
+  s.leftLogical += inseridas;
+}
+
 export function onBarsAppended(s: TimeScaleState, antesCount: number, seguindoRealTime: boolean): void {
+  // ⭐ PRIMEIRA carga (o grafico estava VAZIO): ancora na ultima barra em vez de
+  // deslocar.
+  //
+  // ⚠️ Este ramo corrige um defeito real e silencioso. Com o grafico vazio,
+  // `isFollowingRealTime` devolve `true` (n === 0), e o deslocamento cego
+  // `leftLogical += delta` empurrava a esquerda da janela para `delta` — isto e, para
+  // DEPOIS da ultima barra. Medido: 40 velas num container de 800 px com
+  // `barSpacing` 8 deixavam a janela em 40..140 enquanto o dado ocupava 0..39.
+  // Resultado: **tela em branco** no primeiro `setData`, sem erro nenhum.
+  //
+  // Nao se manifestava no playground porque ele passa `resetViewportOn`, e o
+  // `resetViewport` chama `fitContent`. Um consumidor que so faz
+  // `createChart` + `addSeries` + `setData` — o caminho mais obvio da biblioteca —
+  // via o grafico vazio.
+  //
+  // ⚠️ E `scrollToRealTime`, NAO `fitContent`: enquadrar comprimiria 5.000 barras nos
+  // 800 px do container e nenhuma vela seria legivel. O certo na primeira carga e
+  // mostrar as barras MAIS RECENTES no zoom default, coladas na direita — que e o que
+  // um grafico de mercado faz ao abrir.
+  if (antesCount === 0) {
+    scrollToRealTime(s);
+    return;
+  }
   if (seguindoRealTime) {
     const delta = s.times.length - antesCount;
     s.leftLogical += delta;

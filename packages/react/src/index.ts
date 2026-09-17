@@ -82,11 +82,28 @@ export type {
 export { useReplay } from './useReplay.js';
 export type { UseReplayParams, UseReplayResult } from './useReplay.js';
 
+// Historico ANTIGO sob demanda: pede o trecho anterior quando o operador arrasta para
+// trás. A posicao da tela e preservada pelo MOTOR (`onBarsPrepended`), nao aqui — ver o
+// cabecalho do arquivo.
+export { useHistoryBackfill } from './useHistoryBackfill.js';
+export type {
+  BackfillBar,
+  UseHistoryBackfillParams,
+  UseHistoryBackfillResult,
+} from './useHistoryBackfill.js';
+
 export { useCrosshair } from './useCrosshair.js';
 export type { UseCrosshairParams, CrosshairReadout } from './useCrosshair.js';
 
 export { useChartState } from './useChartState.js';
 export type { UseChartStateResult, CaptureInput } from './useChartState.js';
+
+// ⭐ O motor num CONTEXTO: acaba com o `engine` passado de mao em mao pela arvore. Os hooks
+// NAO mudaram — continuam recebendo `engine` explicito; o padrao e
+// `const { engine } = useChart()` e passar adiante. Ver o cabecalho do arquivo para o porque
+// de nao ler o contexto por dentro dos hooks.
+export { ChartProvider, useChart, useChartOptional } from './ChartProvider.js';
+export type { ChartProviderProps, ChartContextValue } from './ChartProvider.js';
 
 export { RobustusChart } from './RobustusChart.js';
 export type { RobustusChartProps } from './RobustusChart.js';
@@ -133,6 +150,24 @@ export type {
   ToolbarActionItem,
 } from './ChartToolbar.js';
 
+// ⭐ VARIOS graficos na tela: abas (um ativo por vez), grade (varios ao mesmo tempo) e a
+// sincronia entre eles. A sincronia viaja por TEMPO, nunca por indice logico — ver o
+// cabecalho de `useChartSync`.
+export { SymbolTabs } from './SymbolTabs.js';
+export type { SymbolTabsProps, SymbolTab } from './SymbolTabs.js';
+
+export { ChartGrid, chartGridSlots } from './ChartGrid.js';
+export type { ChartGridProps, ChartGridLayout } from './ChartGrid.js';
+
+export { useChartSync } from './useChartSync.js';
+export type { UseChartSyncParams, UseChartSyncResult, ChartSyncOptions } from './useChartSync.js';
+
+// ⭐ Selecao de PERIODO. A lista e INJETADA (`TIMEFRAMES` de
+// `@robustus/charts-datafeed`): este pacote nao importa a camada de dado, pela mesma
+// regra do registry de indicadores.
+export { TimeframeSelector } from './TimeframeSelector.js';
+export type { TimeframeSelectorProps, TimeframeOption } from './TimeframeSelector.js';
+
 export { CollapsiblePanel } from './CollapsiblePanel.js';
 export type { CollapsiblePanelProps } from './CollapsiblePanel.js';
 
@@ -162,6 +197,7 @@ export type {
   ChartEngineOptions,
   BookmapLayerInput,
   FootprintLayerInput,
+  VolumeProfileLayerInput,
 } from '@robustus/charts-engine';
 
 export { ChartEngine, isValidCandle } from '@robustus/charts-engine';

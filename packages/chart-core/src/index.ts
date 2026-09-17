@@ -136,3 +136,15 @@ export {
   formatDataHoraCompleta,
 } from './time-format.core.js';
 export type { TimeParts, TimeTickUnit } from './time-format.core.js';
+
+// A matematica PURA da transicao de eixo. O motor a usa quando
+// `ChartOptions.animation.enabled` esta ligado; exportada para quem quiser a mesma
+// rampa numa camada propria (uma legenda que acompanhe a viagem, por exemplo).
+export {
+  ANIMATION_DEFAULT_MS,
+  easeOutCubic,
+  animationProgress,
+  animationState,
+  animationWorthwhile,
+} from './animation.core.js';
+export type { TimeScaleAnimation } from './animation.core.js';

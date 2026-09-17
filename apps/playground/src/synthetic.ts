@@ -84,6 +84,55 @@ export function makeSyntheticBundle(bars = 240, stepSec = 300, seed = 42): Synth
   return { candles, volume, depth, tickSize };
 }
 
+/**
+ * ⭐ Gera velas ANTERIORES a `antesDe` — o insumo do backfill de historico.
+ *
+ * Existe para o playground poder exercitar `useHistoryBackfill` sem backend: quando o
+ * operador arrasta para tras e chega na borda, este e o "provedor" que responde.
+ *
+ * ⚠️ Caminha para TRAS no tempo mas monta o array em ordem CRESCENTE, que e o que o
+ * motor exige. Gerar de tras para frente e depois inverter e o unico jeito de o preco
+ * "chegar" continuo na primeira vela ja existente — encadear para a frente a partir de
+ * um preco arbitrario deixaria um salto visivel na junta.
+ *
+ * A semente deriva de `antesDe`, entao pedir o mesmo trecho duas vezes devolve as
+ * mesmas velas: o playground continua determinístico.
+ */
+export function makeOlderCandles(
+  antesDe: number,
+  quantas: number,
+  stepSec: number,
+  precoDeChegada: number,
+): { candles: SyntheticCandle[]; volume: SyntheticBundle['volume'] } {
+  const rand = rng(Math.abs(Math.floor(antesDe)) % 2_147_483_647);
+  const tickSize = 5;
+
+  const candles: SyntheticCandle[] = [];
+  const volume: SyntheticBundle['volume'] = [];
+
+  let preco = precoDeChegada;
+  for (let k = 1; k <= quantas; k++) {
+    const t = antesDe - k * stepSec;
+    // O `close` desta vela e o `open` da seguinte (que ja existe): continuidade.
+    const close = preco;
+    const open = quantiza(close - (rand() - 0.5) * 120, tickSize);
+    const high = quantiza(Math.max(open, close) + rand() * 80, tickSize);
+    const low = quantiza(Math.min(open, close) - rand() * 80, tickSize);
+    candles.push({ time: t, open, high, low, close });
+    volume.push({
+      time: t,
+      value: Math.round(200 + rand() * 3000),
+      color: close >= open ? UP : DOWN,
+    });
+    preco = open;
+  }
+
+  // Do mais antigo para o mais recente.
+  candles.reverse();
+  volume.reverse();
+  return { candles, volume };
+}
+
 function quantiza(preco: number, tick: number): number {
   return Math.round(preco / tick) * tick;
 }

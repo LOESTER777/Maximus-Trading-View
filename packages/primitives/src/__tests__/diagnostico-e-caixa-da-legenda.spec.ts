@@ -413,3 +413,91 @@ describe('BookmapPrimitive — caixa de contraste da legenda', () => {
     expect(b.ctx.saves).toBe(b.ctx.restores);
   });
 });
+
+/**
+ * ⭐ Canto da legenda — o defeito "bookmap sobrepondo componente no topo esquerdo".
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O QUE FOI RELATADO, E POR QUE A CORREÇÃO É UMA OPÇÃO
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * A legenda desta camada escrevia SEMPRE no canto superior esquerdo. É exactamente
+ * ali que a aplicação põe a leitura de fita (a `ChartLegend` do pacote React, ancorada
+ * em `top/left`), e o resultado é duas coisas no mesmo pixel — o usuário fotografou.
+ *
+ * A camada não tem como saber o que a aplicação ancorou por cima dela, e adivinhar
+ * seria pior. A correcção é **deixar de assumir que o canto superior esquerdo é dela**:
+ * `posicaoLegenda` dá a escolha a quem monta a tela.
+ *
+ * ⚠️ Só os cantos ESQUERDOS existem. A faixa da direita é o eixo de preço (56 px no
+ * motor) e esta camada não conhece essa largura — oferecer um canto direito seria
+ * oferecer texto por baixo do eixo.
+ */
+describe('⭐ posicaoLegenda — a legenda não é dona do canto superior esquerdo', () => {
+  /** Só as caixas de texto (o estilo próprio delas), na ordem de desenho. */
+  function caixasDeTexto(ctx: ContextoFalso): Caixa[] {
+    return ctx.caixas.filter((c) => c.estilo === 'rgba(15, 23, 42, 0.82)');
+  }
+
+  it('por omissão continua no topo — o comportamento herdado não muda', () => {
+    const b = montarBancada({}, true);
+    expect(b.desenharUmaPassada()).toBe(true);
+    const caixas = caixasDeTexto(b.ctx);
+    expect(caixas.length).toBeGreaterThan(0);
+    // Guarda de vacuidade: há legenda escrita, e ela está na metade de CIMA.
+    expect(textoJunto(b.ctx)).toContain('Livro');
+    expect(caixas[0]!.y).toBeLessThan(ALTURA_PX / 2);
+  });
+
+  it("`'inferior-esquerda'` desce a legenda para a metade de baixo", () => {
+    const b = montarBancada({ posicaoLegenda: 'inferior-esquerda' }, true);
+    expect(b.desenharUmaPassada()).toBe(true);
+    const caixas = caixasDeTexto(b.ctx);
+    expect(caixas.length).toBeGreaterThan(0);
+    // O mesmo texto, outro canto.
+    expect(textoJunto(b.ctx)).toContain('Livro');
+    expect(caixas[0]!.y).toBeGreaterThan(ALTURA_PX / 2);
+    // E dentro do painel: a caixa não pode vazar por baixo.
+    expect(caixas[0]!.y + caixas[0]!.h).toBeLessThanOrEqual(ALTURA_PX);
+  });
+
+  /**
+   * ⭐ A parte que seria o defeito de cabeça para baixo: com o diagnóstico ligado há
+   * um RODAPÉ de cobertura no canto de baixo. A legenda tem de EMPILHAR ACIMA dele, não
+   * cair em cima.
+   */
+  it("`'inferior-esquerda'` empilha ACIMA do rodapé de cobertura", () => {
+    const b = montarBancada(
+      { posicaoLegenda: 'inferior-esquerda', mostrarDiagnostico: true },
+      true,
+    );
+    expect(b.desenharUmaPassada()).toBe(true);
+
+    const caixas = caixasDeTexto(b.ctx);
+    // Duas caixas: legenda (desenhada primeiro) e rodapé.
+    expect(caixas.length).toBe(2);
+    const legenda = caixas[0]!;
+    const rodape = caixas[1]!;
+
+    // Guarda de vacuidade: o rodapé de cobertura existe mesmo.
+    expect(textoJunto(b.ctx)).toContain('Cobertura');
+    // A base da legenda não passa do topo do rodapé.
+    expect(legenda.y + legenda.h).toBeLessThanOrEqual(rodape.y);
+  });
+
+  it('no topo, a legenda também não colide com o rodapé (o caso herdado)', () => {
+    const b = montarBancada({ mostrarDiagnostico: true }, true);
+    expect(b.desenharUmaPassada()).toBe(true);
+    const caixas = caixasDeTexto(b.ctx);
+    expect(caixas.length).toBe(2);
+    expect(caixas[0]!.y + caixas[0]!.h).toBeLessThanOrEqual(caixas[1]!.y);
+  });
+
+  it('trocar de canto NÃO muda o conteúdo do texto', () => {
+    const topo = montarBancada({}, true);
+    topo.desenharUmaPassada();
+    const baixo = montarBancada({ posicaoLegenda: 'inferior-esquerda' }, true);
+    baixo.desenharUmaPassada();
+    expect(textoJunto(baixo.ctx)).toBe(textoJunto(topo.ctx));
+  });
+});

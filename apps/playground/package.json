@@ -13,6 +13,7 @@
     "@robustus/chart-core": "0.1.0",
     "@robustus/charts-alerts": "0.1.0",
     "@robustus/charts-core": "0.1.0",
+    "@robustus/charts-datafeed": "0.1.0",
     "@robustus/charts-drawings": "0.1.0",
     "@robustus/charts-engine": "0.1.0",
     "@robustus/charts-indicators": "0.1.0",

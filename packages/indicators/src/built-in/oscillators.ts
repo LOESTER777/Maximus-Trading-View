@@ -22,6 +22,7 @@ import {
   type IndicatorParams,
   type IndicatorValue,
   type ParamSpec,
+  SOURCE_PARAM_SPEC,
 } from '../contracts.js';
 import { WilderState, SmaState, RingWindow, KahanSum, MinMaxWindow } from '../rolling.core.js';
 import { buildInstance } from './instance-base.js';
@@ -40,7 +41,15 @@ const periodSpec = (name: string, label: string, def: number): ParamSpec => ({
   step: 1,
 });
 
-const sourceSpec: ParamSpec = { name: 'source', label: 'Fonte', type: 'source', default: 'close' };
+/**
+ * Preco-fonte: reusa o spec CANONICO do contrato.
+ *
+ * ⚠️ Este spec estava copiado aqui e em outros tres arquivos de indicador, identico.
+ * A primeira mudanca real (`options`, a lista de fontes para a interface montar o
+ * select) teria de ser feita em quatro lugares — e bastaria esquecer um para o
+ * indicador ficar com um select vazio.
+ */
+const sourceSpec: ParamSpec = SOURCE_PARAM_SPEC;
 
 // ⚠️ `MinMaxWindow` morava aqui e subiu para `rolling.core.ts` quando Donchian e
 // Ichimoku passaram a precisar do mesmo acumulador de extremos. Mesma classe,

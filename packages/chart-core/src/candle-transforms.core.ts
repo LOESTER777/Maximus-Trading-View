@@ -112,34 +112,91 @@ export function heikinAshi(velas: readonly CandlestickData[]): CandlestickData[]
 // Renko
 // ═════════════════════════════════════════════════════════════════════════════
 
+/** Opcoes de `brickSizeAutomatico`. */
+export interface BrickSizeOptions {
+  /**
+   * Multiplo da variacao media de fechamento. Default `1`.
+   *
+   * `2` produz aproximadamente metade dos tijolos (cada um exige o dobro do movimento
+   * tipico); `0.5`, cerca do dobro deles.
+   */
+  readonly multiplo?: number;
+}
+
 /**
- * Tamanho de tijolo automatico por fracao do ULTIMO preco de fechamento.
+ * Tamanho de tijolo automatico, derivado da VARIACAO MEDIA DE FECHAMENTO.
  *
- * Renko precisa de um `brickSize` em unidade de preco. Fixa-lo a mao exige saber a
- * escala do ativo; esta heuristica deriva um valor razoavel do proprio dado:
- * `fracao` (default 0,2%) do ultimo close valido. Um ativo a 100 ganha tijolo de
- * 0,2; um a 100.000, de 200 — proporcional a escala, sem magica.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⚠️ ESTA FUNCAO MUDOU DE CRITERIO — E O CRITERIO ANTIGO ERA O DEFEITO
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * ⚠️ Devolve `null` (nao zero) quando nao ha close valido de onde tirar a escala:
- * `null` = "nao sei", e `brickSize` zero ou negativo geraria laco infinito de
- * tijolos no `renko`. O chamador decide o que fazer com o "nao sei" — tipicamente
- * nao desenhar Renko ate ter dado.
+ * Antes era uma fracao do ULTIMO PRECO (0,2% do close). O defeito foi reportado
+ * assim: *"Renko nao esta funcionando, aparece apenas uma Barra"*. Era exatamente
+ * isso, e os numeros do dado do playground explicam:
  *
- * NAO usa ATR de proposito: ATR exige janela e mais parametros; para o brick
- * automatico "bom o suficiente" a fracao do preco basta e e determinista sem
- * escolher periodo. Quem quiser ATR calcula fora e passa o `brickSize` explicito.
+ * | criterio                          | tijolo | tijolos em 240 velas |
+ * |-----------------------------------|--------|----------------------|
+ * | 0,2% do preco (ANTIGO)            | 259,4  | **2**                |
+ * | amplitude media (`high - low`)    | 111,9  | 10                   |
+ * | ⭐ variacao media do close        |  29,3  | **98**               |
+ *
+ * A raiz do erro e conceitual: **o nivel do preco nao diz nada sobre o quanto ele se
+ * move**. Dois ativos a 130.000 podem oscilar 600 ou 60.000 pontos por sessao, e a
+ * fracao do preco daria o mesmo tijolo aos dois — bom para um, inutil para o outro.
+ * Renko e uma grade de MOVIMENTO; a grade tem de sair do movimento observado.
+ *
+ * ⭐ E a medida certa do movimento aqui e a **variacao de FECHAMENTO**
+ * (`|close[i] - close[i-1]|` medio), nao a amplitude da vela. O motivo e que o
+ * `renko` desta biblioteca e construido sobre CLOSES: usar a amplitude (que inclui os
+ * pavios) superestima o passo em ~4x no dado medido — 111,9 contra 29,3 — e a serie
+ * rende 10 tijolos em vez de 98. Um tijolo do tamanho do passo tipico do close e o que
+ * faz cada tijolo custar aproximadamente uma barra de movimento.
+ *
+ * ⚠️ **A assinatura mudou de `(velas, fracao?: number)` para `(velas, opcoes?)` de
+ * proposito.** Um `brickSizeAutomatico(velas, 0.002)` antigo, se continuasse
+ * compilando, passaria a pedir `0,002 × 29,3` — tijolo de 0,06 — e o `renko` emitiria
+ * centenas de tijolos por vela. Erro de compilacao e infinitamente melhor que essa
+ * falha silenciosa.
+ *
+ * ⚠️ Devolve `null` (nao zero) quando nao ha DUAS velas validas de onde tirar uma
+ * variacao, ou quando a variacao media e zero (serie de preco constante). `null` =
+ * "nao sei"; `brickSize` zero ou negativo geraria laco infinito no `renko`.
  */
-export function brickSizeAutomatico(velas: readonly CandlestickData[], fracao = 0.002): number | null {
-  if (!(fracao > 0) || !Number.isFinite(fracao)) return null;
-  // Ultimo close valido — o preco "corrente" e a melhor referencia de escala.
-  for (let i = velas.length - 1; i >= 0; i--) {
-    const c = velas[i];
-    if (c !== undefined && isVelaValida(c) && c.close > 0) {
-      const bs = c.close * fracao;
-      return bs > 0 && Number.isFinite(bs) ? bs : null;
+export function brickSizeAutomatico(
+  velas: readonly CandlestickData[],
+  opcoes: BrickSizeOptions = {},
+): number | null {
+  const multiplo = opcoes.multiplo ?? 1;
+  if (!(multiplo > 0) || !Number.isFinite(multiplo)) return null;
+
+  let soma = 0;
+  let n = 0;
+  let anterior: number | null = null;
+  for (const c of velas) {
+    // ⚠️ Vela invalida NAO vira `anterior`: encadear a variacao contra um `NaN`
+    // envenenaria a soma, e usar o close anterior VALIDO e o comportamento certo — o
+    // buraco no dado nao inventa nem apaga movimento.
+    if (!isVelaValida(c)) continue;
+    if (anterior !== null) {
+      const variacao = Math.abs(c.close - anterior);
+      if (Number.isFinite(variacao)) {
+        soma += variacao;
+        n += 1;
+      }
     }
+    anterior = c.close;
   }
-  return null;
+  // Uma vela so (ou nenhuma) nao define variacao nenhuma.
+  if (n === 0) return null;
+
+  const media = soma / n;
+  // ⚠️ Serie de preco CONSTANTE da media zero. Nao ha grade de movimento a construir
+  // sobre movimento nenhum — devolver "nao sei" e o certo, e impede o laco infinito no
+  // `renko`.
+  if (!(media > 0)) return null;
+
+  const bs = media * multiplo;
+  return bs > 0 && Number.isFinite(bs) ? bs : null;
 }
 
 /**
@@ -172,14 +229,27 @@ export function brickSizeAutomatico(velas: readonly CandlestickData[], fracao = 
  * ⚠️ RENKO PERDE A LINEARIDADE TEMPORAL — leia antes de plotar
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * O `time` de cada tijolo e o `time` da barra que o FECHOU. Como uma unica barra
- * pode fechar varios tijolos (salto grande) ou nenhum (mercado parado), a serie
- * resultante NAO e equidistante no tempo e pode ter DOIS tijolos com o mesmo
- * `time` — inclusive o par "cancela+abre" de uma reversao. Isso e esperado: Renko
- * e indexado por movimento, nao por tempo. O eixo do motor (`time-scale.core`) e
- * por espaco logico (indice de barra), entao trata os tijolos como sequencia
- * ordenada e indexada, igual a velas — a nao-linearidade do tempo nao quebra o
- * desenho, so a leitura do eixo de tempo, que passa a ser aproximada.
+ * O `time` de cada tijolo parte do `time` da barra que o FECHOU. Como uma unica
+ * barra pode fechar varios tijolos (salto grande) ou nenhum (mercado parado), a
+ * serie resultante NAO e equidistante no tempo. Isso e esperado: Renko e indexado
+ * por movimento, nao por tempo, e o eixo do motor e por espaco logico (indice de
+ * barra) — os tijolos saem equidistantes na tela, cada um na sua coluna.
+ *
+ * ⭐ **Mas o `time` e ESTRITAMENTE CRESCENTE**, e isso e correcao de defeito, nao
+ * capricho. Quando varios tijolos fechavam na mesma barra, todos carregavam o mesmo
+ * `time`, e o motor assume tempo unico por barra em tres lugares:
+ *
+ *  - `SeriesImpl.update` trata `time` igual ao ultimo como "a MESMA barra sendo
+ *    revisada" e **substitui** — ao vivo, o segundo tijolo de uma barra apagava o
+ *    primeiro em vez de entrar na serie;
+ *  - `timeToIndex` (crosshair, marcador, ancora de desenho) resolve tempo repetido
+ *    para o PRIMEIRO indice, entao tudo que e ancorado por tempo colava no primeiro
+ *    tijolo do grupo;
+ *  - os rotulos do eixo repetiam o mesmo instante em colunas vizinhas.
+ *
+ * O tempo de cada tijolo e portanto `max(tempo da barra, tempo do tijolo anterior + 1)`.
+ * O deslocamento de 1 segundo e irrelevante para a leitura (Renko nao promete eixo
+ * temporal fiel) e devolve ao motor a premissa que ele exige.
  *
  * Determinismo: para a MESMA serie e o MESMO `brickSize`, a saida e identica —
  * o unico estado e a referencia e a direcao correntes, ambas derivadas do dado.
@@ -190,6 +260,15 @@ export function brickSizeAutomatico(velas: readonly CandlestickData[], fracao = 
 export function renko(velas: readonly CandlestickData[], brickSize: number): CandlestickData[] {
   const tijolos: CandlestickData[] = [];
   if (!(brickSize > 0) || !Number.isFinite(brickSize)) return tijolos;
+
+  /** Tempo do ultimo tijolo emitido, para garantir crescimento ESTRITO. */
+  let ultimoTempo: number | null = null;
+  /** O proximo tempo utilizavel a partir do tempo da barra. Ver a nota do cabecalho. */
+  const proximoTempo = (tempoDaBarra: number): number => {
+    const t = ultimoTempo === null ? tempoDaBarra : Math.max(tempoDaBarra, ultimoTempo + 1);
+    ultimoTempo = t;
+    return t;
+  };
 
   // Referencia = borda do ultimo tijolo (ou o primeiro close, como semente).
   let referencia: number | null = null;
@@ -222,14 +301,14 @@ export function renko(velas: readonly CandlestickData[], brickSize: number): Can
         // Sobe um tijolo na direcao de alta.
         const de = ref;
         const ate = ref + brickSize;
-        tijolos.push({ time: c.time, open: de, high: ate, low: de, close: ate });
+        tijolos.push({ time: proximoTempo(c.time), open: de, high: ate, low: de, close: ate });
         ref = ate;
         direcao = 1;
       } else if (diff <= -brickSize && direcao <= 0) {
         // Desce um tijolo na direcao de baixa.
         const de = ref;
         const ate = ref - brickSize;
-        tijolos.push({ time: c.time, open: de, high: de, low: ate, close: ate });
+        tijolos.push({ time: proximoTempo(c.time), open: de, high: de, low: ate, close: ate });
         ref = ate;
         direcao = -1;
       } else if (diff >= 2 * brickSize && direcao < 0) {
@@ -237,14 +316,14 @@ export function renko(velas: readonly CandlestickData[], brickSize: number): Can
         // partir da borda oposta do tijolo de baixa corrente.
         const de = ref + brickSize;
         const ate = de + brickSize;
-        tijolos.push({ time: c.time, open: de, high: ate, low: de, close: ate });
+        tijolos.push({ time: proximoTempo(c.time), open: de, high: ate, low: de, close: ate });
         ref = ate;
         direcao = 1;
       } else if (diff <= -2 * brickSize && direcao > 0) {
         // Reversao para baixo, simetrica.
         const de = ref - brickSize;
         const ate = de - brickSize;
-        tijolos.push({ time: c.time, open: de, high: de, low: ate, close: ate });
+        tijolos.push({ time: proximoTempo(c.time), open: de, high: de, low: ate, close: ate });
         ref = ate;
         direcao = -1;
       } else {

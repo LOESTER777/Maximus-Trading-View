@@ -93,13 +93,19 @@ export function useCrosshair(params: UseCrosshairParams): CrosshairReadout {
     // `seriesData` da barra sob o cursor (o motor o preenche em `emitCrosshair`).
     engine.api.subscribeCrosshairMove(handler);
 
-    // ⚠️ O contrato do motor nao expoe `unsubscribe` por handler hoje; o
-    // descarte do motor (`dispose`) limpa todos os assinantes. Como este efeito
-    // depende de `engine`, ao trocar de motor o antigo ja foi descartado e seus
-    // assinantes zerados — nao ha vazamento entre motores. Se um dia o contrato
-    // ganhar `unsubscribeCrosshairMove`, remover aqui.
+    // ⭐ Agora REMOVE de verdade. Antes esta limpeza era um comentario explicando que o
+    // contrato do motor nao tinha `unsubscribe` e que o descarte do motor zerava os
+    // assinantes — verdade so quando o motor inteiro morre. Este efeito depende de
+    // `onMove`, entao trocar a closure (um `onMove` literal em JSX troca a cada render)
+    // acumulava um ouvinte por render NO MESMO motor, cada um segurando a closure
+    // anterior. O contrato ganhou `unsubscribeCrosshairMove` e a limpeza deixou de ser
+    // uma promessa por escrito.
     return () => {
-      // Nada a fazer: ver a nota acima. O motor descartado nao chama mais.
+      try {
+        engine.api.unsubscribeCrosshairMove(handler);
+      } catch {
+        // Motor em descarte: os assinantes morrem com ele.
+      }
     };
   }, [engine, onMove]);
 

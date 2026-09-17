@@ -15,7 +15,11 @@
  * nao cada tela.
  */
 
-import type { BookmapLayerOptions, FootprintLayerOptions } from '@robustus/charts-primitives';
+import type {
+  BookmapLayerOptions,
+  FootprintLayerOptions,
+  VolumeProfileLayerOptions,
+} from '@robustus/charts-primitives';
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Velas
@@ -231,3 +235,11 @@ export type BookmapLayerInput = Omit<BookmapLayerOptions, 'maxCells' | 'minCellP
 
 /** Camada de footprint como o consumidor a informa. */
 export type FootprintLayerInput = FootprintLayerOptions;
+
+/**
+ * Camada de PERFIL DE VOLUME (o histograma por LINHA) como o consumidor a informa.
+ *
+ * Derivada de `VolumeProfileLayerOptions` sem redeclarar: o dominio de `lado`, `modoCor`
+ * e das fracoes tem de ter uma fonte so.
+ */
+export type VolumeProfileLayerInput = VolumeProfileLayerOptions;

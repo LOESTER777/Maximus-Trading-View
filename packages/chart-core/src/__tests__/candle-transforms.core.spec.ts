@@ -195,25 +195,180 @@ describe('renko — regra de tijolo', () => {
       ),
     );
   });
-});
 
-describe('brickSizeAutomatico', () => {
-  it('deriva a fracao do ultimo close valido', () => {
-    const serie = serieDeCloses([100, 200, 500]);
-    expect(brickSizeAutomatico(serie, 0.01)).toBeCloseTo(5, 9); // 500 * 0.01
+  /**
+   * ⭐ O `time` dos tijolos é ESTRITAMENTE CRESCENTE — e isto é correção de defeito.
+   *
+   * Vários tijolos podem fechar na MESMA barra (salto grande, ou o par "cancela+abre" de
+   * uma reversão). Quando todos carregavam o `time` da barra, três premissas do motor
+   * quebravam:
+   *
+   *  - `SeriesImpl.update` lê `time` igual ao último como "a MESMA barra sendo revisada"
+   *    e SUBSTITUI — ao vivo, o segundo tijolo da barra apagava o primeiro;
+   *  - `timeToIndex` resolve tempo repetido para o PRIMEIRO índice, então crosshair,
+   *    marcador e âncora de desenho colavam todos no primeiro tijolo do grupo;
+   *  - os rótulos do eixo repetiam o mesmo instante em colunas vizinhas.
+   */
+  it('⭐ o tempo dos tijolos é estritamente crescente, mesmo com vários na mesma barra', () => {
+    // Um salto de 5 bricks numa única barra: 5 tijolos, todos "da mesma barra".
+    const tijolos = renko(serieDeCloses([100, 105]), 1);
+    expect(tijolos).toHaveLength(5);
+    for (let i = 1; i < tijolos.length; i++) {
+      expect(tijolos[i]!.time).toBeGreaterThan(tijolos[i - 1]!.time);
+    }
+    // O primeiro carrega o tempo da barra que o fechou (a segunda vela: 1000+60); os
+    // seguintes, +1 s cada.
+    expect(tijolos[0]!.time).toBe(1060);
+    expect(tijolos[4]!.time).toBe(1064);
   });
 
-  it('devolve null quando nao ha close valido (nunca zero)', () => {
+  /**
+   * ⚠️ O bump pode ULTRAPASSAR o tempo da barra seguinte: 30 tijolos numa barra de 60 s
+   * empurram o tempo para além dela. A regra `max(tempo da barra, anterior + 1)` mantém a
+   * monotonicidade nesse caso — se fosse só "tempo da barra + k", o primeiro tijolo da
+   * barra seguinte andaria PARA TRÁS e o `setData` do motor reordenaria a série.
+   */
+  it('o tempo nunca ANDA PARA TRÁS quando o bump passa a barra seguinte', () => {
+    const tijolos = renko(serieDeCloses([100, 110, 120, 130]), 1);
+    expect(tijolos.length).toBeGreaterThan(20);
+    for (let i = 1; i < tijolos.length; i++) {
+      expect(tijolos[i]!.time).toBeGreaterThan(tijolos[i - 1]!.time);
+    }
+  });
+
+  it('propriedade: tempo estritamente crescente para qualquer série', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.double({ min: 1, max: 1e4, noNaN: true }), { minLength: 1, maxLength: 60 }),
+        fc.double({ min: 0.5, max: 50, noNaN: true }),
+        (closes, brick) => {
+          const tijolos = renko(serieDeCloses(closes), brick);
+          for (let i = 1; i < tijolos.length; i++) {
+            expect(tijolos[i]!.time).toBeGreaterThan(tijolos[i - 1]!.time);
+          }
+        },
+      ),
+    );
+  });
+});
+
+/**
+ * ⭐ `brickSizeAutomatico` MUDOU DE CRITÉRIO — e o critério antigo era o defeito.
+ *
+ * Ele derivava o tijolo de uma fração do ÚLTIMO PREÇO (0,2% do close). O usuário
+ * reportou *"Renko não está funcionando, aparece apenas uma Barra"*, e era exatamente
+ * isso, medido no dado do playground:
+ *
+ *  - preço em ~130.000 ⇒ tijolo de **259,4**;
+ *  - a série inteira (240 velas) tinha amplitude de **645 pontos**;
+ *  - 645 / 259 = **2 tijolos** no gráfico todo.
+ *
+ * A raiz é conceitual: o NÍVEL do preço não diz nada sobre o quanto ele SE MOVE. Dois
+ * ativos a 130.000 podem oscilar 600 ou 60.000 pontos por sessão, e a fração do preço
+ * daria o mesmo tijolo aos dois. Renko é uma grade de movimento; a grade tem de sair do
+ * movimento observado — a amplitude média (`high - low`).
+ */
+describe('brickSizeAutomatico — deriva do MOVIMENTO, não do nível do preço', () => {
+  it('é a variação MÉDIA de fechamento', () => {
+    // Closes 100, 110, 130 ⇒ variações 10 e 20 ⇒ média 15.
+    expect(brickSizeAutomatico(serieDeCloses([100, 110, 130]))).toBeCloseTo(15, 9);
+  });
+
+  /**
+   * ⭐ O CASO QUE REPRODUZ O DEFEITO RELATADO.
+   *
+   * Preço alto (130.000) com movimento pequeno (passo típico de 30 pontos). O critério
+   * antigo daria 260 — quase dez vezes o passo — e a série rendia 2 tijolos. O novo dá
+   * 30, e a mesma série rende gráfico.
+   */
+  it('preço ALTO com movimento PEQUENO dá tijolo pequeno', () => {
+    const serie = serieDeCloses([130_000, 130_030, 130_000, 130_030]);
+    const bs = brickSizeAutomatico(serie);
+    expect(bs).toBeCloseTo(30, 9);
+    // O critério antigo (0,2% de 130.000) seria 260.
+    expect(bs!).toBeLessThan(260);
+  });
+
+  it('preço BAIXO com movimento GRANDE dá tijolo grande — o inverso do antigo', () => {
+    // Um ativo a 10 que anda 4 por vela: o critério antigo daria 0,02.
+    expect(brickSizeAutomatico(serieDeCloses([10, 14, 10, 14]))).toBeCloseTo(4, 9);
+  });
+
+  /**
+   * ⚠️ A amplitude da vela (com pavio) NÃO serve como medida: no dado medido ela era
+   * 111,9 contra 29,3 do passo do close — quase 4x — e a série rendia 10 tijolos em vez
+   * de 98. Este caso trava a escolha: pavio grande não pode inflar o tijolo, porque o
+   * `renko` desta biblioteca é construído sobre CLOSES.
+   */
+  it('pavio grande NÃO infla o tijolo — o critério é o close', () => {
+    // Closes andam 10; os pavios abrem 200 de amplitude em cada vela.
+    const serie: CandlestickData[] = [100, 110, 120].map((c, i) =>
+      vela(i, c, c + 100, c - 100, c),
+    );
+    expect(brickSizeAutomatico(serie)).toBeCloseTo(10, 9);
+  });
+
+  it('`multiplo` escala a grade', () => {
+    const serie = serieDeCloses([100, 110, 130]);
+    expect(brickSizeAutomatico(serie, { multiplo: 2 })).toBeCloseTo(30, 9);
+    expect(brickSizeAutomatico(serie, { multiplo: 0.5 })).toBeCloseTo(7.5, 9);
+  });
+
+  it('devolve null quando nao ha vela valida (nunca zero)', () => {
     expect(brickSizeAutomatico([])).toBeNull();
-    expect(brickSizeAutomatico(serieDeCloses([0, 0]))).toBeNull();
     const soNaN: CandlestickData[] = [{ time: 1, open: NaN, high: NaN, low: NaN, close: NaN }];
     expect(brickSizeAutomatico(soNaN)).toBeNull();
   });
 
-  it('fracao invalida devolve null', () => {
-    const serie = serieDeCloses([100]);
-    expect(brickSizeAutomatico(serie, 0)).toBeNull();
-    expect(brickSizeAutomatico(serie, -0.1)).toBeNull();
-    expect(brickSizeAutomatico(serie, NaN)).toBeNull();
+  /** ⚠️ Uma vela só não define variação nenhuma. */
+  it('uma vela só devolve null', () => {
+    expect(brickSizeAutomatico(serieDeCloses([100]))).toBeNull();
+  });
+
+  /**
+   * ⚠️ Série de preço CONSTANTE dá média zero. Não há grade de movimento a construir
+   * sobre movimento nenhum, e devolver zero levaria o `renko` a laço infinito.
+   */
+  it('serie de preco constante devolve null em vez de zero', () => {
+    expect(brickSizeAutomatico(serieDeCloses([100, 100, 100]))).toBeNull();
+  });
+
+  /**
+   * ⚠️ Vela inválida no meio não pode virar a referência da variação seguinte: a
+   * comparação usa o último close VÁLIDO, senão um `NaN` envenenaria a soma inteira e o
+   * resultado sairia `null` por um buraco isolado no dado.
+   */
+  it('vela invalida no meio nao envenena a media', () => {
+    const serie: CandlestickData[] = [
+      vela(0, 100, 100, 100, 100),
+      { time: 1, open: NaN, high: NaN, low: NaN, close: NaN },
+      vela(2, 120, 120, 120, 120),
+    ];
+    expect(brickSizeAutomatico(serie)).toBeCloseTo(20, 9);
+  });
+
+  it('multiplo invalido devolve null', () => {
+    const serie = serieDeCloses([100, 110]);
+    expect(brickSizeAutomatico(serie, { multiplo: 0 })).toBeNull();
+    expect(brickSizeAutomatico(serie, { multiplo: -1 })).toBeNull();
+    expect(brickSizeAutomatico(serie, { multiplo: NaN })).toBeNull();
+  });
+
+  /**
+   * ⭐ O ciclo completo do defeito: uma série com o perfil do playground tem de render
+   * MUITOS tijolos, não dois. É a asserção que reprova a volta do critério antigo.
+   */
+  it('serie com o perfil do playground rende DEZENAS de tijolos, nao 2', () => {
+    // Caminhada com passo típico de 60 e amplitude de vela ~160, preço em 130.000.
+    const serie: CandlestickData[] = [];
+    let p = 130_000;
+    for (let i = 0; i < 240; i++) {
+      const close = p + ((i * 37) % 121) - 60;
+      serie.push(vela(i, p, Math.max(p, close) + 80, Math.min(p, close) - 80, close));
+      p = close;
+    }
+    const bs = brickSizeAutomatico(serie);
+    expect(bs).not.toBeNull();
+    expect(renko(serie, bs!).length).toBeGreaterThan(20);
   });
 });

@@ -104,4 +104,5 @@ export type {
   ChartCoordinateMapper,
   BookmapLayerInput,
   FootprintLayerInput,
+  VolumeProfileLayerInput,
 } from './types.js';

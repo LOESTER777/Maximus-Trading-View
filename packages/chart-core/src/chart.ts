@@ -30,6 +30,13 @@
  * quadro.
  */
 
+import {
+  ANIMATION_DEFAULT_MS,
+  animationProgress,
+  animationState,
+  animationWorthwhile,
+  type TimeScaleAnimation,
+} from './animation.core.js';
 import { createCanvasTarget } from './canvas-target.js';
 import type {
   ChartOptions,
@@ -81,6 +88,7 @@ import {
   isFollowingRealTime,
   logicalToCoordinate,
   onBarsAppended,
+  onBarsPrepended,
   scrollByPixels,
   scrollToRealTime,
   setVisibleLogicalRange,
@@ -143,6 +151,19 @@ interface Pane {
    * sobre o eixo.
    */
   priceScaleManual: boolean;
+  /**
+   * Sub-painel COLAPSADO: ocupa zero altura e nao desenha.
+   *
+   * ⭐ Existe porque esconder um oscilador nao pode deixar a faixa dele na tela.
+   * Marcar as series como `visible: false` apaga o desenho, mas a pane continuaria
+   * reservando 19% da altura para mostrar grade vazia — o operador esconderia o RSI
+   * e ganharia um retangulo morto. Colapsar devolve a altura ao preco.
+   *
+   * ⚠️ Por que colapsar em vez de `removePane`: remover destruiria as series e
+   * exigiria recriá-las ao reexibir, perdendo cor, linha de referencia e a ordem de
+   * desenho. Colapsar preserva tudo — reexibir e devolver a fracao.
+   */
+  collapsed: boolean;
 }
 
 /**
@@ -286,6 +307,15 @@ export class RobustusChartCore implements IChartApi {
   private readonly hasRealContext: boolean;
 
   private ro: ResizeObserver | null = null;
+  /**
+   * A transicao de eixo em curso, ou `null`.
+   *
+   * Um campo so: transicoes nao se somam. Um `fitContent` durante a animacao de um
+   * `scrollToRealTime` SUBSTITUI a anterior, partindo de onde o eixo esta agora — a
+   * intencao mais recente e a que vale, e encadear duas rampas produziria um caminho
+   * em zigue-zague que ninguem pediu.
+   */
+  private anim: TimeScaleAnimation | null = null;
 
   constructor(
     private readonly container: HTMLElement,
@@ -322,6 +352,7 @@ export class RobustusChartCore implements IChartApi {
         heightFraction: 1,
         series: [],
         priceScaleManual: false,
+        collapsed: false,
       },
     ];
 
@@ -450,6 +481,17 @@ export class RobustusChartCore implements IChartApi {
     return nova;
   }
 
+  /**
+   * A serie participa do desenho e da autoescala?
+   *
+   * `visible` ausente conta como VISIVEL — o default tem de ser "aparece", senao
+   * toda serie criada sem passar a opcao nasceria invisivel. Ver a nota do campo
+   * em `SeriesOptionsCommon`.
+   */
+  private static visivel(serie: SeriesImpl<SeriesType>): boolean {
+    return serie.model.options.visible !== false;
+  }
+
   /** A escala a que uma serie pertence, dentro da pane dela. */
   private scaleOf(pane: Pane, serie: SeriesImpl<SeriesType>): PriceScaleState {
     const id = serie.model.options.priceScaleId ?? MAIN_SCALE_ID;
@@ -491,6 +533,7 @@ export class RobustusChartCore implements IChartApi {
       heightFraction: 0, // definido por rebalancePanes
       series: [],
       priceScaleManual: false,
+      collapsed: false,
     });
     this.rebalancePanes();
     this.measure();
@@ -537,7 +580,13 @@ export class RobustusChartCore implements IChartApi {
    * precisa de menos altura que o preco e um nao vale mais que o outro.
    */
   private rebalancePanes(): void {
-    const subs = this.panes.length - 1;
+    // ⭐ Sub-painel COLAPSADO nao conta na divisao e recebe fracao ZERO. Sem isso o
+    // oscilador escondido seguiria reservando a altura dele, e a tela mostraria uma
+    // faixa vazia no lugar de devolver o espaco ao preco.
+    const subs = this.panes.filter((p) => p.index !== 0 && !p.collapsed).length;
+    for (const p of this.panes) {
+      if (p.collapsed) p.heightFraction = 0;
+    }
     if (subs <= 0) {
       this.panes[0]!.heightFraction = 1;
       return;
@@ -546,8 +595,44 @@ export class RobustusChartCore implements IChartApi {
     // agora num lugar so.
     this.panes[0]!.heightFraction = 0.62;
     for (let k = 1; k < this.panes.length; k++) {
-      this.panes[k]!.heightFraction = 0.38 / subs;
+      const p = this.panes[k]!;
+      if (p.collapsed) continue;
+      p.heightFraction = 0.38 / subs;
     }
+  }
+
+  /**
+   * Mostra ou esconde um sub-painel inteiro, PRESERVANDO as series dele.
+   *
+   * ⭐ E o par de `SeriesOptionsCommon.visible` no nivel da pane: esconder as series
+   * de um oscilador sem colapsar a faixa deixaria um retangulo de grade vazia
+   * ocupando altura. Aqui a fracao vai a zero e a altura volta ao preco.
+   *
+   * A pane principal (indice 0) nao pode ser escondida — ela e o grafico; o pedido
+   * e ignorado em vez de deixar a tela em branco. Idempotente, e indice inexistente
+   * e no-op.
+   *
+   * ⚠️ Diferente de `removePane`: aqui nada e destruido. Reexibir devolve a pane com
+   * as mesmas series, cores e linhas de referencia — e por isso que esconder um
+   * indicador nao precisa recria-lo.
+   */
+  setPaneVisible(paneIndex: number, visible: boolean): void {
+    if (this.disposed || paneIndex === 0) return;
+    const pane = this.panes.find((p) => p.index === paneIndex);
+    if (pane === undefined || pane.collapsed === !visible) return;
+    pane.collapsed = !visible;
+    // Uma pane colapsada nao pode continuar com a escala em modo manual: ela nao tem
+    // eixo na tela para o usuario religar a autoescala com o duplo-clique, e voltaria
+    // congelada numa faixa que pode nao ter mais nada a ver com o dado.
+    if (pane.collapsed) pane.priceScaleManual = false;
+    this.rebalancePanes();
+    this.measure();
+  }
+
+  /** O sub-painel esta visivel? Pane inexistente conta como nao visivel. */
+  isPaneVisible(paneIndex: number): boolean {
+    const pane = this.panes.find((p) => p.index === paneIndex);
+    return pane !== undefined && !pane.collapsed;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -564,17 +649,18 @@ export class RobustusChartCore implements IChartApi {
       coordinateToLogical: (x) => coordinateToLogical(self.ts, x),
       getVisibleRange: (): TimeRange | null => visibleTimeRange(self.ts),
       getVisibleLogicalRange: () => visibleLogicalRange(self.ts),
+      // ⭐ Os tres metodos que MOVEM a janela por comando passam pelo mesmo portao de
+      // animacao (`transicaoDeEixo`). Ele aplica a mutacao de verdade e, se a animacao
+      // estiver ligada, faz o eixo VIAJAR ate lá em vez de saltar. Desligada (o
+      // default), a mutacao fica exatamente como era: sincrona, no mesmo quadro.
       setVisibleLogicalRange: (r) => {
-        setVisibleLogicalRange(self.ts, r);
-        self.scheduleRender();
+        self.transicaoDeEixo(() => setVisibleLogicalRange(self.ts, r));
       },
       fitContent: () => {
-        fitContent(self.ts);
-        self.scheduleRender();
+        self.transicaoDeEixo(() => fitContent(self.ts));
       },
       scrollToRealTime: () => {
-        scrollToRealTime(self.ts);
-        self.scheduleRender();
+        self.transicaoDeEixo(() => scrollToRealTime(self.ts));
       },
       subscribeVisibleLogicalRangeChange: (h) => self.rangeListeners.add(h),
       unsubscribeVisibleLogicalRangeChange: (h) => self.rangeListeners.delete(h),
@@ -652,6 +738,17 @@ export class RobustusChartCore implements IChartApi {
 
   subscribeCrosshairMove(handler: (p: MouseEventParams) => void): void {
     this.crosshairListeners.add(handler);
+  }
+
+  // ⭐ A simetria que faltava. `Set.delete` de handler desconhecido e no-op, entao os
+  // dois metodos sao idempotentes por construcao — chamar no desmonte sem saber se
+  // chegou a assinar e seguro.
+  unsubscribeClick(handler: (p: MouseEventParams) => void): void {
+    this.clickListeners.delete(handler);
+  }
+
+  unsubscribeCrosshairMove(handler: (p: MouseEventParams) => void): void {
+    this.crosshairListeners.delete(handler);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -836,6 +933,11 @@ export class RobustusChartCore implements IChartApi {
   private paneAtY(y: number): Pane | null {
     let acc = 0;
     for (const p of this.panes) {
+      // ⚠️ Pane colapsada tem altura ZERO, e `y >= acc && y <= acc + 0` casa
+      // exatamente na fronteira dela. Sem pular, o crosshair na borda entre duas
+      // panes visiveis seria atribuido a uma pane invisivel no meio, e o rotulo de
+      // preco sairia lido na escala errada.
+      if (p.collapsed) continue;
       if (y >= acc && y <= acc + p.priceScale.height) return p;
       acc += p.priceScale.height;
     }
@@ -854,11 +956,16 @@ export class RobustusChartCore implements IChartApi {
    * Devolve a POSICAO `k` no array: a fronteira separa `panes[k]` de `panes[k+1]`.
    */
   private paneBoundaryAt(y: number): number | null {
-    if (this.panes.length < 2) return null;
+    // ⚠️ Somente panes VISIVEIS tem fronteira arrastavel. Uma colapsada tem altura
+    // zero, entao a fronteira dela coincide com a da vizinha — duas divisorias no
+    // mesmo pixel, e o arrasto redistribuiria altura de uma pane que nao esta na
+    // tela (efeito: a divisoria "nao pega", ou pega e nada se move).
+    const visiveis = this.panes.filter((p) => !p.collapsed);
+    if (visiveis.length < 2) return null;
     let acc = 0;
-    for (let k = 0; k < this.panes.length - 1; k++) {
-      acc += this.panes[k]!.priceScale.height;
-      if (Math.abs(y - acc) <= PANE_DIVIDER_GRAB_PX) return k;
+    for (let k = 0; k < visiveis.length - 1; k++) {
+      acc += visiveis[k]!.priceScale.height;
+      if (Math.abs(y - acc) <= PANE_DIVIDER_GRAB_PX) return this.panes.indexOf(visiveis[k]!);
     }
     return null;
   }
@@ -878,8 +985,11 @@ export class RobustusChartCore implements IChartApi {
    */
   private resizePaneBoundary(k: number, dyPx: number): void {
     const a = this.panes[k];
-    const b = this.panes[k + 1];
-    if (a === undefined || b === undefined || !Number.isFinite(dyPx)) return;
+    // A vizinha de baixo e a proxima VISIVEL, nao a proxima do array: uma pane
+    // colapsada entre as duas nao pode receber a altura arrastada (ela nao aparece,
+    // e o movimento se perderia num retangulo invisivel).
+    const b = this.panes.slice(k + 1).find((p) => !p.collapsed);
+    if (a === undefined || b === undefined || a.collapsed || !Number.isFinite(dyPx)) return;
 
     const util = Math.max(1, this.totalHeight - this.timeAxisHeight);
     const soma = this.panes.reduce((acc, p) => acc + p.heightFraction, 0);
@@ -903,6 +1013,10 @@ export class RobustusChartCore implements IChartApi {
 
   private readonly onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
+    // ⭐ O usuario agarrou o grafico: a transicao em curso morre AQUI, onde o eixo
+    // está. Continuar a rampa faria o conteudo escorregar debaixo da mao dele, e
+    // saltar para o destino arrancaria a tela no instante do toque.
+    this.cancelarAnimacao();
     const r = this.canvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     const y = e.clientY - r.top;
@@ -1264,6 +1378,9 @@ export class RobustusChartCore implements IChartApi {
   private readonly onWheel = (e: WheelEvent): void => {
     if (!this.scaleEnabled()) return;
     e.preventDefault();
+    // Zoom do usuario tambem cancela a transicao: dois donos do mesmo eixo no mesmo
+    // quadro produziriam um zoom que "escorrega".
+    this.cancelarAnimacao();
     const r = this.canvas.getBoundingClientRect();
     const x = e.clientX - r.left;
     // Roda para cima (deltaY < 0) aproxima. Fator suave para o zoom nao "pular".
@@ -1293,6 +1410,9 @@ export class RobustusChartCore implements IChartApi {
 
     let fonte: SeriesModel | null = null;
     for (const s of this.panes[0]!.series) {
+      // Serie oculta nao alimenta a legenda: ler O/H/L/C de algo que nao esta
+      // desenhado faria a fita mostrar numero sem contraparte visual.
+      if (!RobustusChartCore.visivel(s)) continue;
       const t = s.model.type;
       if (t === 'Candlestick' || t === 'Bar' || t === 'Line' || t === 'Area') {
         if (fonte === null || s.model.data.length > fonte.data.length) fonte = s.model;
@@ -1362,15 +1482,152 @@ export class RobustusChartCore implements IChartApi {
     const agendar =
       typeof requestAnimationFrame === 'function'
         ? requestAnimationFrame
-        : (cb: () => void): number => setTimeout(cb, 16) as unknown as number;
-    this.frame = agendar(() => {
+        : (cb: (t: number) => void): number => setTimeout(() => cb(agoraMs()), 16) as unknown as number;
+    this.frame = agendar((t: number) => {
       this.frame = null;
-      this.render();
+      // ⚠️ O timestamp do `requestAnimationFrame` e a base de tempo da animacao, e
+      // nao um `performance.now()` lido aqui dentro: o do rAF e o instante em que o
+      // navegador VAI pintar, e usá-lo mantém a rampa coerente com o que aparece na
+      // tela mesmo quando o quadro atrasa. Ambiente sem rAF cai no relogio.
+      this.render(typeof t === 'number' ? t : agoraMs());
     });
   }
 
-  private render(): void {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ⭐ Transicao animada do eixo de tempo
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Aplica uma mudanca PROGRAMATICA de janela, animando quando configurado.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * COMO ISTO EVITA DUPLICAR A CONTA DO DESTINO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * O destino nao e calculado aqui. A mutacao real (`fitContent`, `setVisibleLogicalRange`,
+   * `scrollToRealTime`) e EXECUTADA, o resultado dela e lido como destino, e o eixo e
+   * devolvido ao estado de origem para a rampa comecar. Assim a animacao nunca
+   * divergir da conta do eixo — reimplementar "onde o fitContent teria parado" seria
+   * uma segunda fonte de verdade, e a primeira mudanca em `fitContent` deixaria a
+   * animacao pousando no lugar errado.
+   *
+   * ⚠️ Se a animacao esta desligada (o default), este metodo e a mutacao crua mais o
+   * `scheduleRender` — exatamente o comportamento anterior, sem nenhum custo.
+   */
+  private transicaoDeEixo(mutar: () => void): void {
     if (this.disposed) return;
+
+    // ⭐ Reconstroi o eixo ANTES de mover a janela, e isto corrige um defeito silencioso.
+    //
+    // ⚠️ `ts.times` so era preenchido dentro do `render`, que e agendado por
+    // `requestAnimationFrame`. Consequencia medida: um consumidor que faz
+    // `setData(...)` e em seguida `fitContent()` — o par mais natural do mundo, e o que a
+    // documentacao mostra — chamava `fitContent` com o eixo AINDA VAZIO. `fitContent`
+    // saia sem fazer nada (`n === 0`), e o quadro seguinte aplicava a heuristica de
+    // primeira carga (`scrollToRealTime`), mostrando as ultimas ~93 barras. O
+    // enquadramento pedido simplesmente nao acontecia, sem erro nenhum.
+    //
+    // Reconstruir aqui tem um segundo efeito, tambem desejado: o `render` seguinte vê
+    // `antesCount > 0` e NAO aplica a heuristica de primeira carga — a intencao
+    // EXPLICITA do consumidor vence o palpite do motor.
+    this.rebuildTimes();
+
+    const deLeft = this.ts.leftLogical;
+    const deBar = this.ts.barSpacing;
+
+    mutar();
+
+    if (!this.animacaoLigada()) {
+      this.anim = null;
+      this.scheduleRender();
+      return;
+    }
+
+    const paraLeft = this.ts.leftLogical;
+    const paraBar = this.ts.barSpacing;
+
+    if (!animationWorthwhile(deLeft, paraLeft, deBar, paraBar)) {
+      // Destino indistinguivel da origem: fica no destino e nao agenda rampa nenhuma.
+      this.anim = null;
+      this.scheduleRender();
+      return;
+    }
+
+    // Volta ao ponto de partida — a rampa e que leva ao destino.
+    this.ts.leftLogical = deLeft;
+    this.ts.barSpacing = deBar;
+
+    this.anim = {
+      deLeftLogical: deLeft,
+      paraLeftLogical: paraLeft,
+      deBarSpacing: deBar,
+      paraBarSpacing: paraBar,
+      inicio: agoraMs(),
+      duracaoMs: this.duracaoAnimacao(),
+    };
+    this.scheduleRender();
+  }
+
+  /**
+   * A animacao esta ligada AGORA?
+   *
+   * ⚠️ `prefers-reduced-motion: reduce` vence a configuracao. Consultado em cada
+   * transicao, nao guardado na construcao: o usuario pode mudar a preferencia do
+   * sistema com a pagina aberta, e um valor lido uma vez ignoraria isso pelo resto da
+   * sessao.
+   *
+   * ⚠️ `matchMedia` pode nao existir (Node, SSR, jsdom sem o polyfill). Ausente conta
+   * como "sem preferencia declarada" — nao como "reduza": tratar ausencia de API como
+   * pedido de reducao desligaria a animacao em todo navegador antigo.
+   */
+  private animacaoLigada(): boolean {
+    if (this.opts.animation?.enabled !== true) return false;
+    if (this.duracaoAnimacao() <= 0) return false;
+    try {
+      if (typeof matchMedia === 'function') {
+        if (matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+      }
+    } catch {
+      // Ambiente com `matchMedia` quebrado nao pode derrubar uma mudanca de janela.
+    }
+    return true;
+  }
+
+  private duracaoAnimacao(): number {
+    const d = this.opts.animation?.durationMs;
+    return typeof d === 'number' && Number.isFinite(d) ? d : ANIMATION_DEFAULT_MS;
+  }
+
+  /**
+   * Interrompe a transicao em curso, DEIXANDO o eixo onde está.
+   *
+   * ⚠️ Nao pula para o destino. Chamado quando o usuario toca no grafico (pan, zoom,
+   * pinca): saltar para o destino no instante em que ele agarrou o eixo arrancaria a
+   * tela debaixo da mao dele. A intencao mais recente e a do usuario, e ela vence.
+   */
+  private cancelarAnimacao(): void {
+    this.anim = null;
+  }
+
+  private render(agora: number = agoraMs()): void {
+    if (this.disposed) return;
+
+    // ⭐ Avanca a transicao ANTES de qualquer conta que dependa da janela (tempos,
+    // autoescala, desenho). Escrever o eixo aqui e o que faz a autoescala do PRECO
+    // acompanhar a rampa de graca — ela le a janela visivel a cada quadro.
+    if (this.anim !== null) {
+      const estado = animationState(this.anim, agora);
+      this.ts.leftLogical = estado.leftLogical;
+      this.ts.barSpacing = estado.barSpacing;
+      if (animationProgress(this.anim, agora) >= 1) {
+        // Pousa no destino EXATO. Sem isto o eixo pararia no ultimo valor
+        // interpolado, que e proximo do destino mas nao igual — e um `fitContent`
+        // deixaria uma fracao de barra fora da tela.
+        this.ts.leftLogical = this.anim.paraLeftLogical;
+        this.ts.barSpacing = this.anim.paraBarSpacing;
+        this.anim = null;
+      }
+    }
 
     // Antes de mudar times, guarda se estava seguindo o tempo real.
     const seguia = isFollowingRealTime(this.ts);
@@ -1379,11 +1636,39 @@ export class RobustusChartCore implements IChartApi {
     // de sub-painel compartilham o mesmo eixo de tempo, entao os tempos vem da pane
     // principal, que e a fonte da verdade temporal.
     const antesCount = this.ts.times.length;
+    const antesPrimeiro = this.ts.times[0];
     this.rebuildTimes();
-    if (this.ts.times.length !== antesCount) onBarsAppended(this.ts, antesCount, seguia);
 
-    // Autoescala cada pane pela janela horizontal visivel.
-    for (const pane of this.panes) this.autoScalePane(pane);
+    if (this.ts.times.length !== antesCount) {
+      // ⭐ Separa o que entrou NA FRENTE do que entrou NO FIM. As duas coisas exigem
+      // reações opostas, e o motor só vê o array ter crescido.
+      //
+      // ⚠️ Sem esta distinção, um backfill de histórico (500 barras inseridas antes)
+      // era lido como "500 barras novas ao vivo": com a visão colada no tempo real, o
+      // eixo rolava 500 barras para a frente e o operador perdia o trecho que estava
+      // investigando; sem estar colado, a tela saltava 500 barras para o PASSADO,
+      // porque `leftLogical` é índice e todos os índices tinham mudado.
+      //
+      // A detecção é por CONTEÚDO — quantos tempos novos são anteriores ao que era o
+      // primeiro. É a mesma disciplina do `onBarsAppended` na primeira carga: contar
+      // não basta, é preciso saber ONDE cresceu.
+      const inseridasAntes =
+        antesPrimeiro === undefined ? 0 : this.contarAntesDe(this.ts.times, antesPrimeiro);
+
+      if (inseridasAntes > 0) onBarsPrepended(this.ts, inseridasAntes);
+
+      // O `antesCount` corrigido faz o delta do append valer só o que entrou no FIM.
+      // Um pacote que traga histórico E barra nova ao mesmo tempo é tratado certo nas
+      // duas pontas.
+      onBarsAppended(this.ts, antesCount + inseridasAntes, seguia);
+    }
+
+    // Autoescala cada pane pela janela horizontal visivel. Pane colapsada tem
+    // altura zero: autoescalar contra ela produziria uma faixa degenerada, e ao
+    // reexibir a escala voltaria errada por um quadro.
+    for (const pane of this.panes) {
+      if (!pane.collapsed) this.autoScalePane(pane);
+    }
 
     // Notifica assinantes de faixa (o ChartEngine emite o mapeador de coordenada).
     const lr = visibleLogicalRange(this.ts);
@@ -1399,6 +1684,7 @@ export class RobustusChartCore implements IChartApi {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
     for (const pane of this.panes) {
+      if (pane.collapsed) continue;
       const topo = this.paneTop(pane.index);
       const local = this.crosshairInPane(pane, topo);
       ctx.save();
@@ -1417,7 +1703,14 @@ export class RobustusChartCore implements IChartApi {
           pane.priceScale,
           // ⭐ Cada serie vai com a SUA escala. A grade e o eixo usam a principal
           // (passada acima); o volume desenha contra a escala de overlay dele.
-          pane.series.map((s) => ({ model: s.model, scale: this.scaleOf(pane, s) })),
+          //
+          // Serie com `visible: false` e filtrada AQUI, na entrada do renderer, em
+          // vez de checada dentro de cada `draw*`: o renderer nao precisa conhecer
+          // o conceito de visibilidade, e um caminho novo de desenho nao pode
+          // esquecer de honrar a opcao.
+          pane.series
+            .filter((s) => RobustusChartCore.visivel(s))
+            .map((s) => ({ model: s.model, scale: this.scaleOf(pane, s) })),
           this.theme,
           // Crosshair so na pane sob o cursor.
           local,
@@ -1440,6 +1733,11 @@ export class RobustusChartCore implements IChartApi {
     }
 
     this.renderTimeAxisStrip(ctx);
+
+    // ⚠️ A transicao precisa PEDIR o proximo quadro. O motor so desenha quando algo o
+    // marca como sujo, e uma animacao nao tem quem a marque — sem este agendamento
+    // ela pintaria um quadro e congelaria no meio do caminho.
+    if (this.anim !== null) this.scheduleRender();
   }
 
   /**
@@ -1556,7 +1854,234 @@ export class RobustusChartCore implements IChartApi {
         if (fonte === null || s.model.data.length > fonte.data.length) fonte = s.model;
       }
     }
+    // ⚠️ Este metodo IGNORA `visible` de proposito — nao "esqueceu" de filtrar.
+    // O eixo de tempo e a verdade temporal do grafico inteiro; derivá-lo so das
+    // series visiveis faria esconder a serie de preco colapsar o eixo e levar
+    // TODAS as outras series com ele. Esconder uma serie esconde a serie, nao o
+    // tempo.
     this.ts.times = fonte === null ? [] : fonte.data.map((d) => d.time);
+  }
+
+  /**
+   * ⭐ A serie desenhada sob um ponto — a resposta a "em que o operador clicou?".
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * A LACUNA QUE ISTO FECHA
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * O motor sabia desenhar a EMA e nao sabia dizer que um pixel era dela. Logo clicar
+   * num indicador no grafico nao tinha resposta: a interface so conseguia abrir
+   * propriedades pela LISTA lateral, nunca pelo traco na tela — que e o gesto natural.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * COMO O EMPATE E RESOLVIDO — E POR QUE PRIORIDADE ANTES DE DISTANCIA
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * Um clique dentro de uma vela esta, ao mesmo tempo, "dentro" da serie de velas
+   * (distancia 0, porque o corpo e uma REGIAO) e possivelmente sobre a linha de uma
+   * media que cruza aquela vela (distancia 0 tambem). Comparar so distancia daria
+   * empate e a resposta dependeria da ordem de insercao das series — instavel e
+   * inexplicavel para quem usa.
+   *
+   * ⭐ Entao a comparacao e por PRIORIDADE primeiro: traco (linha/area/borda de banda)
+   * vence REGIAO (vela, barra, histograma, preenchimento de banda). E a mesma escada do
+   * `hitTestPriority` das primitives (`ponto > linha > regiao`) e a mesma intuicao do
+   * operador: quem clica sobre uma linha quer a linha, nao o fundo em que ela esta.
+   * Empate de prioridade cai para a menor distancia; empate dos dois, primeira
+   * encontrada.
+   */
+  seriesAt(
+    point: { readonly x: number; readonly y: number },
+    tolerancePx = 6,
+  ): ISeriesApi<SeriesType> | null {
+    if (this.disposed) return null;
+    const pane = this.paneAtY(point.y);
+    if (pane === null) return null;
+
+    // Y local da pane: as escalas de preco convertem no espaco DELA, nao do canvas.
+    const yLocal = point.y - this.paneTop(pane.index);
+
+    let melhor: SeriesImpl<SeriesType> | null = null;
+    let melhorPrioridade = -1;
+    let melhorDistancia = Number.POSITIVE_INFINITY;
+
+    for (const s of pane.series) {
+      if (!RobustusChartCore.visivel(s)) continue;
+      const acerto = this.acertoNaSerie(pane, s, point.x, yLocal, tolerancePx);
+      if (acerto === null) continue;
+      if (
+        acerto.prioridade > melhorPrioridade ||
+        (acerto.prioridade === melhorPrioridade && acerto.distancia < melhorDistancia)
+      ) {
+        melhor = s;
+        melhorPrioridade = acerto.prioridade;
+        melhorDistancia = acerto.distancia;
+      }
+    }
+
+    return melhor as unknown as ISeriesApi<SeriesType> | null;
+  }
+
+  /**
+   * O ponto acerta esta serie? Devolve distancia em px e prioridade, ou `null`.
+   *
+   * Prioridade `1` = TRACO (linha, area, bordas de banda); `0` = REGIAO (corpo de vela,
+   * barra de histograma, preenchimento). Ver `seriesAt` para o porque.
+   */
+  private acertoNaSerie(
+    pane: Pane,
+    s: SeriesImpl<SeriesType>,
+    x: number,
+    yLocal: number,
+    tol: number,
+  ): { distancia: number; prioridade: number } | null {
+    const escala = this.scaleOf(pane, s);
+    const dados = s.model.data;
+    if (dados.length === 0) return null;
+
+    // Indice do array DA SERIE mais proximo da coluna clicada, resolvido por TEMPO —
+    // a serie pode estar desalinhada do eixo (indicador que descartou o aquecimento).
+    const t = coordinateToTime(this.ts, x);
+    if (t === null) return null;
+    const i = this.indiceMaisProximoPorTempo(dados, t);
+    if (i === null) return null;
+
+    const tipo = s.model.type;
+
+    if (tipo === 'Candlestick' || tipo === 'Bar') {
+      const c = dados[i] as unknown as { high?: number; low?: number };
+      if (c.high === undefined || c.low === undefined) return null;
+      const yTopo = priceToCoordinate(escala, c.high);
+      const yBase = priceToCoordinate(escala, c.low);
+      if (yTopo === null || yBase === null) return null;
+      // Dentro da extensao da barra (com folga da tolerancia) = REGIAO acertada.
+      if (yLocal >= yTopo - tol && yLocal <= yBase + tol) {
+        return { distancia: 0, prioridade: 0 };
+      }
+      return null;
+    }
+
+    if (tipo === 'Band') {
+      const b = dados[i] as unknown as { upper?: number; lower?: number };
+      if (b.upper === undefined || b.lower === undefined) return null;
+      const yU = priceToCoordinate(escala, b.upper);
+      const yL = priceToCoordinate(escala, b.lower);
+      if (yU === null || yL === null) return null;
+      const topo = Math.min(yU, yL);
+      const base = Math.max(yU, yL);
+      // ⚠️ As BORDAS da banda contam como traco; o meio, como regiao. Clicar na borda
+      // superior de uma Bollinger e clicar na linha, e o operador espera a linha.
+      const distBorda = Math.min(Math.abs(yLocal - yU), Math.abs(yLocal - yL));
+      if (distBorda <= tol) return { distancia: distBorda, prioridade: 1 };
+      if (yLocal >= topo && yLocal <= base) return { distancia: 0, prioridade: 0 };
+      return null;
+    }
+
+    if (tipo === 'Histogram') {
+      const h = dados[i] as unknown as { value?: number };
+      if (h.value === undefined || !Number.isFinite(h.value)) return null;
+      const yValor = priceToCoordinate(escala, h.value);
+      const yZero = priceToCoordinate(escala, 0);
+      if (yValor === null) return null;
+      // ⚠️ A barra de histograma vai do VALOR ate a base (zero). Medir so a distancia ao
+      // topo da barra faria o clique no meio dela nao acertar nada — e e no meio que o
+      // operador clica.
+      const base = yZero === null ? pane.priceScale.height : yZero;
+      const topo = Math.min(yValor, base);
+      const fundo = Math.max(yValor, base);
+      if (yLocal >= topo - tol && yLocal <= fundo + tol) {
+        return { distancia: 0, prioridade: 0 };
+      }
+      return null;
+    }
+
+    // Line / Area: distancia ao SEGMENTO, nao ao ponto.
+    //
+    // ⚠️ Medir a distancia ao ponto mais proximo erra em linha inclinada: entre duas
+    // barras a linha passa pelo meio, e o cursor exatamente SOBRE o traco pode estar a
+    // dezenas de pixels do vertice mais proximo. Com segmento, "sobre a linha" e sobre
+    // a linha.
+    let dist = Number.POSITIVE_INFINITY;
+    for (const j of [i - 1, i]) {
+      const a = dados[j];
+      const b = dados[j + 1];
+      if (a === undefined || b === undefined) continue;
+      const xa = timeToCoordinate(this.ts, a.time);
+      const xb = timeToCoordinate(this.ts, b.time);
+      const va = (a as unknown as { value?: number }).value;
+      const vb = (b as unknown as { value?: number }).value;
+      if (xa === null || xb === null || va === undefined || vb === undefined) continue;
+      const ya = priceToCoordinate(escala, va);
+      const yb = priceToCoordinate(escala, vb);
+      if (ya === null || yb === null) continue;
+      const d = distanciaAoSegmento(x, yLocal, xa, ya, xb, yb);
+      if (d < dist) dist = d;
+    }
+
+    // Serie de um ponto so (ou pontas): cai na distancia ao proprio ponto.
+    if (!Number.isFinite(dist)) {
+      const p = dados[i];
+      const v = (p as unknown as { value?: number } | undefined)?.value;
+      if (p === undefined || v === undefined) return null;
+      const xp = timeToCoordinate(this.ts, p.time);
+      const yp = priceToCoordinate(escala, v);
+      if (xp === null || yp === null) return null;
+      dist = Math.hypot(x - xp, yLocal - yp);
+    }
+
+    return dist <= tol ? { distancia: dist, prioridade: 1 } : null;
+  }
+
+  /**
+   * Indice do array cujo `time` e o mais proximo de `t`. Busca binaria.
+   *
+   * ⚠️ Resolve por TEMPO e nao por indice logico pelo mesmo motivo de
+   * `faixaVisivelDaSerie`: numa serie desalinhada (indicador que descartou o
+   * aquecimento) o indice logico aponta outra barra, e o acerto sairia deslocado.
+   */
+  private indiceMaisProximoPorTempo(
+    dados: readonly { readonly time: number }[],
+    t: number,
+  ): number | null {
+    const n = dados.length;
+    if (n === 0) return null;
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const d = dados[mid];
+      if (d !== undefined && d.time < t) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo === 0) return 0;
+    if (lo >= n) return n - 1;
+    const antes = dados[lo - 1];
+    const depois = dados[lo];
+    if (antes === undefined) return lo;
+    if (depois === undefined) return lo - 1;
+    return t - antes.time <= depois.time - t ? lo - 1 : lo;
+  }
+
+  /**
+   * Quantos tempos, no começo do array, são ANTERIORES a `limite`.
+   *
+   * Busca binária: a série de barras de um pregão inteiro tem dezenas de milhares de
+   * elementos, e isto roda em TODO quadro em que o eixo cresce. Varredura linear seria
+   * O(n) por quadro para responder uma pergunta que é O(log n).
+   *
+   * ⚠️ Compara `< limite`, estrito: o próprio `limite` (a barra que era a primeira)
+   * não conta como inserida — ela já estava lá.
+   */
+  private contarAntesDe(times: readonly number[], limite: number): number {
+    let lo = 0;
+    let hi = times.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const t = times[mid];
+      if (t !== undefined && t < limite) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   /** Autoescala uma pane pelo min/max das barras visiveis das suas series. */
@@ -1575,6 +2100,13 @@ export class RobustusChartCore implements IChartApi {
     // vazio.
     const grupos = new Map<PriceScaleState, SeriesImpl<SeriesType>[]>();
     for (const s of pane.series) {
+      // ⭐ Serie oculta NAO entra na autoescala. E a metade que importa da opcao
+      // `visible`: uma EMA escondida que seguisse esticando a faixa comprimiria o
+      // preco por causa de algo que nao esta na tela, e o operador nao teria pista
+      // da causa. Se TODAS as series de uma escala estiverem ocultas, o grupo fica
+      // vazio e `autoScaleGroup` sai sem tocar na faixa — a escala congela no
+      // ultimo valor bom em vez de degenerar.
+      if (!RobustusChartCore.visivel(s)) continue;
       const escala = this.scaleOf(pane, s);
       const g = grupos.get(escala);
       if (g === undefined) grupos.set(escala, [s]);
@@ -1705,6 +2237,7 @@ export class RobustusChartCore implements IChartApi {
 
   private drawPriceLines(ctx: CanvasRenderingContext2D, pane: Pane): void {
     for (const s of pane.series) {
+      if (!RobustusChartCore.visivel(s)) continue;
       // A linha de preco pertence a serie, logo vive na escala DELA: uma linha
       // criada numa serie de volume tem de ser lida na escala do volume.
       const escala = this.scaleOf(pane, s);
@@ -1728,6 +2261,10 @@ export class RobustusChartCore implements IChartApi {
     // Ordem por z: bottom (bookmap), normal, top (footprint, desenho).
     const ordem: Array<'bottom' | 'normal' | 'top'> = ['bottom', 'normal', 'top'];
     for (const s of pane.series) {
+      // Esconder a serie esconde o que esta ancorado nela. O bookmap e anexado a
+      // uma serie; se ele continuasse desenhando com a serie oculta, o operador
+      // desligaria a serie e o heatmap ficaria flutuando sem a referencia dele.
+      if (!RobustusChartCore.visivel(s)) continue;
       for (const prim of s.model.primitives) {
         try {
           prim.updateAllViews?.();
@@ -1761,6 +2298,7 @@ export class RobustusChartCore implements IChartApi {
    */
   private drawMarkers(ctx: CanvasRenderingContext2D, pane: Pane): void {
     for (const s of pane.series) {
+      if (!RobustusChartCore.visivel(s)) continue;
       const escala = this.scaleOf(pane, s);
       for (const m of s.model.markers) {
         const x = timeToCoordinate(this.ts, m.time);
@@ -1931,7 +2469,52 @@ function mergeOptions(base: ChartOptions, over?: Partial<ChartOptions>): ChartOp
     // `fontSize` e a `color` da configuracao antiga em vez de voltar ao default, e o
     // consumidor nao tem como "desconfigurar" um campo.
     watermark: over.watermark ?? base.watermark,
+    // Animacao: mesma regra da marca d'agua — o override vence por inteiro. Mesclar
+    // faria `applyOptions({ animation: { enabled: true } })` herdar uma `durationMs`
+    // antiga que o consumidor nao pediu.
+    animation: over.animation ?? base.animation,
   };
+}
+
+/**
+ * Distancia de um ponto ao SEGMENTO `(x1,y1)-(x2,y2)`, em pixel.
+ *
+ * ⚠️ Ao segmento, nao a reta infinita: a reta daria distancia pequena para um ponto
+ * muito antes do inicio ou depois do fim do traco, e o acerto vazaria para fora da
+ * linha desenhada. O `t` recortado em `[0,1]` e o que prende a projecao ao trecho que
+ * existe na tela.
+ *
+ * Segmento degenerado (dois pontos no mesmo pixel) cai na distancia ao ponto.
+ */
+function distanciaAoSegmento(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const len2 = dx * dx + dy * dy;
+  if (!(len2 > 0)) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+/**
+ * O relogio da animacao, em milissegundos.
+ *
+ * ⚠️ `performance.now()` quando existe, e nao `Date.now()`: `Date.now` pode ANDAR PARA
+ * TRAS (ajuste de NTP, mudanca de fuso do sistema), e um salto negativo no meio de uma
+ * transicao a faria terminar de supetao ou congelar. `performance.now` e monotonico.
+ * Ambiente sem ele cai no `Date.now`, que e melhor que nao animar.
+ */
+function agoraMs(): number {
+  return typeof performance === 'object' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
 }
 
 /**

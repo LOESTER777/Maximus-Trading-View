@@ -37,7 +37,17 @@
  */
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { decodeColumnar } from '@robustus/charts-core';
+import { agregarPerfilDeVolume, decodeColumnar } from '@robustus/charts-core';
+// ⭐ O vocabulário de PERÍODO vive no datafeed (junto de `periodSeconds` e da agregação);
+// o componente de seleção vive no pacote React e recebe a lista por prop. É o consumidor
+// — este app — que une os dois.
+import {
+  TIMEFRAMES,
+  rollupBars,
+  timeframesAgregaveisDe,
+  timeframePorId,
+  type Timeframe,
+} from '@robustus/charts-datafeed';
 import { heikinAshi, renko, brickSizeAutomatico } from '@robustus/chart-core';
 import {
   useChartEngine,
@@ -45,8 +55,15 @@ import {
   useIndicators,
   useIndicatorCatalog,
   IndicatorToolbox,
+  TimeframeSelector,
+  SymbolTabs,
+  ChartGrid,
+  useChartSync,
+  ChartProvider,
+  useChart,
   useAlerts,
   useReplay,
+  useHistoryBackfill,
   useCrosshair,
   useChartState,
   // ── Cromo de interface ──
@@ -64,10 +81,15 @@ import {
   type ToolbarActionItem,
 } from '@robustus/charts-react';
 import type { SnapBar } from '@robustus/charts-drawings';
-import type { PriceSeriesType, ChartPriceLine } from '@robustus/charts-engine';
+import type { ChartEngine, PriceSeriesType, ChartPriceLine } from '@robustus/charts-engine';
 import { registry } from '@robustus/charts-indicators';
 import type { AlertSpec } from '@robustus/charts-react';
-import { makeSyntheticBundle } from './synthetic.js';
+import {
+  makeOlderCandles,
+  makeSyntheticBundle,
+  type SyntheticBundle,
+  type SyntheticCandle,
+} from './synthetic.js';
 
 /**
  * O modo de grafico.
@@ -101,7 +123,27 @@ function App(): JSX.Element {
 
   // ── Estado de interface ───────────────────────────────────────────────────
   const [modo, setModo] = useState<ModoGrafico>('Candlestick');
+  /**
+   * Período corrente.
+   *
+   * ⚠️ O dado sintético nasce em M5 (`makeSyntheticBundle(240, 300, ...)`), então M5 é a
+   * BASE: só os múltiplos inteiros dela são oferecidos. Oferecer M1 e mostrar tela vazia
+   * seria pior que não oferecer — ver `timeframesAgregaveisDe`.
+   */
+  const [tfId, setTfId] = useState('M5');
+  /**
+   * Período do painel de COMPARAÇÃO, e se ele está na tela.
+   *
+   * ⚠️ O playground tem um ativo só (dado sintético), então a comparação aqui é
+   * multi-PERÍODO: o mesmo ativo em M5 e H1 lado a lado, sincronizados. Com dois ativos
+   * de verdade, a mesma montagem serve para correlação — o que muda é a fonte de dado.
+   */
+  const [comparar, setComparar] = useState(false);
+  const [tfComparacao, setTfComparacao] = useState('H1');
+  /** Ativo corrente. Uma aba só até o playground ganhar segunda fonte de dado. */
+  const [ativo, setAtivo] = useState('SINTETICO');
   const [mostrarBookmap, setMostrarBookmap] = useState(true);
+  const [mostrarPerfil, setMostrarPerfil] = useState(false);
   const [imaLigado, setImaLigado] = useState(false);
   const [gradeVertical, setGradeVertical] = useState(false);
   const [marcaDagua, setMarcaDagua] = useState(true);
@@ -110,6 +152,10 @@ function App(): JSX.Element {
   const [barraRecolhida, setBarraRecolhida] = useState(false);
   const [paletaAberta, setPaletaAberta] = useState(false);
   const [tick, setTick] = useState(0);
+  /** Indicador clicado no gráfico, com nonce para reabrir no clique repetido. */
+  const [indicadorClicado, setIndicadorClicado] = useState<{ id: string; nonce: number } | null>(
+    null,
+  );
 
   // Ctrl+K abre a paleta, de qualquer lugar da pagina.
   useCommandPaletteHotkey(() => setPaletaAberta(true));
@@ -117,9 +163,57 @@ function App(): JSX.Element {
   // ── Caixa de ferramentas de indicadores ───────────────────────────────────
   const indicadores = useIndicatorCatalog({ registry, initial: INDICADORES_INICIAIS });
 
+  // ── Período (timeframe) ────────────────────────────────────────────────────
+  //
+  // ⭐ O dado base é M5; períodos maiores saem por AGREGAÇÃO (`rollupBars`), que é o
+  // mesmo caminho de um provedor real que só entrega o período mínimo.
+  const TF_BASE = useMemo(() => timeframePorId('M5') as Timeframe, []);
+  const tfsDisponiveis = useMemo(() => timeframesAgregaveisDe(TF_BASE), [TF_BASE]);
+  const tf = useMemo(() => timeframePorId(tfId) ?? TF_BASE, [tfId, TF_BASE]);
+
+  // ── Perfil de volume (histograma por LINHA) ────────────────────────────────
+  //
+  // ⚠️ Agregado AQUI, não na camada. É o consumidor que decide o escopo: este playground
+  // usa o dia inteiro do grid. Para "perfil da janela visível", reagregue com
+  // `{ janela: { tsDe, tsAte } }` quando a janela mudar.
+  const perfil = useMemo(
+    () => (mostrarPerfil && grid !== null ? agregarPerfilDeVolume(grid) : null),
+    [mostrarPerfil, grid],
+  );
+
+  // ── Histórico carregado sob demanda (backfill) ─────────────────────────────
+  //
+  // ⭐ O que o `useHistoryBackfill` observa é a janela; quem guarda o dado é o
+  // consumidor — aqui, este estado. Arrastar para trás até a borda faz o hook pedir, e
+  // o `loadOlder` abaixo faz o papel do provedor (dado sintético, sem backend).
+  const [historico, setHistorico] = useState<SyntheticCandle[]>([]);
+  const [volumeHistorico, setVolumeHistorico] = useState<SyntheticBundle['volume']>([]);
+
   // ── Replay ────────────────────────────────────────────────────────────────
   const replay = useReplay({ bars: bundle.candles, speed: 4 });
-  const velasBase = modoReplay ? replay.revealedBars : bundle.candles;
+  const velasComHistorico = useMemo(
+    () => (historico.length === 0 ? bundle.candles : [...historico, ...bundle.candles]),
+    [historico, bundle.candles],
+  );
+  const velasCruas = modoReplay ? replay.revealedBars : velasComHistorico;
+
+  // ── Agregação para o período escolhido ─────────────────────────────────────
+  //
+  // ⚠️ `rollupBars` trabalha com `Bar` do datafeed (que tem `volume` opcional); as velas
+  // sintéticas são OHLC sem volume, e isso basta — a agregação preserva OHLC pela
+  // definição clássica e simplesmente não soma volume que não existe.
+  //
+  // ⚠️ Período IGUAL à base passa direto, sem reamostrar: `rollupBars(x, 300, 300)` é
+  // identidade, mas pagar uma varredura para não mudar nada é desperdício no caminho mais
+  // comum.
+  const velasBase = useMemo(() => {
+    if (tf.seconds === TF_BASE.seconds) return velasCruas;
+    const agregadas = rollupBars(velasCruas, TF_BASE.seconds, tf.seconds);
+    // ⚠️ Agregação vazia (período não múltiplo, dado insuficiente) DEGRADA para as velas
+    // cruas em vez de esvaziar a tela. Tela vazia sem explicação é o defeito que este
+    // projeto já pagou várias vezes.
+    return agregadas.length === 0 ? velasCruas : (agregadas as typeof velasCruas);
+  }, [velasCruas, tf, TF_BASE]);
 
   // ── Forma das velas ───────────────────────────────────────────────────────
   const velasExibidas = useMemo(() => {
@@ -131,6 +225,36 @@ function App(): JSX.Element {
     }
     return velasBase;
   }, [modo, velasBase]);
+
+  // ── Volume por COLUNA, no mesmo período das velas ───────────────────────────
+  //
+  // ⚠️ Sem isto o histograma ficaria no período BASE enquanto as velas subiam de período:
+  // 12 barrinhas de volume por vela de 1 h, desalinhadas do eixo. Agregar o volume junto é
+  // requisito, não refinamento.
+  const volumeExibido = useMemo(() => {
+    const cru = modoReplay
+      ? bundle.volume.slice(0, velasCruas.length)
+      : volumeHistorico.length === 0
+        ? bundle.volume
+        : [...volumeHistorico, ...bundle.volume];
+    if (tf.seconds === TF_BASE.seconds) return cru;
+
+    // Soma por balde do período alvo. A COR vem da vela agregada (alta/baixa), não da
+    // última barrinha do balde — a cor tem de concordar com a vela que está em cima dela.
+    const somaPorBalde = new Map<number, number>();
+    for (const v of cru) {
+      const balde = Math.floor(v.time / tf.seconds) * tf.seconds;
+      somaPorBalde.set(balde, (somaPorBalde.get(balde) ?? 0) + v.value);
+    }
+    const velaPorTempo = new Map(velasBase.map((c) => [c.time, c]));
+    return [...somaPorBalde.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([time, value]) => {
+        const vela = velaPorTempo.get(time);
+        const alta = vela === undefined ? true : vela.close >= vela.open;
+        return { time, value, color: alta ? '#16c784' : '#ea3943' };
+      });
+  }, [modoReplay, bundle.volume, velasCruas.length, volumeHistorico, tf, TF_BASE, velasBase]);
 
   const barsSnap = useMemo<SnapBar[]>(
     () =>
@@ -147,12 +271,29 @@ function App(): JSX.Element {
   barsRef.current = barsSnap;
 
   const { containerRef, engine } = useChartEngine({
-    options: { withVolume: true },
+    // ⭐ Animação LIGADA aqui de propósito: o playground existe para ver a
+    // biblioteca funcionando, e a transição de "Reenquadrar" é onde ela aparece.
+    // O default da biblioteca é DESLIGADO — ver `ChartOptions.animation`.
+    options: { withVolume: true, animation: { enabled: true } },
     candles: velasExibidas,
-    volume: modoReplay ? bundle.volume.slice(0, velasExibidas.length) : bundle.volume,
+    volume: volumeExibido,
+    // ⭐ Perfil de volume: o histograma por LINHA, em faixa própria à direita.
+    // `margemInferiorFracao: 0.15` é a SEPARAÇÃO DE AMBIENTES — é onde o histograma
+    // por COLUNA (volume por barra) começa, e os dois deixam de compartilhar pixel.
+    volumeProfile: perfil === null ? null : { perfil, larguraFracao: 0.16, margemInferiorFracao: 0.15 },
     bookmap:
       mostrarBookmap && grid !== null
-        ? { grid, metrica: 'AMBAS', escala: 'P99_GAMMA', tickSize: bundle.tickSize, modoCor: 'TERMICA' }
+        ? {
+            grid,
+            metrica: 'AMBAS',
+            escala: 'P99_GAMMA',
+            tickSize: bundle.tickSize,
+            modoCor: 'TERMICA',
+            // ⭐ Legenda do bookmap no canto de BAIXO: o de cima é da `ChartLegend`
+            // (O/H/L/C). As duas ali era o "bookmap sobrepondo componente no topo
+            // esquerdo" — ver `posicaoLegenda` na primitive.
+            posicaoLegenda: 'inferior-esquerda',
+          }
         : null,
   });
 
@@ -162,6 +303,44 @@ function App(): JSX.Element {
     engine.setPriceSeriesType(serieDoModo(modo));
   }, [engine, modo]);
 
+  // ── Backfill: arrastar para trás carrega mais passado ──────────────────────
+  //
+  // ⚠️ Teto de 3 lotes (360 velas) de propósito: é o que faz o `exhausted` acontecer
+  // no playground e provar que a trava de fim de histórico funciona. Um provedor real
+  // simplesmente devolve zero quando não há mais dado.
+  const LOTE = 120;
+  const TETO_HISTORICO = 360;
+  const backfill = useHistoryBackfill({
+    engine,
+    bars: velasComHistorico,
+    // Replay é dado sintético revelado aos poucos; buscar passado ali não faz sentido.
+    enabled: !modoReplay,
+    loadOlder: (antesDe) => {
+      if (historico.length >= TETO_HISTORICO) return 0;
+      const chegada = velasComHistorico[0]?.open ?? 130_000;
+      const { candles, volume } = makeOlderCandles(antesDe, LOTE, 300, chegada);
+      setHistorico((atual) => [...candles, ...atual]);
+      setVolumeHistorico((atual) => [...volume, ...atual]);
+      return candles.length;
+    },
+  });
+
+  // ── Sincronia entre painéis (multi-período na mesma tela) ──────────────────
+  //
+  // ⭐ A janela viaja por TEMPO: 60 barras de M5 (5 h) viram 5 barras de H1. Copiar a
+  // janela lógica poria os dois em instantes diferentes — ver `useChartSync`.
+  const sync = useChartSync({ onCrosshair: () => undefined });
+  useEffect(() => sync.register('principal', engine), [sync, engine]);
+
+  // As velas do painel de comparação, no período dele.
+  const tfComp = useMemo(() => timeframePorId(tfComparacao) ?? TF_BASE, [tfComparacao, TF_BASE]);
+  const velasComparacao = useMemo(() => {
+    if (!comparar) return [];
+    if (tfComp.seconds === TF_BASE.seconds) return velasCruas;
+    const r = rollupBars(velasCruas, TF_BASE.seconds, tfComp.seconds);
+    return r.length === 0 ? velasCruas : (r as typeof velasCruas);
+  }, [comparar, velasCruas, tfComp, TF_BASE]);
+
   const desenho = useDrawings({
     engine,
     bars: () => barsRef.current,
@@ -169,7 +348,23 @@ function App(): JSX.Element {
     onChange: () => setTick((n) => n + 1),
   });
 
-  useIndicators({ engine, plots: indicadores.plots, bars: velasExibidas });
+  // ⭐ `colors` e `visibility` entram como canal SEPARADO de `plots`: mudar cor ou
+  // esconder um indicador altera a serie viva (repinta / colapsa a pane) em vez de
+  // recriar tudo. Passar essas duas coisas dentro de `plots` faria a tela piscar e a
+  // pane do oscilador perder a altura arrastada.
+  //
+  // ⭐ `onIndicatorClick`: clicar na linha de um indicador NO GRÁFICO abre as
+  // propriedades dele na caixa de ferramentas. O `nonce` faz o segundo clique na mesma
+  // linha reabrir o painel se o operador o tiver fechado.
+  useIndicators({
+    engine,
+    plots: indicadores.plots,
+    bars: velasExibidas,
+    colors: indicadores.colors,
+    visibility: indicadores.visibility,
+    onIndicatorClick: (plotId) =>
+      setIndicadorClicado((atual) => ({ id: plotId, nonce: (atual?.nonce ?? 0) + 1 })),
+  });
 
   const ohlc = useCrosshair({ engine });
   const { capture, restore } = useChartState();
@@ -277,6 +472,13 @@ function App(): JSX.Element {
         hint: 'Heatmap do livro por região de preço: onde há oferta parada.',
       },
       {
+        id: 'perfil',
+        label: 'Perfil',
+        icon: 'volumeProfile',
+        active: mostrarPerfil,
+        hint: 'Histograma por LINHA: quanto negociou em cada preço, com POC e área de valor.',
+      },
+      {
         id: 'alertas',
         label: 'Alertas',
         icon: 'alert',
@@ -284,7 +486,7 @@ function App(): JSX.Element {
         hint: 'Vigia níveis e avisa no cruzamento, sem repetir o aviso.',
       },
     ],
-    [alertasLigados, mostrarBookmap],
+    [alertasLigados, mostrarBookmap, mostrarPerfil],
   );
 
   const ambiente = useMemo<ToolbarToggleItem[]>(
@@ -325,6 +527,7 @@ function App(): JSX.Element {
 
   const alternarCamada = useCallback((id: string): void => {
     if (id === 'bookmap') setMostrarBookmap((v) => !v);
+    else if (id === 'perfil') setMostrarPerfil((v) => !v);
     else if (id === 'alertas') setAlertasLigados((v) => !v);
   }, []);
 
@@ -409,6 +612,7 @@ function App(): JSX.Element {
       { id: 'env:marca', label: "Alternar marca d'água", group: 'Ambiente', icon: 'watermark', run: () => setMarcaDagua((v) => !v) },
       { id: 'env:ima', label: 'Alternar ímã', group: 'Ambiente', icon: 'magnet', shortcut: 'A', run: () => setImaLigado((v) => !v) },
       { id: 'env:bookmap', label: 'Alternar bookmap', group: 'Ambiente', icon: 'bookmap', run: () => setMostrarBookmap((v) => !v) },
+      { id: 'env:perfil', label: 'Alternar perfil de volume', group: 'Ambiente', icon: 'volumeProfile', hint: 'Histograma por LINHA, na faixa lateral.', run: () => setMostrarPerfil((v) => !v) },
       { id: 'env:replay', label: 'Alternar replay', group: 'Ambiente', icon: 'replay', hint: 'Reproduz o pregão barra a barra.', run: () => setModoReplay((v) => !v) },
       { id: 'act:png', label: 'Exportar PNG', group: 'Ações', icon: 'camera', run: exportarPng },
       { id: 'act:salvar', label: 'Salvar layout', group: 'Ações', icon: 'save', run: salvarLayout },
@@ -440,6 +644,22 @@ function App(): JSX.Element {
       {/* ═══ Barra HORIZONTAL: como o preço é desenhado, camadas, ambiente, ações ═══ */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px', borderBottom: '1px solid rgba(148,163,184,0.15)' }}>
         <strong style={{ color: '#e2e8f0', fontSize: 14, whiteSpace: 'nowrap' }}>Robustus</strong>
+        {/*
+          ⭐ Período ANTES do resto da barra, e separado dele: TF é a pergunta "que
+          recorte de tempo eu estou olhando", que vem antes de "como desenho" e "que
+          camadas ligo". Enfiá-lo entre as camadas o esconderia justamente no controle
+          que o operador troca mais vezes por sessão.
+
+          ⚠️ A lista é `timeframesAgregaveisDe(M5)`, não `TIMEFRAMES`: o dado sintético
+          nasce em M5, e oferecer M1 para depois mostrar tela vazia é pior que não
+          oferecer.
+        */}
+        <TimeframeSelector
+          timeframes={tfsDisponiveis}
+          value={tf.id}
+          onChange={(novo) => setTfId(novo.id)}
+        />
+        <span aria-hidden style={{ width: 1, alignSelf: 'stretch', background: 'rgba(148,163,184,0.18)' }} />
         <ChartToolbar
           chartType={modo}
           chartTypes={CHART_TYPE_OPTIONS}
@@ -498,17 +718,67 @@ function App(): JSX.Element {
           />
         </div>
 
-        {/* ═══ O gráfico, com a legenda sobreposta ═══ */}
-        {/* ⚠️ `position: relative` é requisito da ChartLegend, que ancora aqui. */}
-        <div style={{ position: 'relative', flex: 1, minHeight: 0, minWidth: 0 }}>
-          <ChartLegend
-            readout={ohlc}
-            symbol="SINTÉTICO"
-            period="5m"
-            series={seriesLegenda}
-            precision={1}
-          />
-          <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+        {/* ═══ Os painéis de gráfico ═══ */}
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, minWidth: 0 }}>
+          {/* Abas de ATIVO. Uma só enquanto o playground tem uma fonte de dado; a barra
+              existe para a montagem estar demonstrada e testável. */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 6px 0' }}>
+            <SymbolTabs
+              tabs={[{ id: 'SINTETICO', label: 'SINTÉTICO', hint: tf.label, closable: false }]}
+              value={ativo}
+              onChange={setAtivo}
+            />
+            <span style={{ flex: 1 }} />
+            {/* ⭐ Comparação lado a lado: o MESMO ativo em outro período, sincronizado. */}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
+              <input
+                type="checkbox"
+                checked={comparar}
+                onChange={(e) => setComparar(e.target.checked)}
+              />
+              Comparar
+            </label>
+            {comparar && (
+              <TimeframeSelector
+                timeframes={tfsDisponiveis}
+                value={tfComp.id}
+                onChange={(novo) => setTfComparacao(novo.id)}
+                quick={['M15', 'H1', 'D1']}
+              />
+            )}
+          </div>
+
+          <ChartGrid
+            layout={comparar ? '2-horizontal' : '1'}
+            ariaLabel={comparar ? 'Comparação de períodos' : 'Painel de gráfico'}
+            style={{ flex: 1, minHeight: 0, padding: 4 }}
+          >
+            {/* ⚠️ `position: relative` é requisito da ChartLegend, que ancora aqui. */}
+            <div style={{ position: 'relative', minHeight: 0, minWidth: 0 }}>
+              <ChartLegend
+                readout={ohlc}
+                symbol="SINTÉTICO"
+                period={tf.label}
+                series={seriesLegenda}
+                precision={1}
+              />
+              <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
+            </div>
+
+            {comparar && (
+              /*
+               * O painel de comparação é um `RobustusChart` cru: sem indicadores, sem
+               * bookmap, sem desenho. É de propósito — ele existe para dar CONTEXTO de
+               * outro período, e replicar as camadas ali dobraria o custo de desenho para
+               * uma leitura que é de referência.
+               */
+              <PainelDeComparacao
+                velas={velasComparacao}
+                rotulo={tfComp.label}
+                registrar={(e) => sync.register('comparacao', e)}
+              />
+            )}
+          </ChartGrid>
         </div>
 
         {/* ═══ Painéis colapsáveis: o que se configura ═══ */}
@@ -529,7 +799,9 @@ function App(): JSX.Element {
             badge={`${indicadores.active.length} ativo(s)`}
             hint="Insira, remova e configure os 29 indicadores. Os campos vêm do metadado de cada um."
           >
-            <IndicatorToolbox catalog={indicadores} title="" />
+            {/* ⭐ `openIndicator` vem do clique NO GRÁFICO: a linha clicada abre as
+                propriedades dela aqui, sem o operador ter de procurar na lista. */}
+            <IndicatorToolbox catalog={indicadores} title="" openIndicator={indicadorClicado} />
           </CollapsiblePanel>
 
           <CollapsiblePanel
@@ -622,6 +894,10 @@ function App(): JSX.Element {
         {desenho.drawings.length} desenho(s) · {desenho.selectedIds.length} selecionado(s) ·{' '}
         {indicadores.active.length} indicador(es) · gesto: {desenho.interaction.kind} ·{' '}
         {modoReplay ? `replay ${estado.position}/${estado.length}` : 'ao vivo'} ·{' '}
+        {velasComHistorico.length} barra(s)
+        {backfill.loading ? ' · carregando histórico…' : ''}
+        {backfill.exhausted ? ' · início do histórico' : ''}
+        {backfill.error === null ? '' : ` · falha no histórico: ${backfill.error}`} ·{' '}
         <strong>Ctrl+K</strong> abre a paleta de comandos
       </footer>
 
@@ -673,6 +949,75 @@ const botaoIcone: React.CSSProperties = {
   color: 'inherit',
   cursor: 'pointer',
 };
+
+/**
+ * Painel de COMPARAÇÃO: o mesmo ativo em outro período, ao lado do principal.
+ *
+ * ⚠️ Componente separado porque ele precisa do próprio `useChartEngine` — hook não pode
+ * ser chamado condicionalmente dentro do `App`, e um segundo gráfico é exatamente um
+ * segundo motor.
+ *
+ * ⚠️ `registrar` devolve a função de saída do grupo de sincronia, e o `useEffect` a
+ * devolve como limpeza: sem isso, esconder a comparação deixaria um membro morto no grupo
+ * e a janela do principal continuaria sendo propagada para um motor descartado.
+ */
+function PainelDeComparacao(props: {
+  readonly velas: readonly SyntheticCandle[];
+  readonly rotulo: string;
+  readonly registrar: (engine: ChartEngine | null) => () => void;
+}): JSX.Element {
+  return (
+    /*
+     * ⭐ Aqui o painel usa o `ChartProvider` em vez de `useChartEngine` direto — de
+     * propósito, para o provedor estar demonstrado no app. Ele monta o invólucro
+     * `position: relative` e o container com altura, que são justamente as duas coisas que
+     * o painel principal faz à mão logo acima.
+     */
+    <ChartProvider
+      id="comparacao"
+      options={{ barSpacing: 6 }}
+      candles={props.velas}
+      ariaLabel={`Gráfico de comparação em ${props.rotulo}`}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: 6,
+          left: 8,
+          zIndex: 2,
+          fontSize: 10,
+          padding: '1px 5px',
+          borderRadius: 4,
+          background: 'rgba(15,23,42,0.7)',
+          color: '#cbd5e1',
+        }}
+      >
+        SINTÉTICO · {props.rotulo}
+      </span>
+      <RegistrarNaSincronia registrar={props.registrar} />
+    </ChartProvider>
+  );
+}
+
+/**
+ * Registra o motor DO PAINEL EM QUE ESTÁ no grupo de sincronia.
+ *
+ * ⚠️ Componente em vez de código no pai porque o motor vem do CONTEXTO (`useChart`), e o
+ * contexto só existe dentro do provedor. É exatamente o padrão que o `ChartProvider`
+ * habilita: quem precisa do motor pede, sem ninguém passar `engine` por prop.
+ *
+ * ⚠️ E devolve a saída do grupo como limpeza do efeito: sem isso, esconder a comparação
+ * deixaria um membro morto no grupo, e a janela do painel principal continuaria sendo
+ * propagada para um motor descartado.
+ */
+function RegistrarNaSincronia(props: {
+  readonly registrar: (engine: ChartEngine | null) => () => void;
+}): null {
+  const { engine } = useChart();
+  const { registrar } = props;
+  useEffect(() => registrar(engine), [registrar, engine]);
+  return null;
+}
 
 const raiz = document.getElementById('root');
 if (raiz !== null) {

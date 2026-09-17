@@ -228,6 +228,30 @@ export interface BookmapLayerOptions {
    */
   readonly mostrarLegenda?: boolean;
   /**
+   * ⭐ Em que canto a legenda é desenhada. Ausente ⇒ `'superior-esquerda'`.
+   *
+   * ⚠️ **Defeito relatado que isto corrige:** *"Bookmap quando ativo está
+   * sobrepondo algum componente no topo esquerdo"*. A legenda desta camada
+   * escrevia SEMPRE no canto superior esquerdo, e é exactamente ali que a
+   * aplicação costuma pôr a leitura de fita (a `ChartLegend` do pacote React,
+   * ancorada em `top/left`). Duas coisas no mesmo pixel, e a de baixo perde.
+   *
+   * A camada não tinha como saber disso — e continua não tendo. A correcção certa
+   * não é adivinhar: é **deixar de assumir que o canto superior esquerdo é dela**,
+   * e dar ao consumidor a escolha.
+   *
+   * ⚠️ **Só os cantos ESQUERDOS são oferecidos, e a ausência dos direitos é
+   * deliberada.** A faixa da direita do painel é o eixo de preço (56 px no motor),
+   * e esta camada não conhece essa largura — desenhar à direita poria o texto por
+   * baixo do eixo, que é pior que o problema original. Oferecer um canto que não
+   * funciona seria uma armadilha; não oferecer é honesto.
+   *
+   * ⚠️ Com `'inferior-esquerda'`, a legenda EMPILHA ACIMA do rodapé de cobertura
+   * quando ele existe — os dois no mesmo canto sem se sobrepor. Era o defeito de
+   * novo, só de cabeça para baixo.
+   */
+  readonly posicaoLegenda?: 'superior-esquerda' | 'inferior-esquerda';
+  /**
    * Desenhar o texto de DIAGNÓSTICO sobre a área de plotagem.
    *
    * ⭐ **Ausente ⇒ `false`.** É o único padrão desta camada que NÃO reproduz a
@@ -956,6 +980,18 @@ class DrawPlan {
    */
   suavizar = false;
 
+  /**
+   * Desenhar a legenda no canto INFERIOR esquerdo em vez do superior.
+   *
+   * ⚠️ Mora no PLANO pela mesma razão de `suavizar`: o renderizador não lê
+   * `options` — por contrato ele não decide nada. Ver `posicaoLegenda`.
+   *
+   * ⚠️ `DrawPlan.reset()` NÃO zera este campo, e é de propósito: é configuração do
+   * consumidor, não resultado de agregação. Zerá-lo faria a legenda pular de canto a
+   * cada reconstrução do plano.
+   */
+  legendaEmBaixo = false;
+
   /** Há alguma forma a emitir? Legenda e rodapé contam. */
   vazio = true;
 
@@ -1477,17 +1513,30 @@ class BookmapRenderer implements IPrimitivePaneRenderer {
         const w = larguraDoTexto(ctx, texto, fontPx);
         if (w > larguraMax) larguraMax = w;
       }
+
+      const alturaBloco = plan.legend.length * linha + 2 * padY;
+
+      // ⭐ Topo do bloco de legenda. No canto inferior ele EMPILHA ACIMA do rodapé de
+      // cobertura, quando há rodapé: os dois no mesmo canto, sem se sobrepor — senão
+      // seria o defeito original de cabeça para baixo. O rodapé ocupa
+      // `fontPx + 2*padY` mais a margem de baixo, e `linha - fontPx` é a folga natural
+      // entre linhas, reusada aqui como respiro entre os dois blocos.
+      const alturaRodape = plan.footer === null ? 0 : fontPx + 2 * padY + (linha - fontPx);
+      const topoBloco = plan.legendaEmBaixo
+        ? bitmapHeight - margemY - alturaBloco - alturaRodape + padY
+        : margemY;
+
       desenharCaixaDeTexto(
         ctx,
         margemX - padX,
-        margemY - padY,
+        topoBloco - padY,
         larguraMax + 2 * padX,
-        plan.legend.length * linha + 2 * padY,
+        alturaBloco,
         bitmapWidth,
         bitmapHeight,
       );
 
-      let y = margemY;
+      let y = topoBloco;
       for (let i = 0; i < plan.legend.length; i++) {
         const texto = plan.legend[i];
         if (texto === undefined) continue;
@@ -2407,6 +2456,9 @@ export class BookmapPrimitive implements ISeriesPrimitive<Time> {
     // afirma a propriedade, não esta linha — mover o código sem quebrar o
     // desenho é permitido; quebrar o desenho, não.
     this.plan.suavizar = termica;
+    // Canto da legenda: decisão do consumidor, levada ao plano pelo mesmo caminho de
+    // `suavizar` (o renderizador não lê `options`). Ver `posicaoLegenda`.
+    this.plan.legendaEmBaixo = this.options.posicaoLegenda === 'inferior-esquerda';
     const chaveBase = `${scaleBase.alphaMin}|${scaleBase.alphaMax}|${termica ? 'T' : 'L'}`;
     if (chaveBase !== this.paletteKeyBase || this.plan.paletteBid.length === 0) {
       if (termica) {

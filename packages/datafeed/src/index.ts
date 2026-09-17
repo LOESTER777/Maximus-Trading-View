@@ -158,3 +158,23 @@ export {
 export type {
   Trade,
 } from './aggregator.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Vocabulario de PERIODO (timeframe)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⭐ Fecha o "grafico esta sem selecao de TF": a lista canonica, os rotulos e as
+// perguntas que um seletor precisa fazer (o que da para agregar do dado que eu tenho?).
+// Segundos sao a verdade; rotulo e apresentacao — ver o cabecalho do arquivo.
+export {
+  TIMEFRAMES,
+  timeframePorId,
+  timeframePorSegundos,
+  podeAgregar,
+  timeframesAgregaveisDe,
+  proximoTimeframe,
+  timeframeAnterior,
+  barrasPorBalde,
+} from './timeframe.core.js';
+
+export type { Timeframe } from './timeframe.core.js';

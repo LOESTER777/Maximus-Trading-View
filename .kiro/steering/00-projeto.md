@@ -30,21 +30,22 @@ cosmética.
 | Pacote | Situação | Testes |
 |---|---|---|
 | `@robustus/charts-core` | 14 núcleos puros, compila **sem DOM** | herdados |
-| `@robustus/charts-primitives` | `BookmapPrimitive` (2.669 linhas), `FootprintPrimitive` | herdados |
+| `@robustus/charts-primitives` | `BookmapPrimitive` (2.669 linhas), `FootprintPrimitive`, **`VolumeProfilePrimitive`** (histograma por LINHA) | herdados + 22 |
 | `@robustus/chart-core` | motor de renderização próprio em canvas (eixo, escala, panes, interação) | herdados |
-| `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador | ~120 |
+| `@robustus/charts-datafeed` | contrato agnóstico + dia de mercado + HTTP bars/depth + WS ao vivo + agregador + **vocabulário de TIMEFRAME** | ~140 |
 | `@robustus/charts-indicators` | 29 indicadores incrementais (warmup+update+preview O(1)), registry | 79 |
 | `@robustus/charts-drawings` | 8 ferramentas, hit-test, histórico, persistência | 105 |
 | `@robustus/charts-engine` | motor sem framework | 18 novos |
-| `@robustus/charts-react` | `useChartEngine`, `useDrawings`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, `<RobustusChart />` | 12 novos |
-| `@robustus/charts-alerts` | motor PURO de alerta de preço, máquina ARMED→TRIGGERED sem repique; condições CROSS/TOUCH/ENTER_ZONE/EXIT_ZONE/PERCENT_CHANGE; `AlertStore` | 29 novos |
+| `@robustus/charts-react` | hooks (`useChartEngine`, `useDrawings`, `useIndicators`, `useAlerts`, `useReplay`, `useCrosshair`, `useChartState`, **`useHistoryBackfill`**, **`useChartSync`**) + UI própria (`ChartToolbar`, `DrawingToolbar`, `IndicatorToolbox`, `CommandPalette`, `ChartLegend`, **`TimeframeSelector`**, **`SymbolTabs`**, **`ChartGrid`**) + **`<ChartProvider>`** | ~250 |
+| `@robustus/charts-alerts` | motor PURO de alerta de preço, máquina ARMED→TRIGGERED sem repique; condições CROSS/TOUCH/ENTER_ZONE/EXIT_ZONE/PERCENT_CHANGE/**SERIES_CROSS**; `AlertStore` | 46 |
 | `@robustus/charts-replay` | controlador de replay de mercado determinístico, `TimerLike` injetado, pausa no fim sem loop | 31 novos |
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test          # 1110 testes, 59 arquivos
-npm run build     # todos os pacotes
-npm run verify    # ⭐ typecheck + typecheck:playground + check ESM + testes
+npm test            # 1588 testes, 80 arquivos
+npm run build       # todos os pacotes
+npm run verify      # ⭐ typecheck + typecheck:playground + check ESM + testes
+npm run smoke:consumo  # empacota, instala FORA do workspace e importa em Node ESM puro
 ```
 
 ⭐ **Use `npm run verify`, não só `npm test`.** Ele encadeia o type check dos
@@ -300,3 +301,71 @@ convenções vale para os **pacotes**, que precisam rodar em Node ESM; não para
 
 Scripts na raiz: `typecheck:playground` e `verify` (typecheck + typecheck:playground +
 check de extensão ESM + testes).
+
+## ⭐ Rodada de 17/09/2026 — o que entrou, e os defeitos que ela achou
+
+Sete pedidos do operador, e **cinco defeitos reais** encontrados no caminho. Os
+defeitos importam mais que os recursos: cada um era silencioso.
+
+### Os defeitos
+
+**1. Renko mostrava UMA barra.** `brickSizeAutomatico` derivava o tijolo de uma
+FRAÇÃO DO PREÇO (0,2% de 130.000 = 259,4), e a série do playground tem amplitude de
+645 pontos em 240 velas ⇒ **2 tijolos**. Medido: fração do preço ⇒ 2; amplitude média
+(`high-low`) ⇒ 10; **variação média do close ⇒ 98**. Adotada a variação do close,
+porque o `renko` desta biblioteca é construído sobre CLOSES (a amplitude com pavio
+superestima ~4x). A raiz era conceitual: **o nível do preço não diz nada sobre o
+quanto ele se move**.
+
+⚠️ A assinatura virou `(velas, { multiplo })` de propósito: o call site antigo
+`(velas, 0.002)` **falha em compilação** em vez de virar tijolo de 0,06 em silêncio.
+
+**2. Renko sobrescrevia tijolo ao vivo.** Vários tijolos fechados na mesma barra
+carregavam o mesmo `time`, e o motor assume tempo único em três lugares —
+`SeriesImpl.update` (time igual = mesma barra ⇒ substitui), `timeToIndex` (resolve
+para o primeiro índice) e os rótulos do eixo. Agora `time = max(tempo da barra,
+último + 1)`.
+
+**3. `unsubscribeClick`/`unsubscribeCrosshairMove` não existiam.** `useCrosshair`
+tinha um comentário admitindo que não dava para remover o ouvinte; com um `onMove`
+literal em JSX, acumulava **um ouvinte por render** no mesmo motor. O contrato ganhou
+os dois (idempotentes por `Set.delete`).
+
+**4. `setData()` + `fitContent()` síncronos NÃO enquadravam.** `ts.times` só era
+preenchido no `render` (agendado por rAF), então `fitContent` saía com `n === 0` e o
+quadro seguinte aplicava a heurística de primeira carga. `transicaoDeEixo` agora
+chama `rebuildTimes()` ANTES da mutação — e com isso a intenção explícita do
+consumidor vence o palpite do motor.
+
+**5. `useAlerts` entrava em LAÇO INFINITO com `bars` literal.** O reinício era
+decidido pela IDENTIDADE do array; um `bars={[...]}` em JSX era lido como "trocou de
+ativo" a cada render ⇒ re-armava, re-alimentava tudo e chamava `setState`, que causava
+outro render. Travou o processo de teste por 120 s. Agora decide por CONTEÚDO (tempo
+da primeira barra + tempo da última alimentada), e o ramo "nada novo" não chama
+`setState`.
+
+### Os recursos
+
+- **Clicar no indicador abre as propriedades dele.** `IChartApi.seriesAt(point, tol)`
+  responde qual série está sob o pixel; `IndicatorPlotter.plotIdOfSeries` traduz série
+  para indicador; `useIndicators({ onIndicatorClick })` costura; `IndicatorToolbox`
+  ganhou `openIndicator`. ⭐ Empate resolvido por PRIORIDADE antes de distância —
+  traço vence região, senão a resposta dependeria da ordem de inserção das séries.
+- **Perfil de volume (histograma por LINHA)** em faixa lateral própria, com POC e área
+  de valor atravessando o painel. `margemInferiorFracao` é a **separação de
+  ambientes** com o histograma por COLUNA.
+- **Seleção de período.** `timeframe.core.ts` no datafeed (segundos são a verdade,
+  rótulo é apresentação) + `TimeframeSelector` no React (rápidos como botão, o resto
+  em menu).
+- **Multi-período/multi-ativo na tela.** `ChartGrid`, `SymbolTabs`, `useChartSync`.
+  ⭐ A sincronia viaja por TEMPO, nunca por índice lógico.
+- **`ChartProvider`** — o motor num contexto, para parar de passá-lo de mão em mão.
+- **Backfill de histórico** (`useHistoryBackfill` + `onBarsPrepended` no motor), com a
+  posição da tela preservada pelo motor.
+- **Alerta de cruzamento de DUAS séries** (`SERIES_CROSS`), que descobriu um defeito
+  no re-armamento: condição de TRANSIÇÃO agora re-arma na hora (`ehInstantanea`).
+- **Animação de transição de eixo**, DESLIGADA por default — `fitContent()` seguido de
+  `timeToCoordinate()` é par síncrono por contrato, e animar por default o faria
+  mentir.
+- **Esconder série/indicador de verdade** (`visible` na série, `setPaneVisible` na
+  pane) e **trocar cor sem recriar série** (`applyColors`).

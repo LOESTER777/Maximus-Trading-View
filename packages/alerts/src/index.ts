@@ -24,6 +24,24 @@
  *    conhece indicador nenhum.
  *  - SÓ DETECTA: a biblioteca devolve o disparo; som/notificação são do
  *    consumidor.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⭐ CRUZAMENTO DE DUAS SÉRIES
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * `SERIES_CROSS` compara `sample.value` com `sample.reference` — a segunda série,
+ * que vem na AMOSTRA, não na condição (a referência muda a cada barra; a condição
+ * é o que se persiste no layout). É o "EMA 9 cruzou a EMA 21" e o "preço perdeu a
+ * média de 200", que com `level` fixo eram inexpressáveis.
+ *
+ * ```ts
+ * const a = createAlert({ kind: 'SERIES_CROSS', direction: 'above' }, { mode: 'recurring' });
+ * // por barra: value = média rápida, reference = média lenta
+ * feed(a, { time: bar.time, value: emaRapida, reference: emaLenta });
+ * ```
+ *
+ * Enquanto o indicador aquece, mande a amostra SEM `reference`: nada dispara, e o
+ * primeiro cruzamento real depois disso é detectado normalmente.
  */
 
 export type {
@@ -34,6 +52,7 @@ export type {
   EnterZoneCondition,
   ExitZoneCondition,
   PercentChangeCondition,
+  SeriesCrossCondition,
   AlertCondition,
   Sample,
 } from './conditions.js';

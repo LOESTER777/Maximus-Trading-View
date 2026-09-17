@@ -94,7 +94,19 @@ export { FootprintPrimitive } from './FootprintPrimitive.js';
 export type { FootprintLayerOptions } from './FootprintPrimitive.js';
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Perfil de volume — o histograma POR LINHA, em faixa lateral propria
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// ⭐ O par do histograma por COLUNA (volume por barra, no pe do painel). Os dois
+// ocupam eixos PERPENDICULARES, entao convivem no mesmo painel sem competir por
+// altura — e `margemInferiorFracao` separa os ambientes no canto em que se
+// cruzariam. Ver o cabecalho do arquivo.
+export { VolumeProfilePrimitive, PALETA_PERFIL_DEFAULT } from './VolumeProfilePrimitive.js';
+export type { VolumeProfileLayerOptions, PaletaPerfil } from './VolumeProfilePrimitive.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Apelidos em ingles — mesmo simbolo, nome alternativo
 // ═════════════════════════════════════════════════════════════════════════════
 export { BookmapPrimitive as BookmapLayer } from './BookmapPrimitive.js';
 export { FootprintPrimitive as FootprintLayer } from './FootprintPrimitive.js';
+export { VolumeProfilePrimitive as VolumeProfileLayer } from './VolumeProfilePrimitive.js';

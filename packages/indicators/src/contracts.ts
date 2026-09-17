@@ -125,6 +125,17 @@ export interface IndicatorPoint {
 /** Categoria, para agrupar na interface e escolher onde plotar. */
 export type IndicatorCategory = 'trend' | 'momentum' | 'volatility' | 'volume' | 'oscillator';
 
+/**
+ * Uma opcao de parametro ENUMERADO, para a interface montar o `<select>`.
+ *
+ * `value` e o que vai para os params (e para o layout salvo); `label` e o texto que
+ * o operador le.
+ */
+export interface ParamOption {
+  readonly value: string | number;
+  readonly label: string;
+}
+
 /** Descricao de um parametro, tipada o bastante para gerar UI de configuracao. */
 export interface ParamSpec {
   readonly name: string;
@@ -134,7 +145,78 @@ export interface ParamSpec {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;
+  /**
+   * ⭐ As opcoes de um parametro ENUMERADO. Presente = a interface monta um
+   * `<select>` com exatamente estas entradas.
+   *
+   * ⚠️ Existe para fechar uma DUPLICACAO que tinha custo real. `type: 'source'`
+   * dizia "isto e um preco-fonte" mas nao enumerava quais; a camada de interface
+   * (`IndicatorToolbox`, no pacote React, que **nao importa** este pacote) mantinha
+   * a lista das sete fontes escrita a mao. Duas listas, e uma delas condenada a
+   * ficar velha: fonte nova aqui simplesmente nao aparecia no select, sem erro de
+   * compilacao nenhum.
+   *
+   * Agora a lista viaja NO METADADO, junto do parametro que ela descreve. Quem
+   * acrescenta uma fonte no `PriceSource` acrescenta em `PRICE_SOURCE_OPTIONS`, e a
+   * interface a ganha de graca — inclusive uma interface de terceiro que nunca ouviu
+   * falar de preco-fonte.
+   *
+   * Serve para qualquer enumeracao futura (metodo de suavizacao, tipo de banda), nao
+   * so para fonte: e por isso que o campo e generico e nao `sources`.
+   */
+  readonly options?: readonly ParamOption[];
 }
+
+/**
+ * As sete fontes de preco, com rotulo pt-BR — a lista CANONICA.
+ *
+ * ⭐ Ponto unico: `PriceSource` (o tipo), `priceOf` (a extracao) e esta lista (a
+ * apresentacao) vivem no mesmo arquivo, entao acrescentar uma fonte e uma edicao em
+ * um lugar. Antes a apresentacao morava na camada de interface, longe do tipo.
+ */
+/**
+ * ⭐ Rotulo de CADA fonte, num `Record<PriceSource, string>`.
+ *
+ * ⚠️ O tipo e a parte que importa, e nao e decoracao: `Record<PriceSource, string>`
+ * obriga o mapa a cobrir a uniao INTEIRA. Acrescentar uma fonte em `PriceSource` sem
+ * rotula-la aqui e **erro de compilacao**, na hora.
+ *
+ * A alternativa — um array de `{value, label}` — compilaria com a fonte nova faltando,
+ * e o defeito apareceria como uma opcao ausente no select de um indicador, meses
+ * depois, sem nada apontando para a causa. Um teste de runtime tambem pegaria, mas so
+ * quem rodasse a suite; o compilador pega em quem edita.
+ *
+ * ⚠️ A ORDEM e a de leitura de mesa, nao alfabetica: `close` primeiro porque e o
+ * default e o que 95% dos casos usa.
+ */
+const PRICE_SOURCE_LABELS: Readonly<Record<PriceSource, string>> = {
+  close: 'Fechamento',
+  open: 'Abertura',
+  high: 'Máxima',
+  low: 'Mínima',
+  hl2: 'Média máx/mín (HL/2)',
+  hlc3: 'Preço típico (HLC/3)',
+  ohlc4: 'Preço médio (OHLC/4)',
+};
+
+export const PRICE_SOURCE_OPTIONS: readonly ParamOption[] = (
+  Object.keys(PRICE_SOURCE_LABELS) as PriceSource[]
+).map((value) => ({ value, label: PRICE_SOURCE_LABELS[value] }));
+
+/**
+ * O `ParamSpec` de preco-fonte, pronto e com as opcoes embutidas.
+ *
+ * ⚠️ Existia copiado em QUATRO arquivos de indicador (`moving-averages`,
+ * `oscillators`, `trend-volume`, `volatility`), identico. Quatro copias divergiriam
+ * na primeira mudanca — e a mudanca chegou justamente agora, com `options`.
+ */
+export const SOURCE_PARAM_SPEC: ParamSpec = {
+  name: 'source',
+  label: 'Fonte',
+  type: 'source',
+  default: 'close',
+  options: PRICE_SOURCE_OPTIONS,
+};
 
 /**
  * Uma serie de saida, e como ela quer ser desenhada.

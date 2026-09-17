@@ -133,6 +133,22 @@ export interface SeriesOptionsCommon {
   readonly priceFormat?: { readonly type?: 'price' | 'volume'; readonly precision?: number };
   /** Painel: 0 e o principal (preco). >0 sao sub-paineis empilhados abaixo. */
   readonly paneIndex?: number;
+  /**
+   * Visibilidade da serie. Ausente = visivel (o default nao pode ser "some", senao
+   * toda serie criada sem opcao nasceria invisivel).
+   *
+   * ⭐ `visible: false` esconde de VERDADE: a serie sai do desenho, das suas linhas
+   * de preco, dos seus marcadores, das primitives anexadas a ela, **e da
+   * autoescala**. Tirar da autoescala e a parte que importa — uma EMA "escondida"
+   * que continuasse esticando a faixa deixaria o preco comprimido por algo que o
+   * operador nao ve, e ele nao teria como descobrir a causa.
+   *
+   * ⚠️ O eixo de TEMPO nao depende de visibilidade. Ele e derivado da serie de
+   * preco mais longa da pane 0, e esconder essa serie nao pode colapsar o eixo
+   * (levaria o grafico inteiro a desaparecer em vez de esconder uma serie). A
+   * verdade temporal segue existindo mesmo invisivel.
+   */
+  readonly visible?: boolean;
 }
 
 /**
@@ -380,6 +396,31 @@ export interface ChartOptions {
    * Opcional de proposito: quem nao configura nao paga nem a medicao de texto.
    */
   readonly watermark?: WatermarkOptions;
+  /**
+   * ⭐ Transicao ANIMADA das mudancas PROGRAMATICAS de janela (`fitContent`,
+   * `setVisibleLogicalRange`, `scrollToRealTime`).
+   *
+   * ⚠️ **`enabled` e `false` por default, e isso NAO e timidez.** Estes tres metodos
+   * sao SINCRONOS por contrato: quem chama `fitContent()` e em seguida
+   * `timeToCoordinate(t)` espera a coordenada da janela NOVA. Ligar a animacao por
+   * default faria esse par mentir durante toda a transicao — a camada de desenho
+   * calcularia ancoras contra uma janela que ja mudou, e o defeito apareceria como
+   * elemento desalinhado por alguns quadros, difícil de rastrear. Quem liga a
+   * animacao aceita essa troca conscientemente.
+   *
+   * ⚠️ Pan e zoom do USUARIO nunca sao animados, com a opcao ligada ou nao: o eixo
+   * tem de acompanhar o dedo no mesmo quadro. Interacao em curso CANCELA uma
+   * transicao — brigar com o operador e pior que nao animar.
+   *
+   * ⚠️ `prefers-reduced-motion: reduce` desliga a animacao mesmo com `enabled: true`.
+   * Nao e cortesia: para parte dos usuarios movimento na tela causa mal-estar
+   * fisico, e a preferencia do sistema e a declaracao disso.
+   */
+  readonly animation?: {
+    readonly enabled?: boolean;
+    /** Duracao em ms. `0` equivale a desligado. Default `ANIMATION_DEFAULT_MS`. */
+    readonly durationMs?: number;
+  };
 }
 
 /**
@@ -410,8 +451,49 @@ export interface IChartApi extends IChartApiBase {
   addPane(): number;
   /** Remove um sub-painel e suas series. A pane principal (0) nao e removivel. */
   removePane(index: number): void;
+  /**
+   * ⭐ A serie DESENHADA sob um ponto da tela, ou `null`.
+   *
+   * Existe para a pergunta "em que o operador clicou?". Sem isto, clicar numa linha de
+   * indicador nao tinha resposta nenhuma — o motor sabia desenhar a EMA e nao sabia
+   * dizer que aquele pixel era dela, entao a interface nao tinha como abrir as
+   * propriedades do que foi clicado.
+   *
+   * O ponto e em pixel LOGICO, relativo ao canvas (o mesmo `point` de
+   * `MouseEventParams`). `tolerancePx` e o raio de acerto para series de traco.
+   *
+   * ⚠️ Serie OCULTA (`visible: false`) e pane colapsada nao participam: o operador nao
+   * pode selecionar o que nao esta na tela.
+   */
+  seriesAt(
+    point: { readonly x: number; readonly y: number },
+    tolerancePx?: number,
+  ): ISeriesApi<SeriesType> | null;
+  /**
+   * Colapsa (ou reexibe) um sub-painel PRESERVANDO as series dele.
+   *
+   * Diferente de `removePane`: nada e destruido, a fracao de altura vai a zero e
+   * volta. E o que permite esconder um oscilador sem perder cor, parametro e linha
+   * de referencia — reexibir nao recria nada. A pane principal (0) e ignorada.
+   */
+  setPaneVisible(index: number, visible: boolean): void;
+  /** O sub-painel esta visivel? Indice inexistente conta como nao visivel. */
+  isPaneVisible(index: number): boolean;
   subscribeClick(handler: (param: MouseEventParams) => void): void;
   subscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
+  /**
+   * ⭐ Remove um ouvinte de clique. Idempotente; handler desconhecido e no-op.
+   *
+   * ⚠️ Faltava, e a falta tinha custo. Sem simetria, todo hook que assinava ficava
+   * preso ao motor pelo resto da vida dele: `useCrosshair` documentava a ausencia e
+   * confiava em que "o motor descartado nao chama mais" — verdade so quando o motor
+   * inteiro morre. Um consumidor que ligue e desligue um recurso (a legenda, o clique em
+   * indicador) no MESMO motor acumulava ouvintes a cada vez, e cada um deles segurando a
+   * closure anterior.
+   */
+  unsubscribeClick(handler: (param: MouseEventParams) => void): void;
+  /** Remove um ouvinte de crosshair. Mesmo contrato de `unsubscribeClick`. */
+  unsubscribeCrosshairMove(handler: (param: MouseEventParams) => void): void;
   /**
    * Copia do quadro corrente num canvas NOVO, ou `null` quando nao ha rasterizacao.
    *

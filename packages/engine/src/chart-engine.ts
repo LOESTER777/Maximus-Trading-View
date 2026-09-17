@@ -49,7 +49,11 @@ import {
   type SeriesType,
   type Time,
 } from '@robustus/chart-core';
-import { BookmapPrimitive, FootprintPrimitive } from '@robustus/charts-primitives';
+import {
+  BookmapPrimitive,
+  FootprintPrimitive,
+  VolumeProfilePrimitive,
+} from '@robustus/charts-primitives';
 import {
   BOOKMAP_MAX_CELLS_DEFAULT,
   BOOKMAP_MIN_CELL_PX_DEFAULT,
@@ -62,6 +66,7 @@ import {
   type ChartMarker,
   type ChartPriceLine,
   type FootprintLayerInput,
+  type VolumeProfileLayerInput,
 } from './types.js';
 
 /** Identificador da escala do histograma de volume. */
@@ -87,6 +92,16 @@ export interface ChartEngineOptions {
   readonly withVolume?: boolean;
   /** Espacamento inicial entre barras, em px. */
   readonly barSpacing?: number;
+  /**
+   * ⭐ Animar as mudancas PROGRAMATICAS de janela (`resetViewport`, restaurar layout,
+   * ir para uma data). Default DESLIGADO.
+   *
+   * ⚠️ Repassado direto ao motor, e o default desligado e o dele — ver
+   * `ChartOptions.animation`: `fitContent()` seguido de `timeToCoordinate()` e um par
+   * SINCRONO por contrato, e animar por default faria a camada de desenho ancorar
+   * elementos contra uma janela que ja mudou. `prefers-reduced-motion` desliga.
+   */
+  readonly animation?: { readonly enabled?: boolean; readonly durationMs?: number };
   /** Cores. Ausentes, adotam um tema escuro neutro. */
   readonly colors?: {
     readonly upColor?: string;
@@ -158,6 +173,7 @@ export class ChartEngine {
 
   private bookmap: BookmapPrimitive | null = null;
   private footprint: FootprintPrimitive | null = null;
+  private volumeProfile: VolumeProfilePrimitive | null = null;
 
   /** Assinantes do mapeador de coordenadas. */
   private readonly mapperListeners = new Set<(m: ChartCoordinateMapper) => void>();
@@ -236,6 +252,8 @@ export class ChartEngine {
         scaleMargins: { top: 0.08, bottom: 0.2 },
       },
       autoSize: true,
+      // Repassa a animacao sem opinar: ausente, o motor mantem o default desligado.
+      ...(opts.animation === undefined ? {} : { animation: opts.animation }),
     });
 
     return new ChartEngine(chart, container, opts);
@@ -536,6 +554,49 @@ export class ChartEngine {
       return;
     }
     this.footprint.update(layer);
+  }
+
+  /**
+   * ⭐ Liga, atualiza ou desliga o PERFIL DE VOLUME — o histograma por LINHA.
+   *
+   * Mesma disciplina das camadas irmas: criada uma vez, depois so atualizada; `null`
+   * desliga sem desanexar.
+   *
+   * ⚠️ O perfil chega JA AGREGADO (`agregarPerfilDeVolume` do `charts-core`). Quem decide
+   * o ESCOPO — dia inteiro, janela visivel, ultima hora — e o consumidor, porque e
+   * decisao de leitura e nao de desenho. Para "perfil da janela visivel", reagregue
+   * quando a janela mudar (`onCoordinateMapperChange` avisa) e chame este metodo com o
+   * perfil novo.
+   *
+   * ⚠️ Desligar passa um perfil VAZIO em vez de desanexar, e o `motivoVazio` explica: a
+   * camada distingue "ligada e sem dado" de "desligada" — sem isso as duas ficariam
+   * visualmente identicas, que e o defeito de tela vazia sem explicacao.
+   */
+  setVolumeProfileLayer(layer: VolumeProfileLayerInput | null): void {
+    if (this.disposed) return;
+
+    if (layer === null) {
+      this.volumeProfile?.update({
+        perfil: {
+          niveis: [],
+          maiorTotal: 0,
+          totalGeral: 0,
+          poc: null,
+          vah: null,
+          val: null,
+          fracaoAreaDeValor: 0.7,
+          motivoVazio: 'Camada desligada.',
+        },
+      });
+      return;
+    }
+
+    if (this.volumeProfile === null) {
+      this.volumeProfile = new VolumeProfilePrimitive(layer);
+      this.candleSeries.attachPrimitive(this.volumeProfile);
+      return;
+    }
+    this.volumeProfile.update(layer);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

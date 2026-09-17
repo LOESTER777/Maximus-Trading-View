@@ -42,6 +42,7 @@ import {
   type ChartMarker,
   type ChartPriceLine,
   type FootprintLayerInput,
+  type VolumeProfileLayerInput,
 } from '@robustus/charts-engine';
 
 /** O que o hook recebe. */
@@ -64,6 +65,16 @@ export interface UseChartEngineParams {
   readonly bookmap?: BookmapLayerInput | null;
   /** Camada de footprint. `null` ou ausente desliga sem desanexar. */
   readonly footprint?: FootprintLayerInput | null;
+  /**
+   * ⭐ Perfil de volume — o histograma por LINHA, em faixa lateral propria.
+   *
+   * `null` ou ausente desliga sem desanexar. O perfil chega JA AGREGADO
+   * (`agregarPerfilDeVolume`): quem decide o escopo (dia, janela visivel) e o consumidor.
+   *
+   * ⚠️ Memoize, como os outros conjuntos. Um objeto literal em JSX tem identidade nova a
+   * cada render e reaplicaria a camada por quadro.
+   */
+  readonly volumeProfile?: VolumeProfileLayerInput | null;
 
   /**
    * Chamado a cada mudanca de janela visivel (pan, zoom, dado novo), coalescido
@@ -167,6 +178,13 @@ export function useChartEngine(params: UseChartEngineParams): UseChartEngineResu
     if (engine === null) return;
     engine.setBookmapLayer(bookmap ?? null);
   }, [engine, bookmap]);
+
+  const { volumeProfile } = params;
+
+  useEffect(() => {
+    if (engine === null) return;
+    engine.setVolumeProfileLayer(volumeProfile ?? null);
+  }, [engine, volumeProfile]);
 
   const { footprint } = params;
   useEffect(() => {

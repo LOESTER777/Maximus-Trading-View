@@ -75,6 +75,8 @@ export type IconName =
   // ── Analise ──
   | 'indicator'
   | 'oscillator'
+  // ⭐ Histograma por LINHA (perfil de volume) — o par do volume por coluna.
+  | 'volumeProfile'
   | 'alert'
   | 'replay'
   | 'bookmap'
@@ -256,6 +258,22 @@ const GEOMETRIA: Readonly<Record<IconName, ReactNode>> = {
       <line x1="3" y1="7" x2="21" y2="7" strokeDasharray="2 2" strokeOpacity="0.5" />
       <line x1="3" y1="17" x2="21" y2="17" strokeDasharray="2 2" strokeOpacity="0.5" />
       <path d="M3 14c2.5 0 3-8 6-8s3.5 12 6 12 3-6 6-6" />
+    </>
+  ),
+  // ⭐ Perfil de volume: barras HORIZONTAIS, uma por nível de preço.
+  //
+  // ⚠️ O desenho é deitado de propósito, e é a única coisa que o distingue do ícone de
+  // volume por barra. O par "histograma por coluna / histograma por linha" só se explica
+  // pela ORIENTAÇÃO — dois ícones de barras em pé seriam indistinguíveis na barra de
+  // ferramentas, que é onde o operador escolhe entre os dois.
+  volumeProfile: (
+    <>
+      <line x1="4" y1="4" x2="4" y2="20" strokeOpacity="0.5" />
+      <line x1="4" y1="7" x2="11" y2="7" />
+      <line x1="4" y1="10.5" x2="16" y2="10.5" />
+      {/* A barra mais longa é o POC — o nível de maior volume. */}
+      <line x1="4" y1="14" x2="20" y2="14" />
+      <line x1="4" y1="17.5" x2="9" y2="17.5" />
     </>
   ),
   alert: (

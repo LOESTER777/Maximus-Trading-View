@@ -292,3 +292,113 @@ O crescimento **sub-linear** do hit-test é a prova empírica de que o prefiltro
 em array plano basta. Quadtree traria reconstrução a cada pan e perda de localidade
 de cache: mais lenta **e** mais complexa para este N. Se algum dia N chegar a
 milhares, meça antes de trocar.
+
+---
+
+## Armadilhas descobertas em 17/09/2026
+
+### ⚠️ Identidade de array como "trocou de dado" fecha LAÇO INFINITO em React
+
+`useAlerts` decidia "trocou de ativo" comparando `bars !== barsAnterior`. Um
+`bars={[...]}` literal em JSX — a forma mais natural de escrever — tem identidade nova
+a cada render. A cadeia: identidade diferente ⇒ re-arma e zera o contador ⇒
+re-alimenta a série inteira ⇒ `setState` ⇒ outro render ⇒ **volta ao início**.
+
+**Consequência real:** travou o processo de teste por 120 s.
+
+**Correto:** decidir por CONTEÚDO, em O(1). Aqui, o tempo da primeira barra e o da
+última já alimentada: ativo novo muda a primeira, correção de histórico muda a última,
+render a mais não muda nada. E **não chamar `setState` no ramo "nada mudou"** — um
+`store.list()` que devolve array novo re-renderiza mesmo sem nada novo.
+
+### ⚠️ Estado derivado de dado + memo por assinatura = campo CONGELADO
+
+`plots` é memoizado por uma assinatura que (de propósito) não contém visibilidade. Um
+`visible` escrito dentro do plot ficaria parado no valor que tinha quando os params
+mudaram pela última vez, e mentiria a partir do primeiro toggle.
+
+**Correto:** duas fontes de verdade com uma delas velha é pior que uma fonte só. O que
+não entra na assinatura viaja por canal próprio (`visibility`, `colors`), sempre
+fresco.
+
+### ⚠️ Nível de preço não diz nada sobre movimento de preço
+
+`brickSizeAutomatico` tirava o tijolo do Renko de 0,2% do preço. Dois ativos a 130.000
+podem oscilar 600 ou 60.000 pontos por sessão — o mesmo tijolo serve a um e é inútil
+para o outro. Medido no playground: 259,4 de tijolo para uma série de amplitude 645 ⇒
+**2 tijolos no gráfico todo**.
+
+**Correto:** grade de movimento sai do MOVIMENTO. Aqui, a variação média do
+fechamento (29,3 ⇒ 98 tijolos) — e não a amplitude com pavio, que superestima ~4x um
+`renko` construído sobre closes.
+
+### ⚠️ Mudança de semântica silenciosa: prefira ERRO DE COMPILAÇÃO
+
+Ao trocar o critério de `brickSizeAutomatico`, manter a assinatura
+`(velas, fracao?: number)` faria o call site antigo `(velas, 0.002)` passar a pedir
+`0,002 × 29,3` — tijolo de 0,06, e milhares de tijolos por vela. A assinatura virou
+`(velas, { multiplo })`: o chamador antigo **não compila**.
+
+**Regra:** quando o SIGNIFICADO de um parâmetro muda, mude o TIPO. Erro de compilação
+é infinitamente melhor que uma falha silenciosa 1.000× fora de escala.
+
+### ⚠️ Assinar sem poder desassinar é vazamento por render
+
+`IChartApi` tinha `subscribeClick`/`subscribeCrosshairMove` e nenhum `unsubscribe`.
+`useCrosshair` documentava a ausência e confiava em "o motor descartado não chama
+mais" — verdade só quando o motor inteiro morre. Com `onMove` literal em JSX, o efeito
+reassinava a cada render e **acumulava um ouvinte por render** no mesmo motor.
+
+**Correto:** todo `subscribe` de contrato público nasce com o `unsubscribe` par,
+idempotente.
+
+### ⚠️ Estado que só existe depois do quadro: API síncrona mente
+
+`ts.times` era preenchido dentro do `render`, agendado por `requestAnimationFrame`.
+Logo `setData(velas)` seguido de `fitContent()` — o par que a documentação mostra —
+chamava `fitContent` com o eixo **vazio**, que saía sem fazer nada.
+
+**Correto:** método público que depende de estado derivado o RECONSTRÓI antes de usar.
+E o efeito colateral desejado: a intenção explícita do consumidor passa a vencer a
+heurística de primeira carga do motor.
+
+### ⚠️ Eco entre dois componentes que se ouvem
+
+Sincronizar dois gráficos é A→B→A→B… O motor emite mudança de janela quando alguém a
+aplica, então aplicar em B faz B avisar, que aplica em A, que avisa…
+
+**Correto:** sinalizador "estou aplicando", baixado em `finally` (exceção no meio não
+pode deixar a guarda de pé para sempre — o grupo pararia de sincronizar em silêncio).
+E o teste precisa de um duplo que REEMITA ao receber, senão passa por vacuidade.
+
+### ⚠️ Sincronizar por índice lógico entre gráficos diferentes
+
+A barra 100 de M5 é 8h20 depois do início; a 100 de H1 é 100 horas depois. Ativos
+diferentes têm buracos de negociação diferentes.
+
+**Correto:** o que viaja entre gráficos é TEMPO; cada destino converte para o índice
+DELE (`timeToIndex(findNearest)`). É a mesma disciplina que corrigiu o indicador
+deslocado no eixo, aplicada entre painéis.
+
+### ⚠️ Célula de grid sem altura = canvas de altura zero = "o gráfico não aparece"
+
+Num `display: grid`/`flex`, uma célula sem altura explícita colapsa para a altura do
+conteúdo — e o conteúdo é um canvas que mede o pai. Sem erro, sem aviso.
+
+**Correto:** `1fr` nas linhas, `height: 100%` no container e **`minHeight: 0` +
+`minWidth: 0`**, que é o que permite a célula ENCOLHER em vez de estourar o pai.
+
+### ⚠️ jsdom formata `minHeight: 0` como `'0'`; o navegador, como `'0px'`
+
+Asserção `toBe('0px')` falha em jsdom. **Correto:** aceitar os dois — medir a
+formatação do ambiente é testar o jsdom, não o componente.
+
+### ⚠️ `fitContent()` antes do primeiro quadro não enquadra (em teste, sobretudo)
+
+No teste, a janela default mostra as ~93 barras mais recentes, então a barra 100 de uma
+série de 200 cai FORA da tela, com `x` negativo e `y` fora da pane. Um caso pode passar
+por acidente (série plana acerta em qualquer coluna) e o vizinho falhar por motivo
+errado.
+
+**Correto:** ao testar geometria, enquadre (`fitContent`) e desenhe um quadro antes de
+converter coordenada.

@@ -7,9 +7,11 @@
  *
  * O painel de propriedades sai inteiro de `ParamSpec`:
  *
- *   `type: 'number'`  -> `<input type="number">` com `min`/`max`/`step` do spec
- *   `type: 'source'`  -> `<select>` de preco-fonte
- *   `type: 'boolean'` -> `<input type="checkbox">`
+ *   `options` presente  -> `<select>` com exatamente aquelas entradas (vence o `type`)
+ *   `type: 'number'`    -> `<input type="number">` com `min`/`max`/`step` do spec
+ *   `type: 'source'`    -> `<select>` de preco-fonte (opcoes do metadado; lista local
+ *                          so como reserva para registry que nao as preencha)
+ *   `type: 'boolean'`   -> `<input type="checkbox">`
  *
  * e o `label` do spec e o texto do `<label>`. O menu de adicionar sai de
  * `category` (agrupado em `<optgroup>`), e o painel onde o indicador vive sai de
@@ -32,24 +34,27 @@
  * reimplementar foco, escape e leitor de tela para empatar.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ⚠️ COR COMMITA NO `blur`, PARAMETRO COMMITA NA HORA — E POR QUE
+ * ⭐ COR AGORA E AO VIVO — a limitacao que forcava o `blur` foi RESOLVIDA
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * `IndicatorPlot.colors` e lido pelo `IndicatorPlotter` APENAS em
- * `criarSeriesDoPlot`; `updateData` nao toca em cor. Logo trocar cor exige
- * `setPlots`, que **remove e recria todas as series e panes** do grafico — nao ha
- * caminho de "aplicar opcao na serie existente" no plotter, e inventar um aqui
- * seria gambiarra na camada errada (fica registrado como limitacao, ver
- * `useIndicatorCatalog`).
+ * Historico, porque explica o codigo: a cor era lida pelo `IndicatorPlotter`
+ * APENAS em `criarSeriesDoPlot`, entao trocar cor exigia `setPlots` — que remove e
+ * recria TODAS as series e panes e reexecuta o `warmup` de cada indicador. E
+ * `<input type="color">` dispara `onChange` a cada movimento do seletor: commitar
+ * ao vivo recriaria o grafico inteiro por pixel arrastado. A saida era rascunho
+ * local com commit no `blur`, e ficou registrado como limitacao.
  *
- * Consequencia direta: `<input type="color">` dispara `onChange` a CADA
- * movimento do seletor. Commitar em `onChange` recriaria o grafico inteiro por
- * pixel arrastado. Por isso a cor tem rascunho local e commita no `blur`/`change`
- * final. Parametro numerico commita na hora porque digitar `200` gera poucos
- * eventos, e o retorno imediato do indicador redesenhado e o que o operador quer
- * ver.
+ * O plotter ganhou `applyColors`, que repinta a serie VIVA (`applyOptions`) sem
+ * recriar nem recalcular nada, e o catalogo tirou a cor da assinatura de `plots`.
+ * Com isso o commit voltou para o `onChange`: o operador arrasta o seletor e ve a
+ * linha mudar de cor acompanhando o dedo, que e o comportamento que ele espera de
+ * um seletor de cor. O redesenho e coalescido em UM quadro pelo motor, entao
+ * varios eventos no mesmo tick custam uma pintura.
+ *
+ * Parametro numerico segue commitando na hora (digitar `200` gera poucos eventos), e
+ * ali o custo de recriar e inevitavel — o periodo e lido na CONSTRUCAO do indicador.
  */
-import { useCallback, useId, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, type CSSProperties } from 'react';
 import type {
   ActiveIndicator,
   CatalogEntry,
@@ -64,22 +69,23 @@ import type {
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * As opcoes do controle de preco-fonte.
+ * Fontes de preco — RESERVA, usada so quando o metadado nao trouxe as opcoes.
  *
- * ⚠️ **Esta lista e uma DUPLICACAO consciente, e ela tem um custo.** `ParamSpec`
- * diz `type: 'source'` mas **nao enumera** as fontes possiveis — a uniao
- * `PriceSource` vive no pacote de indicadores, que este pacote nao importa (ver o
- * cabecalho de `useIndicatorCatalog`). Sem a lista nao ha `<select>`; com ela, uma
- * fonte NOVA no pacote de indicadores nao aparece aqui ate alguem acrescentar.
+ * ⭐ A duplicacao que existia aqui foi RESOLVIDA. Antes esta lista era a unica fonte
+ * do `<select>`: `ParamSpec` dizia `type: 'source'` sem enumerar as fontes, e a uniao
+ * `PriceSource` vive no pacote de indicadores, que este pacote nao importa. Duas
+ * listas, e esta condenada a envelhecer — fonte nova la nao aparecia aqui, sem erro
+ * de compilacao nenhum.
  *
- * A correcao de raiz seria `ParamSpec.options?: readonly { value, label }[]`, o
- * que faria o controle sair inteiro do metadado como os outros. Isso e mudanca em
- * `packages/indicators`, fora do escopo desta entrega — fica registrado em vez de
- * contornado. O dano de estar desatualizada e limitado: uma fonte que falte no
- * select continua valida se vier de layout salvo, porque o valor persiste no
- * estado e so nao e selecionavel pela interface.
+ * `ParamSpec.options` fechou o buraco: as sete fontes viajam no metadado
+ * (`PRICE_SOURCE_OPTIONS`), e o controle sai inteiro dele, como os outros.
+ *
+ * ⚠️ A lista continua aqui, e nao e sobra. Um registry de TERCEIRO — indicador
+ * caseiro do consumidor — pode declarar `type: 'source'` sem preencher `options`, e
+ * sem reserva o operador veria um select vazio. Ela nao mais decide nada quando o
+ * metadado fala.
  */
-const FONTES_DE_PRECO: ReadonlyArray<{ readonly value: string; readonly label: string }> = [
+const FONTES_DE_PRECO: ReadonlyArray<{ readonly value: string | number; readonly label: string }> = [
   { value: 'close', label: 'Fechamento' },
   { value: 'open', label: 'Abertura' },
   { value: 'high', label: 'Máxima' },
@@ -125,6 +131,26 @@ export interface IndicatorToolboxProps {
   readonly title?: string;
   readonly className?: string;
   readonly style?: CSSProperties;
+  /**
+   * ⭐ Abre as propriedades DESTE indicador, de fora do componente.
+   *
+   * ⚠️ Existe para fechar o gesto "cliquei na linha da EMA no grafico, quero as
+   * propriedades dela". A abertura era 100% interna, entao a unica forma de configurar
+   * um indicador era encontra-lo na lista — com 8 indicadores ligados, procurar na lista
+   * o que se acabou de clicar e trabalho que o clique ja tinha resolvido.
+   *
+   * ⚠️ **Nao e um componente controlado.** Este campo ABRE; nao fecha, e nao impede o
+   * operador de abrir outros pela lista. Controlar por completo obrigaria o consumidor a
+   * gerenciar o conjunto de abertos so para poder abrir um — e um `undefined` (o caso
+   * comum) fecharia tudo a cada render. O que o consumidor manda e "abra este agora".
+   *
+   * ⚠️ Um valor REPETIDO reabre: `useEffect` compara por identidade, e clicar duas vezes
+   * na mesma linha manda a mesma string. Por isso o campo aceita um objeto
+   * `{ id, nonce }` — o `nonce` (um contador, um timestamp) e o que torna o segundo
+   * clique distinguivel do primeiro. So o `id`, sem nonce, funciona para o caso de abrir
+   * um indicador diferente.
+   */
+  readonly openIndicator?: string | { readonly id: string; readonly nonce: unknown } | null;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -146,10 +172,25 @@ export function IndicatorToolbox({
   title = 'Indicadores',
   className,
   style,
+  openIndicator,
 }: IndicatorToolboxProps): JSX.Element {
   const prefixo = useId();
   const [escolha, setEscolha] = useState('');
   const [abertos, setAbertos] = useState<ReadonlySet<string>>(() => new Set<string>());
+
+  // ── Abertura pedida de fora (clique no gráfico) ───────────────────────────
+  //
+  // ⚠️ A dependência é o `nonce` quando ele vem, e o `id` quando não vem. Sem o nonce,
+  // clicar duas vezes na MESMA linha manda a mesma string e o efeito não roda de novo —
+  // o que é correto quando o painel já está aberto, e frustrante quando o operador o
+  // fechou no meio. Quem quer reabertura garantida passa o nonce.
+  const pedidoId = typeof openIndicator === 'string' ? openIndicator : openIndicator?.id;
+  const pedidoNonce = typeof openIndicator === 'string' ? undefined : openIndicator?.nonce;
+
+  useEffect(() => {
+    if (pedidoId === undefined || pedidoId === null || pedidoId === '') return;
+    setAbertos((atual) => (atual.has(pedidoId) ? atual : new Set(atual).add(pedidoId)));
+  }, [pedidoId, pedidoNonce]);
   /** Mensagens de validacao por id de indicador. Vazio = sem erro pendente. */
   const [erros, setErros] = useState<Readonly<Record<string, readonly string[]>>>({});
 
@@ -438,7 +479,15 @@ function CampoParametro({
     );
   }
 
-  if (spec.type === 'source') {
+  // Parametro ENUMERADO: `<select>` montado do METADADO.
+  //
+  // ⭐ `spec.options` manda. A lista local de fontes e so a reserva para um registry
+  // que declare `type: 'source'` sem preencher as opcoes (indicador caseiro de
+  // terceiro) — ver a nota em `FONTES_DE_PRECO`. E `options` funciona para QUALQUER
+  // enumeracao, nao so fonte: um parametro `{ type: 'number', options: [...] }` de um
+  // indicador futuro ganha o select de graca.
+  const opcoes = spec.options ?? (spec.type === 'source' ? FONTES_DE_PRECO : undefined);
+  if (opcoes !== undefined && opcoes.length > 0) {
     return (
       <div style={estiloCampoLinha}>
         <label htmlFor={idCampo} style={estiloRotuloCampo}>
@@ -447,20 +496,31 @@ function CampoParametro({
         <select
           id={idCampo}
           value={String(valor)}
-          onChange={(e) => onAplicar({ [spec.name]: e.target.value })}
+          onChange={(e) => {
+            // ⚠️ `<select>` sempre entrega STRING. Um parametro enumerado numerico
+            // (`options: [{value: 9}, {value: 21}]`) receberia `'9'` e a fabrica o
+            // recusaria — o operador escolheria e nada mudaria. O tipo do `default` diz
+            // o que reconverter.
+            const bruto = e.target.value;
+            const convertido =
+              typeof spec.default === 'number' && bruto !== '' && Number.isFinite(Number(bruto))
+                ? Number(bruto)
+                : bruto;
+            onAplicar({ [spec.name]: convertido });
+          }}
           style={{ ...estiloCampo, flex: 1 }}
         >
-          {FONTES_DE_PRECO.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
+          {opcoes.map((o) => (
+            <option key={String(o.value)} value={String(o.value)}>
+              {o.label}
             </option>
           ))}
           {/*
-            Valor fora da lista (fonte nova no pacote de indicadores, ou layout de
-            outra versao): entra como opcao propria para o `<select>` nao aparecer
-            vazio e o valor nao ser silenciosamente trocado ao primeiro foco.
+            Valor fora da lista (opcao removida numa versao nova, ou layout de outra
+            versao): entra como opcao propria para o `<select>` nao aparecer vazio e o
+            valor nao ser silenciosamente trocado ao primeiro foco.
           */}
-          {!FONTES_DE_PRECO.some((f) => f.value === String(valor)) && (
+          {!opcoes.some((o) => String(o.value) === String(valor)) && (
             <option value={String(valor)}>{String(valor)}</option>
           )}
         </select>
@@ -515,18 +575,6 @@ interface CampoCorProps {
 function CampoCor({ prefixo, ativo, output, onAplicar }: CampoCorProps): JSX.Element {
   const idCampo = `${prefixo}-${ativo.id}-cor-${output.key}`;
   const corAtual = ativo.colors?.[output.key] ?? output.color ?? COR_NEUTRA;
-  // Rascunho: ver o cabecalho do arquivo. Arrastar o seletor dispara `onChange`
-  // por movimento, e cada commit recria TODAS as series do grafico.
-  const [rascunho, setRascunho] = useState<string | null>(null);
-
-  const commitar = (): void => {
-    if (rascunho === null || rascunho === corAtual) {
-      setRascunho(null);
-      return;
-    }
-    onAplicar(rascunho);
-    setRascunho(null);
-  };
 
   return (
     <div style={estiloCampoLinha}>
@@ -536,9 +584,11 @@ function CampoCor({ prefixo, ativo, output, onAplicar }: CampoCorProps): JSX.Ele
       <input
         id={idCampo}
         type="color"
-        value={rascunho ?? corAtual}
-        onChange={(e) => setRascunho(e.target.value)}
-        onBlur={commitar}
+        value={corAtual}
+        // ⭐ Commita AO VIVO. Ver o cabecalho: era `blur` porque cada commit recriava o
+        // grafico inteiro; com `applyColors` no plotter o custo virou um `applyOptions`
+        // e uma pintura coalescida, e o operador ve a cor acompanhar o seletor.
+        onChange={(e) => onAplicar(e.target.value)}
         style={{ width: 34, height: 22, padding: 0, border: 'none', background: 'transparent' }}
       />
       <span style={estiloTenue}>

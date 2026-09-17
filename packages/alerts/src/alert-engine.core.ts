@@ -113,6 +113,51 @@ function isFinito(n: number | undefined): n is number {
   return typeof n === 'number' && Number.isFinite(n);
 }
 
+/**
+ * A condição é INSTANTÂNEA (uma transição) ou pode PERMANECER satisfeita?
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ⭐ POR QUE ESTA DISTINÇÃO EXISTE — E O DEFEITO QUE ELA CORRIGE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * O re-armamento do modo `recurring` exige que a condição DEIXE de valer. Essa
+ * regra existe para as condições que permanecem satisfeitas: o preço fica dentro
+ * da faixa do `TOUCH` por dez barras, a variação do `PERCENT_CHANGE` continua
+ * acima do limite — sem o portão, cada barra dispararia de novo.
+ *
+ * ⚠️ Mas para uma condição de TRANSIÇÃO o portão engole eventos. Medido com
+ * `SERIES_CROSS` + `direction: 'both'`: a rápida cruza a lenta para cima (dispara)
+ * e, na amostra SEGUINTE, cruza de volta para baixo. O segundo cruzamento é uma
+ * satisfação NOVA da condição, mas o motor a lia como "a condição ainda vale",
+ * não re-armava, e o disparo era **perdido em silêncio**. Numa mesa que opera
+ * cruzamento de médias, perder a virada é perder o sinal.
+ *
+ * A correção: condição instantânea re-arma NA HORA, no mesmo `feed` do disparo.
+ * Repique fica impossível por construção — permanecer de um lado não satisfaz uma
+ * condição de transição, então não há o que repicar.
+ *
+ * ⚠️ Para as transições de sentido ÚNICO (`CROSS_ABOVE`, `ENTER_ZONE`, ...) isto é
+ * **equivalente** ao comportamento anterior, não uma mudança: elas não podem ser
+ * verdadeiras em duas amostras consecutivas (para cruzar acima de novo é preciso
+ * ter estado abaixo, e a amostra que esteve abaixo já tornava a condição falsa e
+ * já re-armava). A diferença aparece só onde havia defeito.
+ */
+function ehInstantanea(condition: AlertCondition): boolean {
+  switch (condition.kind) {
+    case 'CROSS_ABOVE':
+    case 'CROSS_BELOW':
+    case 'ENTER_ZONE':
+    case 'EXIT_ZONE':
+    case 'SERIES_CROSS':
+      return true;
+    // `TOUCH` fica satisfeito enquanto a barra contiver o nível; `PERCENT_CHANGE`,
+    // enquanto a variação exceder o limite. Estes dois PRECISAM do portão.
+    case 'TOUCH':
+    case 'PERCENT_CHANGE':
+      return false;
+  }
+}
+
 /** Cria um alerta ARMADO. */
 export function createAlert(condition: AlertCondition, options: AlertOptions = {}): Alert {
   return {
@@ -171,6 +216,34 @@ function condicaoSatisfeita(
       const foraAntes = prev.value < condition.min || prev.value > condition.max;
       return !foraAntes;
     }
+    case 'SERIES_CROSS': {
+      // ⭐ Cruzamento de duas séries = SINAL DO SPREAD (`value - reference`)
+      // passando por zero. Ver a nota longa em `SeriesCrossCondition`.
+      //
+      // ⚠️ Exige `reference` finita nas DUAS amostras. Sem a anterior não há
+      // spread anterior, logo não há transição — e é isso que faz o aquecimento
+      // do indicador se resolver sozinho, sem disparo fantasma na barra em que a
+      // média lenta termina de aquecer.
+      if (prev === null) return false;
+      if (!isFinito(prev.reference) || !isFinito(curr.reference)) return false;
+
+      const spreadAntes = prev.value - prev.reference;
+      const spreadAgora = curr.value - curr.reference;
+
+      // `<= 0` para cima e `>= 0` para baixo: encostar exatamente e depois
+      // separar conta como UM cruzamento, a mesma convenção do `CROSS_ABOVE`.
+      const paraCima = spreadAntes <= 0 && spreadAgora > 0;
+      const paraBaixo = spreadAntes >= 0 && spreadAgora < 0;
+
+      switch (condition.direction) {
+        case 'above':
+          return paraCima;
+        case 'below':
+          return paraBaixo;
+        case 'both':
+          return paraCima || paraBaixo;
+      }
+    }
     case 'PERCENT_CHANGE': {
       // Sem referência ou referência zero não há variação percentual definida.
       // `baseline === 0` daria divisão por zero → tratamos como "não sei", nunca
@@ -219,6 +292,13 @@ export function feed(alert: Alert, sample: Sample): FeedResult {
     if (condicaoSatisfeita(alert.condition, prev, sample, alert.baseline)) {
       alert.state = 'TRIGGERED';
       fired = true;
+      // ⭐ Condição de TRANSIÇÃO em modo recorrente re-arma NA HORA. Ver
+      // `ehInstantanea`: sem isto, duas transições em amostras consecutivas
+      // (cruzar para cima e voltar na barra seguinte, com `direction: 'both'`)
+      // perdiam a segunda em silêncio.
+      if (alert.mode === 'recurring' && ehInstantanea(alert.condition)) {
+        alert.state = 'ARMED';
+      }
     }
   } else {
     // TRIGGERED. Só o modo recorrente pode voltar a vigiar, e só quando a

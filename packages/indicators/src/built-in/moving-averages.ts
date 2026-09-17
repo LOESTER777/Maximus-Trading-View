@@ -24,6 +24,7 @@ import {
   type IndicatorParams,
   type IndicatorValue,
   type ParamSpec,
+  SOURCE_PARAM_SPEC,
 } from '../contracts.js';
 import { EmaState, SmaState, WilderState, RingWindow, KahanSum } from '../rolling.core.js';
 import { buildInstance } from './instance-base.js';
@@ -42,12 +43,15 @@ const periodSpec = (def: number): ParamSpec => ({
   step: 1,
 });
 
-const sourceSpec: ParamSpec = {
-  name: 'source',
-  label: 'Fonte',
-  type: 'source',
-  default: 'close',
-};
+/**
+ * Preco-fonte: reusa o spec CANONICO do contrato.
+ *
+ * ⚠️ Este spec estava copiado aqui e em outros tres arquivos de indicador, identico.
+ * A primeira mudanca real (`options`, a lista de fontes para a interface montar o
+ * select) teria de ser feita em quatro lugares — e bastaria esquecer um para o
+ * indicador ficar com um select vazio.
+ */
+const sourceSpec: ParamSpec = SOURCE_PARAM_SPEC;
 
 /** Envolve `number|null`: null = aquecendo. Uma so saida chamada `value`. */
 function scalar(value: number | null): IndicatorValue {

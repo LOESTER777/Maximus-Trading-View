@@ -86,6 +86,29 @@ export interface IndicatorState {
   readonly name: string;
   /** Parametros do indicador (ex.: `{ period: 20 }`). So numero/string/boolean. */
   readonly params?: Readonly<Record<string, number | string | boolean>>;
+  /**
+   * O indicador esta visivel? Ausente = visivel.
+   *
+   * ⚠️ Campo OPCIONAL de proposito, e por isso a versao do esquema NAO subiu (ver a
+   * nota em `CHART_STATE_SCHEMA_VERSION`): estado gravado antes deste campo le como
+   * visivel, que e o comportamento antigo exato. Subir a versao transformaria todo
+   * layout ja salvo em documento "de versao velha" sem nenhum ganho.
+   *
+   * Precisa ser persistido porque esconder o indicador e uma decisao de leitura, nao
+   * um estado transitorio: o operador deixa a nuvem do Ichimoku desligada por semanas
+   * e espera encontra-la assim — e, sem o campo, a alternativa dele e REMOVER o
+   * indicador e perder os parametros.
+   */
+  readonly visible?: boolean;
+  /**
+   * Cores por chave de saida, como estao na tela (`IndicatorPlotter.colorsOf`).
+   *
+   * ⚠️ Grave o que o plotter reporta, nao o que voce pediu. Indicador que nasceu com
+   * cor da PALETA nao tem cor pedida, e a paleta e por ordem de insercao — remover um
+   * indicador do meio muda a ordem, e na sessao seguinte o mesmo indicador voltaria
+   * com outra cor sem ninguem ter mudado nada.
+   */
+  readonly colors?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -198,6 +221,10 @@ function cloneIndicator(i: IndicatorState): IndicatorState {
     id: i.id,
     name: i.name,
     ...(i.params === undefined ? {} : { params: { ...i.params } }),
+    // `visible` so e gravado quando FALSO. Gravar `true` em todo indicador seria ruido
+    // em cada documento — e "ausente = visivel" ja e a leitura correta.
+    ...(i.visible === false ? { visible: false } : {}),
+    ...(i.colors === undefined ? {} : { colors: { ...i.colors } }),
   };
 }
 
@@ -380,7 +407,31 @@ function parseIndicator(bruto: unknown, indice: number, motivos: string[]): Indi
     return null;
   }
 
-  return { id, name, ...parseParams(v.params) };
+  // `visible` so vira `false` quando e EXATAMENTE `false`. Qualquer outro valor —
+  // ausente, `0`, `'nao'`, `null` — le como visivel. Um documento editado a mao com
+  // `visible: 0` esconder o indicador em silencio seria pior que ignorar o campo: o
+  // operador veria um indicador na lista sem nada na tela e nao teria como saber por
+  // que.
+  const visible = v.visible === false ? { visible: false } : {};
+
+  return { id, name, ...parseParams(v.params), ...visible, ...parseColors(v.colors) };
+}
+
+/**
+ * Valida o mapa de cores: so aceita string nao vazia por chave.
+ *
+ * Nao validamos o FORMATO da cor (hex, rgb, nome CSS): quem consome e o canvas, que
+ * ignora cor invalida sem lancar, e uma lista branca de formatos recusaria cor
+ * legitima (`color-mix`, `oklch`) que o navegador aceita. O que barramos e o que nao
+ * e cor nenhuma — numero, objeto, string vazia.
+ */
+function parseColors(bruto: unknown): { colors?: Record<string, string> } {
+  if (bruto === null || typeof bruto !== 'object' || Array.isArray(bruto)) return {};
+  const out: Record<string, string> = {};
+  for (const [chave, valor] of Object.entries(bruto as Record<string, unknown>)) {
+    if (typeof valor === 'string' && valor !== '') out[chave] = valor;
+  }
+  return Object.keys(out).length === 0 ? {} : { colors: out };
 }
 
 /**

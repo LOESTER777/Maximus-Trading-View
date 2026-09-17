@@ -86,6 +86,19 @@ export interface CatalogParamSpec {
   readonly min?: number;
   readonly max?: number;
   readonly step?: number;
+  /**
+   * ⭐ As opcoes de um parametro ENUMERADO, quando o metadado as traz.
+   *
+   * ⚠️ Fecha uma duplicacao com custo: `type: 'source'` dizia "isto e preco-fonte" sem
+   * enumerar quais, entao a caixa de ferramentas mantinha as sete fontes escritas a
+   * mao — em OUTRO pacote, que nao importa o de indicadores. Fonte nova la nao
+   * aparecia aqui, e nada reprovava. Agora a lista vem no `ParamSpec`
+   * (`PRICE_SOURCE_OPTIONS`), e a interface a usa tal como veio.
+   *
+   * Ausente: a interface cai na lista local de fontes (compatibilidade com registry de
+   * terceiro que nao preencha `options`).
+   */
+  readonly options?: readonly { readonly value: string | number; readonly label: string }[];
 }
 
 /** Descricao de uma saida. Espelha `OutputSpec`. */
@@ -172,12 +185,15 @@ export interface ActiveIndicator {
   /** Cor por chave de saida. Ausente = paleta do plotter. */
   readonly colors?: Readonly<Record<string, string>>;
   /**
-   * Se entra em `plots`.
+   * O indicador aparece no grafico?
    *
-   * ⚠️ `false` **remove de `plots`** (o motor nao tem "esconder serie": a serie
-   * existe ou nao existe) mas **mantem em `active`**, com params e cores. E o que
-   * permite desligar um oscilador para olhar o preco limpo e religar sem
-   * reconfigurar periodo e cor. Ver a nota sobre persistencia em `states`.
+   * ⭐ `false` NAO o remove mais de `plots`. O motor passou a esconder serie de
+   * verdade: ela sai do desenho e da autoescala, a pane do oscilador colapsa (a altura
+   * volta ao preco) e o indicador deixa de ser calculado. Religar nao recria nada —
+   * cor, linha de referencia e a altura arrastada da pane sobrevivem.
+   *
+   * Antes disso, `false` significava "destruir a serie", e religar reconstruia tudo com
+   * a pane em altura default.
    */
   readonly visible: boolean;
 }
@@ -320,13 +336,21 @@ export function paneKindOf(outputs: readonly CatalogOutputSpec[]): IndicatorPane
  * recriadas de graca. Editar um param reinsere a chave e mudaria a ordem.
  */
 function assinatura(a: ActiveIndicator): string {
-  return [
-    a.id,
-    a.name,
-    a.visible ? '1' : '0',
-    serializarOrdenado(a.params),
-    a.colors === undefined ? '' : serializarOrdenado(a.colors),
-  ].join('\u0001');
+  // ⭐ COR e VISIBILIDADE ficaram FORA desta assinatura, e isso e a correcao de um
+  // defeito real, nao economia.
+  //
+  // Enquanto estavam aqui, trocar a cor de uma EMA ou desligar o RSI mudava a
+  // identidade de `plots`, e `useIndicators` respondia com `setPlots` — que **destroi e
+  // recria** todas as series e panes e reexecuta o `warmup` de todo indicador. Custo
+  // observado: a tela piscava, e a pane do oscilador voltava com a altura default,
+  // perdendo o tamanho que o operador havia arrastado na divisoria. Era por isso que a
+  // interface so commitava cor no `blur` em vez de ao vivo.
+  //
+  // Agora cor e visibilidade viajam por canal proprio (`colors`/`visibility` de
+  // `useIndicators` -> `applyColors`/`setVisible` do plotter), que muda a serie viva no
+  // lugar. So o que exige serie NOVA — o conjunto, o nome e os PARAMETROS (a instancia
+  // e construida com o periodo) — continua na assinatura.
+  return [a.id, a.name, serializarOrdenado(a.params)].join('\u0001');
 }
 
 function serializarOrdenado(obj: Readonly<Record<string, CatalogParamValue>>): string {
@@ -385,14 +409,30 @@ export interface UseIndicatorCatalogResult {
   /** Todos os ativos, inclusive os invisiveis. Ordem de insercao. */
   readonly active: readonly ActiveIndicator[];
   /**
-   * Pronto para `useIndicators({ plots })`. Contem so os VISIVEIS.
+   * Pronto para `useIndicators({ plots })`. Contem TODOS os ativos — os escondidos
+   * inclusive, marcados `visible: false`.
    *
-   * ⭐ Memoizado por CONTEUDO: a identidade muda quando conjunto, params, cores
-   * ou visibilidade mudam, e **nao** muda quando um `setState` produz o mesmo
-   * conteudo. Isso importa porque `useIndicators` chama `setPlots`, que recria
-   * TODAS as series e panes — identidade nova a cada render piscaria a tela.
+   * ⭐ Memoizado por CONTEUDO, e o conteudo e apenas **conjunto + nome + parametros**.
+   * Cor e visibilidade ficaram FORA (viajam em `colors`/`visibility`), porque a
+   * identidade deste array dispara `setPlots`, que destroi e recria toda serie e pane —
+   * ver a nota em `assinatura`.
    */
   readonly plots: readonly IndicatorPlot[];
+  /**
+   * Cores por plot -> chave de saida, para `useIndicators({ colors })`.
+   *
+   * Identidade estavel por conteudo. Mudar cor por aqui repinta a serie viva, sem
+   * recriar nada.
+   */
+  readonly colors: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /**
+   * Visibilidade por plot, para `useIndicators({ visibility })`.
+   *
+   * Identidade estavel por conteudo. Esconder por aqui apaga o desenho, tira da
+   * autoescala, colapsa a pane do oscilador e para de calcular o indicador — sem
+   * destruir a serie.
+   */
+  readonly visibility: Readonly<Record<string, boolean>>;
   /** O catalogo inteiro do registry, ordenado por categoria e rotulo. */
   readonly catalog: readonly CatalogEntry[];
   /** O mesmo catalogo, agrupado por categoria — para `<optgroup>` ou menu. */
@@ -428,12 +468,16 @@ export interface UseIndicatorCatalogResult {
   /**
    * Os ativos no formato PERSISTIDO (`IndicatorState[]`), memoizado.
    *
-   * ⚠️ **So os visiveis.** `IndicatorState` (esquema versao 1) nao tem campo de
-   * visibilidade, e inventar um em `params` colidiria com o espaco de nomes dos
-   * parametros do proprio indicador (um `visible` de indicador futuro seria
-   * sobrescrito). Consequencia aceita e documentada: indicador desligado nao
-   * sobrevive ao salvar/restaurar. Persistir visibilidade exige subir o esquema
-   * do `chart-state.core.ts`, que e do pacote `engine`.
+   * ⭐ **Inclui os escondidos**, com `visible: false`, e as cores escolhidas. Antes so
+   * os visiveis eram gravados: o esquema nao tinha campo de visibilidade, entao
+   * desligar um indicador e salvar o APAGAVA do layout — o operador voltava na sessao
+   * seguinte e ele nao estava mais lá, sem aviso. `IndicatorState` ganhou `visible` e
+   * `colors` como campos OPCIONAIS (a versao do esquema nao subiu: documento antigo
+   * continua valido e le como visivel).
+   *
+   * ⚠️ Cor da PALETA automatica nao aparece aqui — o operador nunca a escolheu, e o
+   * catalogo nao a conhece. Quem quer gravar a aparencia exata funde isto com
+   * `useIndicators().effectiveColors(id)`, que pergunta ao plotter.
    */
   readonly states: readonly IndicatorState[];
   /** A entrada de catalogo de um nome, ou `null` se o nome nao existe. */
@@ -498,11 +542,52 @@ export function useIndicatorCatalog(
     [signature],
   );
 
-  const states = useMemo<readonly IndicatorState[]>(
+  // ── Cor e visibilidade: mapas com identidade estavel por CONTEUDO ────────
+  //
+  // Vao para `useIndicators` como canal separado de `plots` (ver `assinatura`). Sao
+  // memoizados por assinatura, e nao por `active`, pelo mesmo motivo dos plots: eles
+  // entram em dependencia de `useEffect`, e um objeto literal novo a cada render
+  // reaplicaria cor e visibilidade em todo quadro.
+  const colorsSignature = useMemo(
     () =>
       active
-        .filter((a) => a.visible)
-        .map((a) => ({ id: a.id, name: a.name, params: a.params })),
+        .map((a) => `${a.id}=${a.colors === undefined ? '' : serializarOrdenado(a.colors)}`)
+        .join('\u0002'),
+    [active],
+  );
+
+  const colors = useMemo<Readonly<Record<string, Readonly<Record<string, string>>>>>(() => {
+    const out: Record<string, Readonly<Record<string, string>>> = {};
+    for (const a of activeRef.current) {
+      if (a.colors !== undefined) out[a.id] = a.colors;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [colorsSignature]);
+
+  const visibilitySignature = useMemo(
+    () => active.map((a) => `${a.id}=${a.visible ? '1' : '0'}`).join('\u0002'),
+    [active],
+  );
+
+  const visibility = useMemo<Readonly<Record<string, boolean>>>(() => {
+    const out: Record<string, boolean> = {};
+    for (const a of activeRef.current) out[a.id] = a.visible;
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibilitySignature]);
+
+  const states = useMemo<readonly IndicatorState[]>(
+    () =>
+      active.map((a) => ({
+        id: a.id,
+        name: a.name,
+        params: a.params,
+        // Grava `visible` so quando FALSO — "ausente = visivel" e a leitura do
+        // `chart-state.core`, e gravar `true` em todo indicador seria ruido.
+        ...(a.visible ? {} : { visible: false }),
+        ...(a.colors === undefined ? {} : { colors: a.colors }),
+      })),
     [active],
   );
 
@@ -595,6 +680,8 @@ export function useIndicatorCatalog(
   return {
     active,
     plots,
+    colors,
+    visibility,
     catalog,
     groups,
     add,
@@ -725,7 +812,13 @@ function construirPlots(
   const usadas = new Set<string>();
 
   for (const a of active) {
-    if (!a.visible) continue;
+    // ⭐ O INVISIVEL ENTRA na lista, marcado `visible: false`.
+    //
+    // Antes era filtrado, porque o motor nao sabia esconder serie — desligar um
+    // indicador o DESTRUIA e religar o recriava (com pane nova, altura default e
+    // recalculo do historico inteiro). Agora o motor esconde de verdade: a serie fica
+    // viva, sai do desenho e da autoescala, a pane do oscilador colapsa e o indicador
+    // deixa de ser calculado. Religar e devolver a fracao de altura.
     const factory = registry.get(a.name);
     if (factory === undefined) continue;
 
@@ -742,6 +835,12 @@ function construirPlots(
       cache.set(chave, inst);
     }
 
+    // ⚠️ `visible` NAO e gravado aqui, e isso e deliberado. Este array e memoizado pela
+    // assinatura, que (de proposito) nao contem visibilidade — logo um `visible` escrito
+    // aqui ficaria CONGELADO no valor que tinha quando os params mudaram pela ultima
+    // vez, e mentiria em silencio a partir do primeiro toggle. Duas fontes de verdade
+    // com uma delas velha e pior que uma fonte so: a visibilidade vive no mapa
+    // `visibility`, sempre fresco, que `useIndicators` consome.
     plots.push({
       id: a.id,
       instance: inst,

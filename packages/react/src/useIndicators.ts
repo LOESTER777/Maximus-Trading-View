@@ -21,7 +21,7 @@
  * `setPlots` recria series e panes; `updateData` so recalcula. Um efeito para
  * cada — fundir recriaria pane a cada tick e o sub-painel piscaria.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   IndicatorPlotter,
   type ChartEngine,
@@ -37,6 +37,69 @@ export interface UseIndicatorsParams {
   readonly plots: readonly IndicatorPlot[];
   /** As barras. Mudar recalcula os indicadores. */
   readonly bars: readonly PlottableBar[];
+  /**
+   * Cores por plot -> chave de saida.
+   *
+   * ⭐ Canal SEPARADO de `plots` de proposito. Mudar cor aqui NAO recria serie nem
+   * pane: vai por `IndicatorPlotter.applyColors`. Passar a cor dentro de `plots`
+   * tambem funciona, mas ai a identidade de `plots` muda e `setPlots` destroi e
+   * recria tudo — a tela pisca e a altura arrastada do sub-painel se perde.
+   */
+  readonly colors?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /**
+   * Visibilidade por plot. Ausente = visivel.
+   *
+   * ⭐ Mesmo motivo: esconder por aqui apaga o desenho, tira da autoescala, colapsa a
+   * pane do oscilador e **para de calcular** o indicador — sem destruir a serie. O
+   * caminho antigo (tirar o indicador da lista de `plots`) o destruia, e religar
+   * recriava tudo.
+   */
+  readonly visibility?: Readonly<Record<string, boolean>>;
+  /**
+   * ⭐ Chamado quando o operador CLICA num indicador dentro do gráfico.
+   *
+   * Recebe o `id` do plot e a chave da saída clicada (`'value'`, `'%D'`, ...). É o que
+   * liga "cliquei nesta linha" a "abra as propriedades DELA".
+   *
+   * ⚠️ Ausente = o hook **não assina** o clique do motor. Não é economia de código: sem
+   * este callback, assinar faria o hook consumir o evento de clique num gráfico que
+   * talvez use o clique para desenhar (a ferramenta de linha de tendência começa num
+   * clique). Recurso opcional não pode custar comportamento a quem não o usa.
+   *
+   * ⚠️ Clique FORA de qualquer indicador não chama nada — nem com `plotId` nulo. Quem
+   * quer saber de todos os cliques assina `subscribeClick` no motor direto; aqui o
+   * evento é "clicou num indicador", e um callback que dispara em qualquer lugar da tela
+   * obrigaria o consumidor a filtrar o que o hook já sabe.
+   */
+  readonly onIndicatorClick?: (plotId: string, outputKey: string | null) => void;
+  /** Raio de acerto do clique, em px. Default 6 — ver `IChartApi.seriesAt`. */
+  readonly clickTolerancePx?: number;
+}
+
+/** O que o hook devolve. */
+export interface UseIndicatorsResult {
+  /**
+   * As cores EFETIVAS de um plot, inclusive as escolhidas pela paleta automatica.
+   *
+   * ⭐ E o que fecha a persistencia da aparencia: indicador adicionado sem cor recebe
+   * uma da paleta POR ORDEM DE INSERCAO, e essa cor nao existe em lugar nenhum do
+   * estado do React. Salvar o layout sem consultar isto guardaria "sem cor", e na
+   * sessao seguinte a ordem seria outra (o operador removeu um indicador do meio) e o
+   * mesmo indicador voltaria com cor diferente sem ninguem ter mudado nada.
+   *
+   * Devolve `{}` antes da montagem ou para plot desconhecido.
+   */
+  readonly effectiveColors: (plotId: string) => Readonly<Record<string, string>>;
+  /**
+   * Qual indicador está sob um ponto da tela (px lógico, relativo ao canvas)?
+   *
+   * Exposto além do `onIndicatorClick` para quem quer outro gesto: destacar a linha no
+   * `hover`, abrir menu de contexto no botão direito, mostrar cursor de "mão".
+   */
+  readonly indicatorAt: (point: {
+    readonly x: number;
+    readonly y: number;
+  }) => { readonly plotId: string; readonly outputKey: string | null } | null;
 }
 
 /**
@@ -53,8 +116,8 @@ export interface UseIndicatorsParams {
  *   bars: candles,
  * });
  */
-export function useIndicators(params: UseIndicatorsParams): void {
-  const { engine, plots, bars } = params;
+export function useIndicators(params: UseIndicatorsParams): UseIndicatorsResult {
+  const { engine, plots, bars, colors, visibility, onIndicatorClick, clickTolerancePx } = params;
   const plotterRef = useRef<IndicatorPlotter | null>(null);
 
   // ── Cria o plotter quando o motor existe; descarta ao trocar/desmontar ──
@@ -88,12 +151,106 @@ export function useIndicators(params: UseIndicatorsParams): void {
     // novo comeca vazio e precisa receber os plots).
   }, [plots, engine]);
 
+  // ── Visibilidade: nem recria, nem recalcula ──
+  //
+  // ⚠️ Roda ANTES do efeito de cor e DEPOIS do de conjunto (ordem de declaracao, que e
+  // a ordem de execucao no React). Vem antes da cor porque repintar uma serie que sera
+  // escondida no mesmo commit e trabalho jogado fora; e depois do conjunto porque
+  // colapsar pane exige que a pane exista.
+  useEffect(() => {
+    const plotter = plotterRef.current;
+    // ⚠️ `visibility` ausente NAO significa "tudo visivel" — significa "este consumidor
+    // nao controla visibilidade por aqui". Tratar como "tudo visivel" reacenderia um
+    // plot marcado `visible: false` na propria lista de `plots`, contradizendo o que o
+    // consumidor pediu.
+    if (plotter === null || visibility === undefined) return;
+    for (const plot of plots) {
+      const desejado = visibility[plot.id] ?? plot.visible ?? true;
+      // Compara antes de aplicar: `setVisible` de "visivel para visivel" dispararia o
+      // recalculo do plot sem necessidade a cada mudanca de QUALQUER indicador.
+      if (plotter.isVisible(plot.id) !== desejado) plotter.setVisible(plot.id, desejado);
+    }
+  }, [plots, visibility, engine]);
+
+  // ── Cores: nem recria, nem recalcula ──
+  useEffect(() => {
+    const plotter = plotterRef.current;
+    if (plotter === null || colors === undefined) return;
+    for (const [plotId, chaves] of Object.entries(colors)) {
+      plotter.applyColors(plotId, chaves);
+    }
+  }, [colors, plots, engine]);
+
   // ── Barras: so recalcula. Nao mexe em pane ──
   useEffect(() => {
     const plotter = plotterRef.current;
     if (plotter === null) return;
     plotter.updateData(bars as readonly PlottableBar[]);
   }, [bars]);
+
+  const effectiveColors = useCallback(
+    (plotId: string): Readonly<Record<string, string>> =>
+      plotterRef.current?.colorsOf(plotId) ?? {},
+    [],
+  );
+
+  // ── Qual indicador está sob um ponto ──────────────────────────────────────
+  //
+  // ⭐ Duas metades: o MOTOR resolve a geometria (`seriesAt` devolve a série desenhada
+  // sob o pixel) e o PLOTTER resolve a identidade (`plotIdOfSeries` traduz a série para o
+  // id do indicador). Nenhum dos dois faz o outro lado: o motor não sabe o que é
+  // indicador, e a interface não tem coordenadas.
+  const engineRef = useRef(engine);
+  engineRef.current = engine;
+  const tolRef = useRef(clickTolerancePx);
+  tolRef.current = clickTolerancePx;
+
+  const indicatorAt = useCallback(
+    (point: { readonly x: number; readonly y: number }) => {
+      const motor = engineRef.current;
+      const plotter = plotterRef.current;
+      if (motor === null || motor.isDisposed || plotter === null) return null;
+      const serie = motor.api.seriesAt(point, tolRef.current);
+      if (serie === null) return null;
+      const plotId = plotter.plotIdOfSeries(serie);
+      if (plotId === null) return null;
+      return { plotId, outputKey: plotter.outputKeyOfSeries(serie) };
+    },
+    [],
+  );
+
+  // ── Clique no indicador ───────────────────────────────────────────────────
+  const onClickRef = useRef(onIndicatorClick);
+  onClickRef.current = onIndicatorClick;
+
+  useEffect(() => {
+    // ⚠️ Sem callback, NÃO assina. Ver a nota em `onIndicatorClick`: assinar por padrão
+    // faria este hook interferir num gráfico que usa o clique para desenhar.
+    if (engine === null || engine.isDisposed || onIndicatorClick === undefined) return;
+
+    const handler = (param: { point?: { x: number; y: number } }): void => {
+      const p = param.point;
+      if (p === undefined) return;
+      const achado = indicatorAt(p);
+      // Clique fora de indicador não chama nada — ver a nota do campo.
+      if (achado === null) return;
+      onClickRef.current?.(achado.plotId, achado.outputKey);
+    };
+
+    engine.api.subscribeClick(handler);
+    return () => {
+      try {
+        engine.api.unsubscribeClick(handler);
+      } catch {
+        // Motor em descarte: o ouvinte morre com ele.
+      }
+    };
+    // `onIndicatorClick` entra na dependência só como PRESENÇA (ligado/desligado): a
+    // identidade da função vive no ref, então trocar a closure não reassina.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, onIndicatorClick === undefined, indicatorAt]);
+
+  return { effectiveColors, indicatorAt };
 }
 
 /**
