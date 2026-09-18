@@ -156,6 +156,19 @@ export { heikinAshi, renko, brickSizeAutomatico } from './candle-transforms.core
 // vertical. Puro; exportado para quem quiser alinhar uma camada propria a mesma malha.
 export { visibleTickIndices } from './time-scale.core.js';
 
+// ⭐⭐ Separador de período — a linha vertical do início de cada dia/semana/mês/ano.
+//
+// ⚠️ Exportado como núcleo PURO ao lado da opção do motor de propósito: quem desenha em canvas
+// próprio (ou quer marcar a virada de dia numa tabela, num heatmap ou num relatório) obtém os
+// índices sem instanciar gráfico nenhum.
+export {
+  separadoresDePeriodo,
+  unidadeAutomaticaDeSeparador,
+  passoMedianoEmSegundos,
+  type UnidadeDeSeparador,
+  type OpcoesDeSeparador,
+} from './session-separators.core.js';
+
 export {
   DEFAULT_TIME_ZONE,
   chooseTickUnit,

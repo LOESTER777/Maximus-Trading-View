@@ -84,6 +84,7 @@ import {
   timePartsInZone,
 } from './time-format.core.js';
 import { formatPrice, type PriceFormatOptions } from './price-format.core.js';
+import { separadoresDePeriodo } from './session-separators.core.js';
 import { SeriesImpl, type SeriesModel } from './series.js';
 import {
   coordinateToLogical,
@@ -270,9 +271,31 @@ const FUNDO_EXPORTACAO = '#0f172a';
  */
 const PINCH_MIN_DIST_PX = 8;
 
+/**
+ * A parte do tema que vem das opções de separador.
+ *
+ * ⚠️ Existe como função porque o cálculo é IDÊNTICO no construtor e em `applyOptions`, e foi
+ * exatamente uma divergência entre esses dois pontos que deixou `gridVertVisible` inerte por
+ * tempo indeterminado: a opção era lida na construção e esquecida na atualização.
+ */
+function temaDosSeparadores(
+  opts: ChartOptions,
+): Pick<RenderTheme, 'separadoresVisiveis' | 'separadorCor' | 'separadorTraco'> {
+  const s = opts.periodSeparators;
+  return {
+    separadoresVisiveis: s?.visible === true,
+    ...(s?.color === undefined ? {} : { separadorCor: s.color }),
+    ...(s?.dash === undefined ? {} : { separadorTraco: s.dash }),
+  };
+}
+
 const DEFAULT_OPTIONS: ChartOptions = {
   layout: { background: { color: 'transparent' }, textColor: '#94a3b8' },
   grid: { vertLines: { visible: false }, horzLines: { visible: true } },
+  // ⭐ Desligado por default: recurso opcional não custa peso a quem não o usa, e ligar é uma
+  // linha. `[4, 4]` porque o separador atravessa o painel inteiro — sólido na cor da grade ficaria
+  // indistinguível de borda de pane. Ver `ChartOptions.periodSeparators`.
+  periodSeparators: { visible: false, unit: 'auto', dash: [4, 4] },
   crosshair: { mode: 1 },
   timeScale: {
     rightOffset: 12,
@@ -437,6 +460,7 @@ export class RobustusChartCore implements IChartApi {
       gridVisible: this.opts.grid.horzLines.visible,
       gridVertVisible: this.opts.grid.vertLines.visible,
       gridVert: this.opts.grid.vertLines.color,
+      ...temaDosSeparadores(this.opts),
     };
 
     this.timeZone = this.opts.timeScale.timeZone ?? DEFAULT_TIME_ZONE;
@@ -1148,7 +1172,12 @@ export class RobustusChartCore implements IChartApi {
       // nada, que era exatamente o estado anterior de `vertLines.visible`.
       gridVertVisible: this.opts.grid.vertLines.visible,
       gridVert: this.opts.grid.vertLines.color,
+      ...temaDosSeparadores(this.opts),
     };
+    // ⚠️ A UNIDADE do separador pode ter mudado (`unit: 'SEMANA'`), e o cache é por série, não por
+    // opção — sem invalidar, trocar a unidade não faria nada até a próxima troca de dado. Foi
+    // exatamente esse o defeito histórico de `vertLines.visible`: a opção existia e era inerte.
+    this.separadoresCache = null;
     this.scheduleRender();
   }
 
@@ -2478,6 +2507,11 @@ export class RobustusChartCore implements IChartApi {
           // encheria a tela de texto fantasma e brigaria com o oscilador, que ocupa
           // pouca altura.
           pane.index === 0 ? this.watermarkOpts() : undefined,
+          // ⭐⭐ Os separadores vão para TODAS as panes, e é o que faz a leitura funcionar: a
+          // linha de virada de dia atravessando preço, volume e oscilador é o que permite ao
+          // operador dizer "este delta é do pregão de hoje". Só na pane de preço, ela viraria
+          // enfeite. `separadoresDeSessao()` é memoizado — chamá-la por pane não custa.
+          this.separadoresDeSessao(),
         );
 
         this.drawPriceLines(ctx, pane, rect);
@@ -2617,6 +2651,46 @@ export class RobustusChartCore implements IChartApi {
     // TODAS as outras series com ele. Esconder uma serie esconde a serie, nao o
     // tempo.
     this.ts.times = fonte === null ? [] : fonte.data.map((d) => d.time);
+    // ⚠️ O eixo mudou ⇒ os separadores mudaram. Invalidar AQUI, e não em cada chamador de
+    // `rebuildTimes`, é o que garante que nenhum caminho novo esqueça — `setData`, `update`,
+    // `onBarsPrepended` e a transição de eixo todos passam por aqui.
+    this.separadoresCache = null;
+  }
+
+  /**
+   * ⭐⭐ Os índices que abrem período novo, MEMOIZADOS pela série.
+   *
+   * ⚠️ A memoização não é otimização prematura: `separadoresDePeriodo` resolve o fuso de cada
+   * barra com `Intl.DateTimeFormat`, e a série do WIN em 5 min tem ~300 mil barras. Recalcular por
+   * quadro travaria o gráfico — e o render roda a cada pan, zoom e movimento de crosshair.
+   *
+   * ⭐ A chave do cache é o COMPRIMENTO mais a primeira e a última barra, não a identidade do
+   * array: `rebuildTimes` cria um array novo a cada chamada, então comparar referência daria
+   * sempre "mudou". E a tripla (n, primeiro, último) muda em todo caso que importa — barra nova na
+   * ponta, backfill no início, troca de ativo, troca de período.
+   */
+  private separadoresCache: {
+    readonly n: number;
+    readonly primeiro: number;
+    readonly ultimo: number;
+    readonly indices: readonly number[];
+  } | null = null;
+
+  private separadoresDeSessao(): readonly number[] {
+    if (this.opts.periodSeparators?.visible !== true) return [];
+    const times = this.ts.times;
+    const n = times.length;
+    if (n < 2) return [];
+    const primeiro = times[0] as number;
+    const ultimo = times[n - 1] as number;
+    const c = this.separadoresCache;
+    if (c !== null && c.n === n && c.primeiro === primeiro && c.ultimo === ultimo) {
+      return c.indices;
+    }
+    const unidade = this.opts.periodSeparators.unit ?? 'auto';
+    const indices = separadoresDePeriodo(times, { unidade, timeZone: this.timeZone });
+    this.separadoresCache = { n, primeiro, ultimo, indices };
+    return indices;
   }
 
   /**
@@ -3410,6 +3484,14 @@ function mergeOptions(base: ChartOptions, over?: Partial<ChartOptions>): ChartOp
       vertLines: { ...base.grid.vertLines, ...over.grid?.vertLines },
       horzLines: { ...base.grid.horzLines, ...over.grid?.horzLines },
     },
+    // ⭐ Separadores: MESCLA campo a campo, ao contrário da marca d'água.
+    //
+    // ⚠️ A diferença de tratamento é deliberada. Na marca d'água o override vence inteiro porque
+    // os campos dela são um conjunto coeso (texto, cor, tamanho) e herdar metade produz uma marca
+    // que ninguém pediu. Aqui o uso dominante é `applyOptions({ periodSeparators: { visible } })`
+    // vindo de um interruptor na interface — e substituir por inteiro apagaria a `unit` e o `dash`
+    // que o consumidor configurou uma vez no início.
+    periodSeparators: { ...base.periodSeparators, ...over.periodSeparators } as ChartOptions['periodSeparators'],
     crosshair: { ...base.crosshair, ...over.crosshair },
     timeScale: { ...base.timeScale, ...over.timeScale },
     // timeScale spread acima ja carrega `timeZone` se veio no override.

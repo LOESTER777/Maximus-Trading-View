@@ -65,6 +65,24 @@ export interface RenderTheme {
   readonly gridVertVisible?: boolean;
   /** Cor da grade vertical. Ausente = a mesma da horizontal. */
   readonly gridVert?: string;
+  /**
+   * ⭐⭐ SEPARADOR DE PERÍODO: linha vertical no início de cada dia/semana/mês/ano.
+   *
+   * Ausente = `false`, o comportamento histórico. Ver `session-separators.core.ts` para o porquê
+   * de isto NÃO ser a grade vertical: a grade nasce do espaçamento em pixels e cai em barras
+   * arbitrárias; o separador é CALENDÁRIO e cai sempre na primeira barra do período.
+   */
+  readonly separadoresVisiveis?: boolean;
+  /** Cor do separador. Ausente = a mesma da grade. */
+  readonly separadorCor?: string;
+  /**
+   * Traço do separador, em pixels lógicos (`[traço, vão]`). Ausente = sólido.
+   *
+   * ⚠️ Tracejado por default no motor (`[4, 4]`) e não sólido: o separador atravessa o painel
+   * inteiro de cima a baixo, e uma linha sólida na mesma cor da grade fica indistinguível de uma
+   * borda de pane. Tracejada, o olho a lê como marcação e não como estrutura.
+   */
+  readonly separadorTraco?: readonly number[];
 }
 
 export const DEFAULT_THEME: RenderTheme = {
@@ -157,6 +175,14 @@ export function renderPane(
    * marca em cada sub-painel encheria a tela de texto fantasma.
    */
   watermark?: WatermarkOptions,
+  /**
+   * ⭐⭐ Índices de barra que abrem período novo, para o separador vertical.
+   *
+   * ⚠️ Chega PRONTO e memoizado por série, nunca calculado aqui: a resolução de fuso é por barra
+   * (`Intl.DateTimeFormat`), e refazê-la a 60 fps sobre 18 anos de dado travaria o quadro. Ver
+   * `session-separators.core.ts`.
+   */
+  separadores: readonly number[] = [],
 ): void {
   const w = ts.width;
   const h = ps.height;
@@ -172,6 +198,10 @@ export function renderPane(
   if (watermark !== undefined) drawWatermark(ctx, hpr, vpr, w, h, watermark);
 
   drawGrid(ctx, hpr, vpr, ts, ps, w, theme);
+
+  // ⭐ ANTES das séries, junto com a grade: o separador é referência de fundo. Desenhado depois,
+  // ele passaria por cima do corpo das velas e o operador leria a linha como parte do preço.
+  drawSessionSeparators(ctx, hpr, vpr, ts, h, w, theme, separadores);
 
   // Cada serie desenha contra A SUA escala, nao contra a principal.
   for (const s of series) drawSeries(ctx, hpr, vpr, ts, s.scale, s.model, theme);
@@ -276,6 +306,57 @@ function drawGrid(
       ctx.lineTo(Math.round(x * hpr) + 0.5, h * vpr);
     }
     ctx.stroke();
+  }
+}
+
+/**
+ * ⭐⭐ Separadores de período — a linha vertical no início de cada dia/mês/ano.
+ *
+ * ⚠️ Desenhada em função SEPARADA de `drawGrid`, e não como um ramo dela, por causa do estado de
+ * contexto: o separador usa `setLineDash` e a grade não. Compartilhando o `beginPath`, o traço
+ * vazaria para a grade — ou obrigaria a salvar e restaurar no meio de um caminho já aberto.
+ *
+ * ⚠️ `separadores` chega PRONTO (índices de barra), calculado fora e memoizado por série. Resolver
+ * fuso por barra a cada quadro custaria uma criação de `Intl.DateTimeFormat` por vela, a 60 fps.
+ *
+ * ⭐ A linha cai no INÍCIO da barra, deslocada meio espaçamento à esquerda do centro dela: é onde
+ * o período começa de fato. Sobre o centro, ela cortaria a primeira vela do dia em duas.
+ */
+function drawSessionSeparators(
+  ctx: CanvasRenderingContext2D,
+  hpr: number,
+  vpr: number,
+  ts: TimeScaleState,
+  altura: number,
+  w: number,
+  theme: RenderTheme,
+  separadores: readonly number[],
+): void {
+  if (theme.separadoresVisiveis !== true || separadores.length === 0) return;
+  ctx.save();
+  try {
+    ctx.strokeStyle = theme.separadorCor ?? theme.gridVert ?? theme.grid;
+    ctx.lineWidth = Math.max(1, Math.min(hpr, vpr));
+    const traco = theme.separadorTraco;
+    if (traco !== undefined && traco.length > 0) {
+      ctx.setLineDash(traco.map((v) => v * Math.min(hpr, vpr)));
+    }
+    ctx.beginPath();
+    for (const i of separadores) {
+      const centro = logicalToCoordinate(ts, i);
+      if (centro === null) continue;
+      const x = centro - ts.barSpacing / 2;
+      // ⚠️ Recorte próprio: `separadores` é da série INTEIRA, e a esmagadora maioria cai fora da
+      // janela. Sem esta linha, um histórico de 18 anos emitiria 4.500 segmentos por quadro.
+      if (x < 0 || x > w) continue;
+      ctx.moveTo(Math.round(x * hpr) + 0.5, 0);
+      ctx.lineTo(Math.round(x * hpr) + 0.5, altura * vpr);
+    }
+    ctx.stroke();
+  } finally {
+    // ⚠️ `restore` em `finally`: exceção no meio deixaria `lineDash` vazando para a camada
+    // seguinte, e todo o resto do gráfico sairia tracejado. É a convenção do projeto.
+    ctx.restore();
   }
 }
 

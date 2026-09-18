@@ -368,6 +368,15 @@ export function App(): JSX.Element {
   const [aoVivoDaMesa, setAoVivoDaMesa] = useState(true);
   const [imaLigado, setImaLigado] = useState(false);
   const [gradeVertical, setGradeVertical] = useState(false);
+  /**
+   * ⭐⭐ Separador de período — LIGADO por default no playground.
+   *
+   * ⚠️ O motor nasce com ele desligado (recurso opcional não custa peso a quem não o usa), mas
+   * aqui a escolha é outra: o playground existe para o operador ver o que a biblioteca faz, e num
+   * gráfico intradiário de vários dias saber onde termina cada pregão é leitura básica — sem a
+   * linha, um gap de abertura é indistinguível de um movimento contínuo.
+   */
+  const [separadores, setSeparadores] = useState(true);
   const [marcaDagua, setMarcaDagua] = useState(true);
   const [alertasLigados, setAlertasLigados] = useState(true);
   const [modoReplay, setModoReplay] = useState(false);
@@ -1371,6 +1380,11 @@ export function App(): JSX.Element {
         vertLines: { visible: gradeVertical, color: 'rgba(148,163,184,0.07)' },
         horzLines: { visible: true, color: 'rgba(148,163,184,0.10)' },
       },
+      // ⭐⭐ O separador de período. Cor MAIS FORTE que a grade (0,28 contra 0,07) de propósito:
+      // ele é marcação de calendário, não malha de fundo, e tem de se distinguir da grade quando
+      // as duas estão ligadas. Tracejado pelo default do motor (`[4, 4]`) — sólido nessa
+      // intensidade competiria com a borda de pane.
+      periodSeparators: { visible: separadores, color: 'rgba(148,163,184,0.28)' },
       // ⚠️ A marca d'água diz o ATIVO, e não uma palavra fixa: com dado real na tela,
       // "SINTÉTICO" escrito em 64 px atrás das velas seria uma afirmação falsa — e a marca
       // d'água existe justamente para dizer o que se está vendo.
@@ -1380,7 +1394,7 @@ export function App(): JSX.Element {
         priceFormat: { tickSize: tickSizeAtual },
       },
     });
-  }, [engine, gradeVertical, marcaDagua, tickSizeAtual, simboloExibido]);
+  }, [engine, gradeVertical, separadores, marcaDagua, tickSizeAtual, simboloExibido]);
 
   // ── Acoes ─────────────────────────────────────────────────────────────────
   const exportarPng = useCallback((): void => {
@@ -1801,6 +1815,7 @@ export function App(): JSX.Element {
     // Ambiente e ações.
     lista.push(
       { id: 'env:grade', label: 'Alternar grade', group: 'Ambiente', icon: 'grid', run: () => setGradeVertical((v) => !v) },
+      { id: 'env:separador', label: 'Alternar separador de período', group: 'Ambiente', icon: 'grid', hint: 'Linha vertical no início de cada dia (ou mês, no diário).', run: () => setSeparadores((v) => !v) },
       { id: 'env:marca', label: "Alternar marca d'água", group: 'Ambiente', icon: 'watermark', run: () => setMarcaDagua((v) => !v) },
       { id: 'env:ima', label: 'Alternar ímã', group: 'Ambiente', icon: 'magnet', shortcut: 'A', run: () => setImaLigado((v) => !v) },
       { id: 'env:bookmap', label: 'Alternar bookmap', group: 'Ambiente', icon: 'bookmap', run: () => setMostrarBookmap((v) => !v) },
@@ -2084,6 +2099,24 @@ export function App(): JSX.Element {
               </span>
             )}
             <span style={{ flex: 1 }} />
+            {/*
+              ⭐⭐ SEPARADOR DE PERÍODO — a linha vertical no início de cada dia/mês/ano.
+              ⚠️ Não é a grade vertical: a grade nasce do espaçamento em pixels e cai em barras
+              arbitrárias; esta cai sempre na primeira barra do período. Num intradiário é ela que
+              responde "onde começa o pregão de hoje", que separa "subiu 800 pontos" de "abriu em
+              gap". A unidade se ajusta ao período sozinha (`unit: 'auto'`).
+            */}
+            <label
+              title="Linha vertical no início de cada período (dia no intradiário, mês no diário)"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}
+            >
+              <input
+                type="checkbox"
+                checked={separadores}
+                onChange={(e) => setSeparadores(e.target.checked)}
+              />
+              Separador
+            </label>
             {/* ⭐ Comparação lado a lado: o MESMO ativo em outro período, sincronizado. */}
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11 }}>
               <input

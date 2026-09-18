@@ -424,6 +424,29 @@ export interface ChartOptions {
     readonly vertLines: { readonly visible: boolean; readonly color?: string };
     readonly horzLines: { readonly visible: boolean; readonly color?: string };
   };
+  /**
+   * ⭐⭐ SEPARADOR DE PERÍODO — linha vertical no início de cada dia/semana/mês/ano.
+   *
+   * ⚠️ **Não é a grade vertical**, e o campo é separado justamente por isso. `grid.vertLines`
+   * nasce do espaçamento em PIXELS (uma marca a cada ~80 px, para ancorar o rótulo do eixo) e cai
+   * em barras arbitrárias. O separador é CALENDÁRIO: cai sempre na primeira barra do período,
+   * esteja o gráfico apertado ou esticado. Num intradiário é ele que responde *"onde começa o
+   * pregão de hoje?"*, que é o que separa "subiu 800 pontos" de "abriu em gap".
+   *
+   * Default `visible: false` — recurso opcional não custa peso a quem não o usa. Ver
+   * `session-separators.core.ts`.
+   */
+  readonly periodSeparators?: {
+    readonly visible: boolean;
+    /**
+     * A unidade de calendário. `'auto'` (default) deriva do intervalo entre barras: intradiário
+     * marca DIA, diário marca MÊS, acima disso marca ANO.
+     */
+    readonly unit?: 'DIA' | 'SEMANA' | 'MES' | 'ANO' | 'auto';
+    readonly color?: string;
+    /** `[traço, vão]` em pixels lógicos. Default `[4, 4]`. Ausente na lista = sólido. */
+    readonly dash?: readonly number[];
+  };
   readonly crosshair: { readonly mode: 0 | 1 };
   readonly timeScale: {
     readonly rightOffset: number;
