@@ -424,6 +424,136 @@ function verificarDiaSemPregao(nome, barras, abreFimDeSemana) {
   info('a biblioteca as remove com `filtrarDiasSemPregao`; aqui a auditoria reprova a FONTE');
 }
 
+/**
+ * ⭐⭐⭐ A ÂNCORA OFICIAL: o fechamento diário contra a liquidação da B3, POR CONTRATO.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * POR QUE ESTA É A VERIFICAÇÃO MAIS FORTE DESTE SCRIPT
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ⛔ Todas as outras comparações deste arquivo cruzam o arquivo com o terminal, e a regra do
+ * projeto diz que isso NÃO decide nada: duas séries erradas do mesmo jeito respondem em coro. A
+ * `verificarJanelaDePregao` foi a primeira âncora externa (o horário do mercado). Esta é a
+ * segunda, e é sobre PREÇO: `GET /settlement?asset=WIN` devolve, por data e por CONTRATO,
+ * `settle`, `last_price` e `traded_qty` — os números oficiais da bolsa, 9.018 linhas desde
+ * 2023-06.
+ *
+ * ⭐⭐ E ela ENCERROU a pergunta que estava aberta no projeto. Medido em 18/09/2026, setembro
+ * inteiro, contra o `last_price` oficial de `WINV26` (o contrato de maior `traded_qty`):
+ *
+ * ```
+ * arquivo  (bars_api, D1)   erro 0,000 %  em 11 de 11 dias
+ * terminal (bridge, 1d)     erro 0,000 %  em 11 de 11 dias
+ * ```
+ *
+ * ⇒ **As duas fontes casam EXATAMENTE com a bolsa no fechamento diário.** Isso EXCLUI as duas
+ * hipóteses que estavam escritas para a divergência intradiária de 0,16 %–0,22 %:
+ *
+ *   - não é CONTRATO diferente (contínuo ajustado contra contrato) — se fosse, o diário também
+ *     divergiria, e ele bate na casa do ponto;
+ *   - não é FUSO — um erro de fuso não some no fechamento.
+ *
+ * ⚠️ O que resta como explicação, e NÃO foi verificado: granularidade do feed. O terminal é um
+ * MT5 de varejo, que entrega tick amostrado; o arquivo é tick completo. O fechamento de um balde
+ * de 5 min é *"o último negócio"* num e *"o último tick que chegou"* no outro, e no fechamento do
+ * dia os dois convergem porque o leilão de fechamento sempre chega. É plausível e é consistente
+ * com tudo o que foi medido — mas segue **hipótese**, e está registrado como hipótese.
+ *
+ * ⚠️ `settle` NÃO é o fechamento: é o preço de ajuste, apurado numa janela do fim do dia. Ele
+ * difere do `last_price` em 0,006 % a 0,284 %, e é correto que difira. Comparar contra `settle`
+ * produziria um erro pequeno e constante que pareceria defeito.
+ */
+async function verificarContraLiquidacao(nome, barras, seg) {
+  if (seg < 86_400) return; // a liquidação é diária; comparar com barra de 5 min não faz sentido
+  if (barras.length === 0) return;
+  const r = await json(`${ARQUIVO}/settlement?asset=${ativo}`);
+  if (r.erro !== undefined) {
+    aviso(`liquidação oficial indisponível: ${r.erro}`);
+    return;
+  }
+  const corpo = r.dado;
+  if (!Array.isArray(corpo?.cols) || !Array.isArray(corpo?.rows)) {
+    aviso('liquidação oficial em formato inesperado');
+    return;
+  }
+  const idx = new Map(corpo.cols.map((c, i) => [c, i]));
+  const cData = idx.get('refdate');
+  const cLast = idx.get('last_price');
+  const cQtd = idx.get('traded_qty');
+  if (cData === undefined || cLast === undefined || cQtd === undefined) {
+    aviso('liquidação oficial sem as colunas esperadas');
+    return;
+  }
+  // ⭐ O contrato de referência do dia é o de MAIOR volume negociado, não o de vencimento mais
+  // próximo: é a mesma regra de `resolverContratoVigente`, e por o mesmo motivo — a virada de
+  // contrato acontece quando a liquidez migra, não na data do calendário.
+  const porDia = new Map();
+  for (const linha of corpo.rows) {
+    const dia = linha[cData];
+    const last = linha[cLast];
+    const qtd = linha[cQtd];
+    if (typeof dia !== 'string' || typeof last !== 'number' || typeof qtd !== 'number') continue;
+    const atual = porDia.get(dia);
+    if (atual === undefined || qtd > atual.qtd) porDia.set(dia, { last, qtd });
+  }
+
+  /**
+   * ⚠️ A data mais recente com número oficial. Barra depois dela é PULADA, não comparada.
+   *
+   * ⭐ Isto foi um FALSO POSITIVO real, achado na primeira execução: a primeira versão procurava
+   * a data em duas leituras de rótulo (00:00 UTC e 00:00 BRT) e usava a primeira que existisse no
+   * mapa. Para a barra do pregão CORRENTE — que ainda não tem liquidação publicada — a leitura
+   * própria não existia e a busca caía silenciosamente no dia ANTERIOR, acusando 0,362 % de erro
+   * onde havia apenas dado que a bolsa não divulgou.
+   *
+   * ⭐⭐ E a correção não é só a guarda: as duas leituras eram desnecessárias. Medido, as duas
+   * convenções de rótulo desta base apontam para a MESMA data em UTC — `03:00Z do dia D` é
+   * 00:00 BRT de D, e `00:00Z do dia D` é 21:00 BRT de D−1, cujo balde de 24 h cobre a sessão de
+   * D. Nos dois casos a data UTC do carimbo É a data do pregão. Uma alternativa a mais numa busca
+   * é uma chance a mais de casar com a coisa errada.
+   */
+  const ultimaOficial = [...porDia.keys()].sort().pop() ?? '';
+
+  let conferidos = 0;
+  let exatos = 0;
+  let pior = 0;
+  let semOficial = 0;
+  const exemplos = [];
+  for (const b of barras) {
+    const dia = new Date(b.time * 1000).toISOString().slice(0, 10);
+    if (dia > ultimaOficial) {
+      semOficial += 1;
+      continue;
+    }
+    const oficial = porDia.get(dia);
+    if (oficial === undefined) continue;
+    conferidos += 1;
+    const erro = Math.abs(b.close - oficial.last) / oficial.last;
+    if (erro < 1e-9) exatos += 1;
+    if (erro > pior) pior = erro;
+    if (erro > 0.001 && exemplos.length < 3) {
+      exemplos.push(`${hora(b.time)}: fonte ${b.close} vs B3 ${oficial.last} (${(erro * 100).toFixed(3)}%)`);
+    }
+  }
+
+  if (conferidos === 0) {
+    aviso(`${nome}: nenhuma barra coincide com data da liquidação oficial`);
+    return;
+  }
+  const cauda = semOficial === 0 ? '' : ` (${semOficial} barra(s) recentes sem liquidação publicada)`;
+  if (exatos === conferidos) {
+    ok(`${nome}: fechamento IDÊNTICO ao oficial da B3 em ${conferidos}/${conferidos} dias${cauda}`);
+    return;
+  }
+  const linha = `${nome}: ${exatos}/${conferidos} dias idênticos ao oficial da B3, pior erro ${(pior * 100).toFixed(3)}%`;
+  // ⚠️ Até 0,1% é RESSALVA e não falha: `last_price` é o último negócio, e uma fonte que apure o
+  // fechamento pelo leilão em vez do último tick difere legitimamente nessa ordem. Acima disso a
+  // fonte está cotando outra coisa.
+  if (pior <= 0.001) aviso(linha);
+  else falha(linha);
+  exemplos.forEach(info);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Execução
 // ═════════════════════════════════════════════════════════════════════════════
@@ -476,6 +606,9 @@ for (const p of PERIODOS) {
     verificarJanelaDePregao('arquivo', a.barras, p.seg);
     // ⭐ A guarda de calendário que sobrevive à ambiguidade de rótulo diário. Ver a nota longa.
     verificarDiaSemPregao('arquivo', a.barras, ABRE_FIM_DE_SEMANA.has(ativo));
+    // ⭐⭐⭐ A âncora OFICIAL da bolsa. Ver a nota longa: é a única verificação de PREÇO que não
+    // depende de comparar fontes, e foi ela que encerrou a pergunta da divergência.
+    await verificarContraLiquidacao('arquivo', a.barras, p.seg);
     volumeCoerente('arquivo', a.barras);
     const ult = a.barras[a.barras.length - 1];
     const atraso = (fimDaJanela - ult.time) / 3600;
@@ -509,6 +642,10 @@ for (const p of PERIODOS) {
     ohlcCoerente('terminal', t.barras);
     tempoCoerente('terminal', t.barras, p.seg);
     verificarJanelaDePregao('terminal', t.barras, p.seg);
+    // ⭐ O terminal contra a MESMA âncora oficial. Aferir os dois contra a bolsa é o que separa
+    // "as duas fontes discordam" (que não diz de quem é o erro) de "esta fonte discorda da
+    // bolsa" (que diz).
+    await verificarContraLiquidacao('terminal', t.barras, p.seg);
     volumeCoerente('terminal', t.barras);
     const ult = t.barras[t.barras.length - 1];
     info(`última barra do terminal: ${hora(ult.time)}`);

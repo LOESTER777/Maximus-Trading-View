@@ -72,9 +72,49 @@ trilha. `OpcoesDaEmenda.aoDivergir` escolhe qual (`'SO_HISTORICO'` default, `'SO
 ⚠️ **Sem sobreposição, `coerencia` é `null` e não há recusa** — é o caso normal e desejável, em
 que o ao vivo traz só o dia que o arquivo não tem.
 
-⚠️ **PENDENTE, e é da FONTE:** descobrir por que as duas divergem. O arquivo não passa pelos
-preços do terminal em nenhuma barra do dia, e nenhuma série do MT5 (`WINV26`, `WIN$`, `WIN$N`,
-`WINZ26`) bate com ele. Até saber, o gráfico mostra uma fonte só e diz que recusou a outra.
+### ⭐⭐⭐ RESOLVIDO em 18/09/2026: as DUAS fontes batem com a BOLSA. E isso exclui as hipóteses.
+
+A pergunta *"por que as duas divergem"* ficou aberta porque toda medição anterior comparava as
+duas entre si — o que a própria regra deste projeto proíbe. A resposta veio de uma **âncora
+oficial** que estava disponível e não era usada: `GET /settlement?asset=WIN` no serviço da mesa
+devolve, por data e por CONTRATO, `settle`, `last_price` e `traded_qty` — os números da B3,
+9.018 linhas desde 2023-06.
+
+Medido em setembro/2026 inteiro, contra o `last_price` de `WINV26` (o contrato de maior
+`traded_qty` do dia):
+
+| fonte | erro no fechamento diário |
+|---|---|
+| arquivo (`bars_api`, D1) | **0,000 % em 62 de 62 dias** |
+| terminal (bridge, `1d`) | **0,000 % em 3 de 3 dias** |
+
+⇒ **As duas casam EXATAMENTE com a bolsa.** Isso derruba as duas explicações que estavam
+escritas aqui:
+
+- ⛔ **não é contrato diferente** (contínuo ajustado contra contrato). Se fosse, o diário também
+  divergiria — e ele bate na casa do ponto. O arquivo guarda o contrato bruto (`WINV26`), como o
+  terminal.
+- ⛔ **não é fuso.** Erro de fuso não desaparece no fechamento.
+
+⚠️ A divergência de 0,16 %–0,22 % é **só intradiária**, e a explicação restante é
+**HIPÓTESE não verificada**: o terminal é um MT5 de varejo, que entrega tick amostrado, e o
+arquivo é tick completo. O fechamento de um balde de 5 min é *"o último negócio"* num e *"o
+último tick que chegou"* no outro; no fim do dia os dois convergem porque o leilão de fechamento
+sempre chega. Consistente com tudo o que foi medido, mas registrado como hipótese.
+
+⭐ `scripts/auditoria-de-dados.mjs` ganhou `verificarContraLiquidacao`, que é essa aferição
+permanente. Ela já achou um defeito NOVO: no **WDO**, 20 de 86 dias do arquivo NÃO batem com o
+oficial (pior erro 0,241 %) — é o defeito de dupla escrita em D1 aparecendo contra a bolsa.
+
+⚠️ E ela achou um FALSO POSITIVO meu na primeira execução, que vale como método: a busca da data
+oficial tentava duas leituras de rótulo e usava a primeira que existisse. Para a barra do pregão
+CORRENTE — sem liquidação publicada — ela caía em silêncio no dia ANTERIOR e acusava 0,362 %. A
+correção é pular a barra cuja data não tem número oficial, e usar **uma** leitura só: medido, as
+duas convenções de rótulo apontam para a mesma data em UTC.
+
+⚠️ `settle` **não** é o fechamento: é o preço de ajuste, apurado numa janela do fim do dia, e
+difere do `last_price` em 0,006 % a 0,284 %. Comparar contra ele produziria um erro pequeno e
+constante que pareceria defeito.
 
 ## ⭐⭐ PARAMETRIZAÇÃO — a biblioteca serve OUTRA fonte sem editar código
 
@@ -93,6 +133,9 @@ calibrado com UMA fonte, e a fonte do próximo projeto não participou dessa cal
 | offset de fuso em constante de módulo | `OpcoesDeLeituraMt5.offsetSegundos` |
 | cobertura de agressor fixa nos parsers | `coberturaMinimaDeAgressor` nos dois |
 | `symbol === 'WIN' \|\| symbol === 'WDO'` no hook | `AtivoDaMesa.temAoVivo` no catálogo |
+| qualidade da fonte em COMENTÁRIO | **`PerfilDeQualidade`**, valor passado por argumento |
+| escolha do par diário de D1 embutida | `OpcoesDeLeituraDaMesa.politicaDeD1` |
+| "futuro não abre fim de semana" implícito | `AtivoDaMesa.sessao` (`SessaoDeMercado`) |
 
 ⭐⭐ **A emenda virou núcleo próprio.** Ela não tinha uma linha de MT5 — recebe duas listas de
 `Bar` e devolve uma. Morando no adaptador, outro projeto que emende arquivo com Cedro, PNT,
@@ -105,6 +148,64 @@ em fusos diferentes).
 ⚠️ **E há a fronteira do que NÃO deve ser configurável**, registrada em teste: tempo
 estritamente crescente e "os dois lados do agressor ou nenhum". Não são preferências de fonte —
 são gráfico embaralhado e delta com sinal inventado. Ficam dentro da biblioteca, sem chave.
+
+## ⭐⭐ QUALIDADE DA FONTE como DADO — `qualidade-da-fonte.core.ts`
+
+As guardas anteriores olham UMA barra (`agressorUtilizavel`) ou UM par de fontes
+(`medirCoerencia`). Faltava a pergunta que o operador faz: **este TRECHO é confiável?** A
+resposta não é dedutível do dado — é conhecimento sobre a ingestão. `PerfilDeQualidade` é o
+formato dele, `PERFIL_DA_MESA` é o desta base, e outro projeto passa o seu.
+
+⚠️ **O laudo NUNCA recusa.** O pior nível é `REPROVADO` e o gráfico continua desenhando, com a
+ressalva na trilha. Tela vazia é pior que tela com ressalva escrita.
+
+⭐⭐ **As barras FANTASMA, e por que a sessão é do ATIVO.** Medido na série `D1` inteira:
+
+| ativo | registros | em fim de semana |
+|---|---|---|
+| `WIN` | 6.377 | **15** — um por domingo, 22/02 a 31/05/2026, volume de 11 a 5.053 contra ~5 milhões |
+| `WDO` / `PETR4` | 2.575 / 2.537 | 0 |
+| `BTC` | 3.318 | **948 — e as 948 são LEGÍTIMAS** |
+
+Uma regra fixa "futuro não negocia fim de semana" apagaria 948 barras corretas de cripto. As 15
+do WIN entravam em média móvel, em máxima da semana e em perfil de volume como dias reais.
+`filtrarDiasSemPregao` as remove e a trilha DIZ quantas.
+
+⚠️ **A identidade é o INTERVALO, não o carimbo.** Uma barra diária rotulada `00:00Z` cobre
+sáb 21:00 → dom 21:00 e não toca sessão nenhuma; rotulada `03:00Z` cobre seg 00:00 → ter 00:00 e
+contém o pregão. Testar só o dia da semana do carimbo apagaria um pregão inteiro — foi o que a
+guarda de grade já fez uma vez em D1.
+
+⚠️ **Só o dia da semana permite REMOVER; minuto só permite RELATAR.** O Brasil teve horário de
+verão até 2019, e com offset fixo a leitura da hora local sai 1 h deslocada em dado antigo — uma
+hora nunca transforma quarta-feira em domingo, mas transforma 09:00 em 08:00.
+
+⭐⭐ **`1min` e `2min` EXISTEM na base, e eu afirmava o contrário.** A afirmação vinha da
+documentação do pipeline (*"materializa 5min do tick e deriva o resto"*). **Documentação descreve
+intenção; inventário é o que a rota devolve.** Medido: 39 meses de `1min` desde jun/2023,
+~11.300 barras/mês, agressor 100 % até mai/2026, e o volume fechando balde a balde com o de
+5min. Quem pedia M1 era mandado ao terminal, que serve **5 h** — estavam aqui **3 anos**, no
+período que mais se usa para operar o mini índice. Buraco declarado: 06/2026 vazio, 07/2026 com
+1.236 das ~12.000.
+
+⚠️ **O agressor intradiário QUEBROU em 06/2026** (`WIN 5min`, barras sem `buy_vol`):
+
+```
+2026-05: 0 de 2.283      2026-06: 1.132 (49 %)     2026-07: 1.624 (62 %)
+2026-08: 1.034 (44 %)    2026-09: 219 (16 %)
+```
+
+E entre as que têm, a razão `(buy+sell)/volume` mudou de natureza: mediana **0,982** até maio (a
+folga de ~2 % que é normal de leilão) e **exatamente 1,000** de julho em diante — o escritor novo
+força a soma a fechar. `agressorUtilizavel` já barra barra a barra; o perfil diz **quanto** da
+janela está assim.
+
+⚠️ **O D1 tem dois registros por pregão, e a escolha foi aferida por âncora EXTERNA** (o dia
+somado de `1h`, que não participa da disputa): o registro mais TARDIO acerta o fechamento em
+40/40 dias no WIN e 43/43 no PETR4. Default confirmado. **Custo medido:** no WDO 201 dos 785
+pares têm o agressor no registro mais CEDO, e manter o tardio deixa 201 dias sem delta — daí
+`politicaDeD1: 'PREFERIR_AGRESSOR'`. ⭐ E a divergência tem DATA: os dois registros tinham close
+IDÊNTICO de 2023-01 a **2026-01** (mediana 0,000 % em 3 anos) e saltam para 3,07 % em 2026-02.
 
 ## ⭐⭐ ESCALA DO HISTOGRAMA por percentil — a tarde era ilegível
 
@@ -449,7 +550,7 @@ cosmética.
 | `@robustus/charts-devtools` | bancada de desempenho | herdados |
 
 ```
-npm test            # 1949 testes, 99 arquivos
+npm test            # 2401 testes, 116 arquivos
 npm run build       # todos os pacotes
 npm run verify      # ⭐ typecheck + typecheck:playground + check ESM + testes
 npm run smoke:consumo  # empacota, instala FORA do workspace e importa em Node ESM puro
@@ -501,6 +602,57 @@ bandas**, **MFI**, **CMF** (Chaikin Money Flow), **Awesome Oscillator** e
 
 A guarda de contagem dos property tests subiu para **>= 29**: indicador novo que não
 respeite *incremental == batch* reprova, e indicador esquecido no registry também.
+
+### ⭐⭐⭐ A CONFERÊNCIA DE VALOR, e por que o property test não bastava (18/09/2026)
+
+⛔ **O property test *incremental == batch* NÃO pode achar erro de fórmula** — ele roda o mesmo
+código nas duas pontas da igualdade. Vinte dos 45 indicadores tinham só ele. Conferidos contra
+uma referência independente, **três estavam errados**, mais um defeito de empacotamento que valia
+mais que os três.
+
+⭐⭐ **Dezesseis fábricas de 45 não eram EXPORTADAS pelo índice.** Eram importadas (para entrar
+em `builtInFactories` e no `registry`) e nunca reexportadas: `delta`, `cvd`, `delta_ratio`, `hma`,
+`vwma`, `kama`, `lsma`, `trix`, `ppo`, `stoch_rsi`, `aroon`, `chop`, `bop`, `adl`, `force_index`,
+`elder_ray`. `import { adlFactory } from '@robustus/charts-indicators'` não compilava. São as duas
+famílias mais recentes, e o fluxo de ordem é o **diferencial** desta biblioteca. Acrescentar
+fábrica exige tocar em quatro lugares, e a lista de export é o único cujo esquecimento **não
+quebra nada visível**: o registry funciona, os property tests passam, o playground desenha. Guarda
+mecânica: `__tests__/indice-exporta-tudo.spec.ts`, que compara por `meta.name` e não por lista
+escrita à mão.
+
+⚠️ O lote 3 tinha contornado o sintoma importando VWMA e LSMA do módulo, com a hipótese de "ciclo
+de importação". A causa era mais simples e pior.
+
+**Os três defeitos de fórmula:**
+
+- ⭐⭐ **KAMA**: o numerador do Efficiency Ratio media um período MAIS que o denominador
+  (`RingWindow(n+1)` lido antes do `push` dá `x[i−n−1]` contra `n` variações somadas). O ER
+  passava de 1 numa tendência limpa — `(n+1)/n = 1,1` no caso monotônico — e `sc` estourava o
+  limite rápido em **19 %**: a KAMA mais rápida do que o parâmetro autoriza, indistinguível de "o
+  mercado estava eficiente". **TERCEIRA** vez que o mesmo erro de janela aparece (ROC e Momentum
+  usavam `period + 1`). ⭐ O teste que o pegou não usa tabela nenhuma: **numa RETA o ER é 1, por
+  definição.**
+- ⭐⭐ **ADX**: a primeira barra empurrava `plusDM = 0` e `minusDM = 0` nas três médias de
+  Wilder. Movimento direcional exige barra anterior — em N barras existem N−1 valores, e fabricar
+  zero é amostra falsa dentro da semente. Medido: **17,40 contra 13,90** na primeira emissão
+  (25 % de erro), e a memória de Wilder ainda guarda 23 % do desvio 20 barras depois. Enviesado
+  para **cima**, que é o lado que faz ler tendência onde não há.
+- ⭐⭐ **Stoch RSI**: o RSI interno era `EmaState(2n−1)` em vez de `WilderState(n)`. A razão de
+  suavização coincide (`1/n`) mas a **semente** não — média dos 27 primeiros ganhos contra 14.
+  O RSI interno era **outro número** que o `rsiFactory` publica no MESMO gráfico, e o %K só emitia
+  no índice 42 em vez de 29 (mais de 3 h de pregão em 15 min).
+
+**O método, e ele é reutilizável:** `__tests__/referencia-batch.ts` implementa cada indicador
+**em lote, da definição**, sem estado rolante — todo defeito de acumulador é inexprimível nela, e
+é a classe dos defeitos achados. E ela própria é **PINADA** por âncoras literais calculadas fora,
+em Python: sem isso, referência e implementação poderiam carregar o mesmo mal-entendido e
+concordar em silêncio.
+
+⚠️ **A série do lote 3 não servia.** Com `open === close`, **BOP e ADL são identicamente zero**
+(`C−O` é zero e `(C−L)−(H−C)` é zero num pavio simétrico) — testá-los ali daria verde provando
+nada. O lote 4 tem série com OHLC de verdade, pavios assimétricos e volume por agressor. E cada
+`conferir` exige um **piso de pontos comparados**, senão um indicador que devolvesse `null` para
+tudo passaria calado.
 
 ## Grafo de dependência — não viole
 
