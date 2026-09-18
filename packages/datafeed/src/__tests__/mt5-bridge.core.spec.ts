@@ -96,12 +96,15 @@ describe('⭐⭐ fuso — aferido por ÂNCORA EXTERNA, não por comparação de 
 });
 
 describe('período', () => {
-  it('⭐ a bridge tem M1 e M30, que o arquivo NÃO tem', () => {
-    expect(rotuloDePeriodoMt5(60)).toBe('1m');
+  it('⭐ a bridge tem M30 e H4, que o arquivo não tem como série própria', () => {
     expect(rotuloDePeriodoMt5(1800)).toBe('30m');
-    // E o arquivo não os tem — é o que justifica os dois mapas separados.
-    expect(PERIODOS_DA_MESA.has(60)).toBe(false);
+    expect(rotuloDePeriodoMt5(14_400)).toBe('4h');
+    // ⚠️ **M1 saiu desta lista em 18/09/2026.** A asserção era `PERIODOS_DA_MESA.has(60) ===
+    // false`, e medir provou o contrário: o arquivo tem 39 meses de `1min` desde jun/2023, com
+    // agressor em 100% até mai/2026. O que justifica os dois mapas separados agora é M30/H4.
+    expect(PERIODOS_DA_MESA.has(60)).toBe(true);
     expect(PERIODOS_DA_MESA.has(1800)).toBe(false);
+    expect(PERIODOS_DA_MESA.has(14_400)).toBe(false);
   });
 
   it('período desconhecido devolve null, nunca um rótulo inventado', () => {
@@ -113,9 +116,12 @@ describe('período', () => {
   it('periodoSuportadoPorAmbas separa "as duas têm" de "só o MT5 tem"', () => {
     expect(periodoSuportadoPorAmbas(300, PERIODOS_DA_MESA)).toBe(true);
     expect(periodoSuportadoPorAmbas(3600, PERIODOS_DA_MESA)).toBe(true);
-    // M1: a bridge tem, o arquivo não ⇒ precisa de aviso, não de silêncio.
-    expect(periodoSuportadoPorAmbas(60, PERIODOS_DA_MESA)).toBe(false);
+    // ⭐ M1 passou para o lado das DUAS — e é o que liga o backfill de 3 anos no período que
+    // mais se usa para operar o mini índice.
+    expect(periodoSuportadoPorAmbas(60, PERIODOS_DA_MESA)).toBe(true);
+    // M30/H4: a bridge tem, o arquivo não ⇒ precisa de aviso, não de silêncio.
     expect(periodoSuportadoPorAmbas(1800, PERIODOS_DA_MESA)).toBe(false);
+    expect(periodoSuportadoPorAmbas(14_400, PERIODOS_DA_MESA)).toBe(false);
   });
 
   it('todo rótulo do mapa é o que a bridge documenta', () => {

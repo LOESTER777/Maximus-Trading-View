@@ -190,6 +190,7 @@ export type { Timeframe } from './timeframe.core.js';
 export {
   montarCaminhoDeBarras,
   parseBarrasDaMesa,
+  escolherDoParDiario,
   janelaDeBackfill,
   janelaAnterior,
   alcancouInicio,
@@ -219,7 +220,46 @@ export {
   alcancouInicio as reachedSeriesStart,
   /** Os periodos que a base REALMENTE tem, em segundos. */
   periodosDisponiveis as deskPeriods,
+  /** Qual dos dois registros diarios do mesmo pregao fica. */
+  escolherDoParDiario as pickFromDailyPair,
 } from './robustus-bars.core.js';
+
+export type { OpcoesDeLeituraDaMesa } from './robustus-bars.core.js';
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐ QUALIDADE DA FONTE — o que a fonte sabe sobre os próprios defeitos, como DADO
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// As guardas anteriores olham para UMA barra (`agressorUtilizavel`) ou para UM par de
+// fontes (`medirCoerencia`). Esta olha para o TRECHO: *este histórico é confiável?*
+//
+// ⚠️ A resposta não é dedutível do dado — é conhecimento sobre a ingestão, e chega de
+// fora. `PerfilDeQualidade` é o formato dele, e é um VALOR passado por argumento:
+// `PERFIL_DA_MESA` é o desta base, e outro projeto passa o seu.
+
+export {
+  avaliarQualidade,
+  intervaloTocaSessao,
+  filtrarDiasSemPregao,
+  PERFIL_DA_MESA,
+  SESSAO_B3_FUTUROS,
+  SESSAO_B3_ACOES,
+  SESSAO_24_7,
+  /** Confronta as barras carregadas com o que se sabe da fonte. Nunca recusa: devolve laudo. */
+  avaliarQualidade as assessDataQuality,
+  /** O intervalo da barra toca alguma sessao de mercado? */
+  intervaloTocaSessao as barTouchesSession,
+  /** Remove barras que nao sao de pregao nenhum (15 domingos no D1 do WIN; 948 legitimos no BTC). */
+  filtrarDiasSemPregao as dropNonTradingDays,
+} from './qualidade-da-fonte.core.js';
+
+export type {
+  PerfilDeQualidade,
+  LaudoDeQualidade,
+  SessaoDeMercado,
+  RegraDePeriodo,
+  JanelaAferida,
+} from './qualidade-da-fonte.core.js';
 
 export { criarFonteDeBarrasDaMesa } from './robustus-bars-source.js';
 export type { FonteDeBarrasDaMesaOptions } from './robustus-bars-source.js';

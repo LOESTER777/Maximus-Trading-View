@@ -40,18 +40,29 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  PERFIL_DA_MESA,
+  SESSAO_24_7,
+  SESSAO_B3_ACOES,
+  SESSAO_B3_FUTUROS,
   alcancouInicio,
+  avaliarQualidade,
   bridgeConectada,
   criarFonteDeBarrasDaMesa,
   criarFonteDeBarrasDoMt5,
   emendarSeries,
+  filtrarDiasSemPregao,
   janelaAnterior,
   janelaDeBackfill,
   resolverContratoDaBridge,
   rotuloDePeriodo,
   rotuloDePeriodoMt5,
 } from '@robustus/charts-datafeed';
-import type { Bar, BarsCapability } from '@robustus/charts-datafeed';
+import type {
+  Bar,
+  BarsCapability,
+  LaudoDeQualidade,
+  SessaoDeMercado,
+} from '@robustus/charts-datafeed';
 import type { SyntheticBundle, SyntheticCandle } from './synthetic.js';
 
 /**
@@ -87,19 +98,55 @@ export interface AtivoDaMesa {
    * é uma linha de dado, não uma condição em código.
    */
   readonly temAoVivo?: boolean;
+  /**
+   * ⭐⭐ Quando este ativo negocia. É o que separa barra fantasma de barra legítima.
+   *
+   * ⚠️ Medido em 18/09/2026 na série `D1` INTEIRA do serviço, e é a medição que prova que isto
+   * NÃO pode ser constante da biblioteca:
+   *
+   * ```
+   * WIN    6.377 registros, 15 rotulados em fim de semana  ⇠ FANTASMAS (vol 11 a 5.053)
+   * WDO    2.575 registros,  0
+   * PETR4  2.537 registros,  0
+   * BTC    3.318 registros, 948 rotulados em fim de semana ⇠ LEGÍTIMOS
+   * ```
+   *
+   * Uma regra fixa "não há pregão em fim de semana" apagaria as 948 barras corretas do BTC. O
+   * conhecimento é do ATIVO.
+   */
+  readonly sessao?: SessaoDeMercado;
 }
 
 export const ATIVOS_DA_MESA: readonly AtivoDaMesa[] = [
-  { symbol: 'WIN', label: 'WIN · mini índice', inicio: 1_108_692_000, tickSize: 5, temAoVivo: true },
-  { symbol: 'WDO', label: 'WDO · mini dólar', inicio: 1_620_010_800, tickSize: 0.5, temAoVivo: true },
+  {
+    symbol: 'WIN',
+    label: 'WIN · mini índice',
+    inicio: 1_108_692_000,
+    tickSize: 5,
+    temAoVivo: true,
+    sessao: SESSAO_B3_FUTUROS,
+  },
+  {
+    symbol: 'WDO',
+    label: 'WDO · mini dólar',
+    inicio: 1_620_010_800,
+    tickSize: 0.5,
+    temAoVivo: true,
+    sessao: SESSAO_B3_FUTUROS,
+  },
   // ⚠️ Sem ao vivo: o terminal medido é de B3/futuros e não cota estes. Pedir devolveria vazio,
   // que é indistinguível de "não negociou hoje" — então nem se pede.
-  { symbol: 'BTC', label: 'BTC', inicio: 1_502_928_000, tickSize: 1 },
-  { symbol: 'PETR4', label: 'PETR4', inicio: 1_625_108_400, tickSize: 0.01 },
-  { symbol: 'VALE3', label: 'VALE3', inicio: 1_625_108_400, tickSize: 0.01 },
-  { symbol: 'ITUB4', label: 'ITUB4', inicio: 1_625_108_400, tickSize: 0.01 },
-  { symbol: 'BBAS3', label: 'BBAS3', inicio: 1_625_108_400, tickSize: 0.01 },
+  { symbol: 'BTC', label: 'BTC', inicio: 1_502_928_000, tickSize: 1, sessao: SESSAO_24_7 },
+  { symbol: 'PETR4', label: 'PETR4', inicio: 1_625_108_400, tickSize: 0.01, sessao: SESSAO_B3_ACOES },
+  { symbol: 'VALE3', label: 'VALE3', inicio: 1_625_108_400, tickSize: 0.01, sessao: SESSAO_B3_ACOES },
+  { symbol: 'ITUB4', label: 'ITUB4', inicio: 1_625_108_400, tickSize: 0.01, sessao: SESSAO_B3_ACOES },
+  { symbol: 'BBAS3', label: 'BBAS3', inicio: 1_625_108_400, tickSize: 0.01, sessao: SESSAO_B3_ACOES },
 ];
+
+/** A sessão do ativo, do catálogo. `undefined` = não se sabe, e aí nada é filtrado. */
+export function sessaoDoAtivo(symbol: string): SessaoDeMercado | undefined {
+  return ATIVOS_DA_MESA.find((a) => a.symbol === symbol)?.sessao;
+}
 
 /** O ativo tem cotação ao vivo? Consulta o CATÁLOGO, não uma lista embutida em código. */
 export function ativoTemAoVivo(symbol: string): boolean {
@@ -109,20 +156,31 @@ export function ativoTemAoVivo(symbol: string): boolean {
 /**
  * Os períodos que a MESA tem, casados com os ids do vocabulário de timeframe.
  *
- * ⚠️ M1 não está aqui porque não existe na base. O seletor tem de oferecer só isto quando
- * a fonte é a mesa — oferecer M1 e mostrar tela vazia é pior que não oferecer.
+ * ⭐⭐ **`M1` ENTROU em 18/09/2026, e a ausência dele era um ERRO MEU, não da base.**
+ *
+ * ⚠️ A lista antiga dizia *"M1 não existe na base"*, e isso vinha da documentação do pipeline
+ * (*"materializa 5min do tick e deriva o resto"*). Documentação descreve intenção; inventário é
+ * o que a rota devolve. Medido: **39 meses de `1min`** desde jun/2023, ~11.300 barras por mês,
+ * agressor em 100 % até mai/2026, e o volume fechando balde a balde com o de 5min.
+ *
+ * ⇒ Quem pedia M1 era mandado ao terminal, que serve **5 h** de passado. Estavam aqui **3
+ * anos** — no período que mais se usa para operar o mini índice.
+ *
+ * ⚠️ `M2` não entra na lista mesmo existindo na base: o vocabulário de timeframe do projeto não
+ * tem id para 2 minutos, e inventar um só para este seletor criaria um dialeto local. Quem
+ * quiser 2min chama a fonte com `periodSeconds: 120`, que o adaptador serve.
  */
-export const PERIODOS_DA_MESA_IDS: readonly string[] = ['M5', 'M15', 'H1', 'D1'];
+export const PERIODOS_DA_MESA_IDS: readonly string[] = ['M1', 'M5', 'M15', 'H1', 'D1'];
 
 /**
- * ⭐⭐ Os períodos que o TERMINAL serve — e ele tem MAIS que o arquivo.
+ * ⭐ Os períodos que o TERMINAL serve.
  *
  * O MT5 calcula período a partir do próprio feed, então não depende da materialização da base:
- * **M1 e M30 existem lá e não existem aqui**. Com o ao vivo ligado eles ficam alcançáveis, e M1
- * é justamente o período que mais se usa para operar o mini índice.
+ * **M30 existe lá e não existe aqui como série própria**. Com o ao vivo ligado ele fica
+ * alcançável.
  *
- * ⚠️ O custo é DECLARADO: nesses períodos não há passado, só o dia corrente. Quem escolher M1 vê
- * uma sessão, e a trilha diz por quê — gráfico com uma sessão só e sem explicação parece defeito.
+ * ⚠️ O custo é DECLARADO para o período que SÓ o terminal serve: não há passado além do lote.
+ * A trilha diz isso — gráfico com uma sessão só e sem explicação parece defeito.
  */
 export const PERIODOS_DO_TERMINAL_IDS: readonly string[] = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1'];
 
@@ -556,6 +614,26 @@ export interface DadoDaMesaComAoVivo extends DadoDaMesa {
    * que o operador acha completo — e ele tomaria decisão achando que vê o dia corrente.
    */
   readonly divergenciaDasFontes: string | null;
+  /**
+   * ⭐⭐ O laudo de QUALIDADE da série que está na tela.
+   *
+   * ⚠️ Isto responde a uma pergunta que nenhuma outra guarda respondia: *este TRECHO é
+   * confiável?* `agressorUtilizavel` olha uma barra; `medirCoerencia` olha um par de fontes.
+   * Nenhuma das duas sabe que a base declara conferência só até 31/03/2026, nem que 30min e 4h
+   * vêm de outra origem.
+   *
+   * ⭐ Nunca esvazia a tela: o pior nível é `REPROVADO` e o gráfico continua desenhando, com a
+   * ressalva escrita. Tela vazia é pior que tela com ressalva.
+   */
+  readonly laudo: LaudoDeQualidade;
+  /**
+   * Barras removidas por não serem de pregão nenhum.
+   *
+   * ⭐ Medido: **15** no `D1` do WIN (um por domingo, de 22/02 a 31/05/2026, volume entre 11 e
+   * 5.053 contra os ~5 milhões de um pregão). Entravam em média móvel, em máxima da semana e em
+   * perfil de volume como se fossem dias reais.
+   */
+  readonly diasSemPregaoRemovidos: number;
 }
 
 /**
@@ -807,12 +885,29 @@ export function useMesaComAoVivo(params: {
         : { buyVolume: c.buyVolume, sellVolume: c.sellVolume }),
     }));
 
-    const emendado = emendarSeries(historicoComoBarras, barrasAoVivo, periodSeconds, {
+    // ⭐⭐ As barras FANTASMA saem ANTES da emenda, e a ordem importa: uma barra de domingo no
+    // fim do arquivo viraria o "último balde do arquivo", e o corte da emenda usa exatamente
+    // esse balde para decidir onde o terminal entra. Filtrar depois deixaria o fantasma
+    // deslocar a junção das duas fontes.
+    const sessao = sessaoDoAtivo(symbol);
+    const limpo =
+      sessao === undefined
+        ? { mantidas: historicoComoBarras, removidas: [] as readonly Bar[] }
+        : filtrarDiasSemPregao(historicoComoBarras, periodSeconds, sessao);
+
+    const emendado = emendarSeries(limpo.mantidas, barrasAoVivo, periodSeconds, {
       // ⚠️ Tolerância de 4 dias: entre a última barra do arquivo (pregão anterior) e a
       // primeira de hoje cabem fim de semana e feriado. Sem isto, toda segunda-feira
       // reportaria uma lacuna que é só o calendário.
       toleranciaDeSegundos: 4 * 86_400,
     });
+
+    // ⭐ O laudo é sobre a série FINAL — a que está na tela. Avaliar o histórico antes da emenda
+    // deixaria de fora justamente o dia corrente, que é a parte que ninguém conferiu.
+    const laudo = avaliarQualidade(
+      sessao === undefined ? PERFIL_DA_MESA : { ...PERFIL_DA_MESA, sessao },
+      { periodSeconds, barras: emendado.barras },
+    );
 
     const candles: SyntheticCandle[] = [];
     const volume: SyntheticBundle['volume'] = [];
@@ -857,6 +952,17 @@ export function useMesaComAoVivo(params: {
         emendado.coerencia !== null && !emendado.coerencia.compativeis
           ? emendado.coerencia.motivo
           : null,
+      laudo,
+      diasSemPregaoRemovidos: limpo.removidas.length,
     };
-  }, [historico, barrasAoVivo, periodSeconds, aoVivoLigado, contratoVigente, avisoAoVivo, soDoTerminal]);
+  }, [
+    historico,
+    barrasAoVivo,
+    periodSeconds,
+    symbol,
+    aoVivoLigado,
+    contratoVigente,
+    avisoAoVivo,
+    soDoTerminal,
+  ]);
 }

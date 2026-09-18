@@ -39,17 +39,37 @@ import type { Bar, BarsRequest } from './contracts.js';
 /**
  * Períodos que a base REALMENTE tem, de segundos para o rótulo da API.
  *
- * ⚠️ **`M1` (60 s) não existe na base**, e a ausência é declarada em vez de contornada.
- * A agregação materializa `5min` a partir do tick e deriva `15min`/`1h`/`D1` dela; um
- * minuto nunca foi materializado. Oferecer M1 na interface para depois mostrar tela
- * vazia é pior que não oferecer — é a mesma regra que o seletor de período já segue com
- * `timeframesAgregaveisDe`.
+ * ⭐⭐ **CORRIGIDO em 18/09/2026: `1min` e `2min` EXISTEM, e a versão anterior deste mapa
+ * afirmava o contrário.**
  *
- * ⚠️ Também não existem `M30` nem `H4`. Os dois são AGREGÁVEIS a partir do que existe
- * (`rollupBars` de 5min ou 1h), e a decisão de agregar é do consumidor, não deste mapa:
- * o mapa diz o que a FONTE tem, e mentir aqui esconderia que o dado é derivado.
+ * ⚠️ O erro tinha uma causa que vale registrar, porque ela se repete: a afirmação *"a base
+ * materializa 5min do tick e deriva o resto"* veio da documentação da própria base, e eu a
+ * tratei como inventário. Documentação descreve a INTENÇÃO do pipeline; o inventário é o que
+ * a rota devolve. Medido, pedindo:
+ *
+ * ```
+ * tf       meses com dado   barras/mês   agressor        janela
+ * 1min     39 (2023-06 →)   ~11.300      100 % até 05/2026   09:00 → 18:31 BRT
+ * 2min     39 (2023-06 →)   ~5.650       100 % até 05/2026   09:00 → 18:30 BRT
+ * ```
+ *
+ * ⭐ E o volume FECHA com o de 5min balde a balde (medido: 69.478 contra 69.478), o que prova
+ * que é a mesma origem de tick, não uma segunda ingestão. `M1` é o período que mais se usa para
+ * operar o mini índice, e a biblioteca estava mandando quem o pedisse para o terminal — que
+ * serve 5 h de passado contra os 3 anos que estavam aqui.
+ *
+ * ⚠️ **Há um buraco, e ele está declarado no perfil de qualidade:** 06/2026 vem VAZIO e 07/2026
+ * traz 1.236 barras onde caberiam ~12.000. `1min` e `2min` começam em 2023-06 (antes disso a
+ * base não tem: 2015, 2018 e 2021 devolvem vazio).
+ *
+ * ⚠️ Continuam NÃO existindo `M30` e `H4` como série própria — a rota aceita os rótulos e
+ * responde, mas com outra origem: medido, 79,5 % de agressor em 30min e 51,6 % em 4h contra
+ * 100 % em 5min, e o balde de 4h cai em 05:00 BRT, fora do pregão. Os dois são AGREGÁVEIS do
+ * que existe (`rollupBars`), e a decisão de agregar é do consumidor.
  */
 export const PERIODOS_DA_MESA: ReadonlyMap<number, string> = new Map([
+  [60, '1min'],
+  [120, '2min'],
   [300, '5min'],
   [900, '15min'],
   [3600, '1h'],
@@ -349,6 +369,62 @@ export interface OpcoesDeLeituraDaMesa {
    * fonte. Ver a nota longa da constante para a auditoria que fixou o default.
    */
   readonly coberturaMinimaDeAgressor?: number;
+  /**
+   * ⭐⭐ Qual dos dois registros diários do mesmo pregão fica. Default `'MAIS_TARDIO'`.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * A AFERIÇÃO POR ÂNCORA EXTERNA, E O CUSTO QUE ELA EXPÔS
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ⭐ Medido em 18/09/2026 contra o dia apurado somando as barras de `1h` — uma âncora
+   * INDEPENDENTE das duas convenções de D1, porque a série intradiária vem da agregação de
+   * tick e não participa da disputa. Comparar os dois registros entre si não decidiria nada.
+   *
+   * ```
+   * ativo   dias com par   quem acerta o CLOSE            volume / agressor
+   * WIN          40        o MAIS TARDIO, 40/40 (0,000 %)  tardio = 100 % do apurado, com agressor
+   *                        o mais cedo erra 3,7 a 5,9 %    cedo   =  32 % do apurado, SEM agressor
+   * PETR4        43        o MAIS TARDIO, 43/43 (0,000 %)  os dois iguais no volume, nenhum com agressor
+   * WDO          43        o MAIS TARDIO acerta            tardio =  25 % do apurado, SEM agressor
+   *                        (o cedo erra só 0,01–0,03 %)    cedo   =  85 % do apurado, COM agressor
+   * ```
+   *
+   * ⇒ `'MAIS_TARDIO'` é o default porque **acerta o preço nos três ativos**, e preço errado num
+   * gráfico é o defeito que não perdoa. Mas no WDO ele paga um preço medido: **201 dos 785 pares**
+   * da série têm o agressor no registro mais CEDO, e mantendo o tardio esses 201 dias diários
+   * ficam sem delta.
+   *
+   * ⭐ `'PREFERIR_AGRESSOR'` inverte a escolha quando — e só quando — um dos dois tem agressor e
+   * o outro não. Para quem lê fluxo em D1 no WDO, isso troca 0,03 % de erro no fechamento por
+   * 201 dias de delta. É decisão do consumidor, não da biblioteca: as duas respostas são
+   * defensáveis e dependem do que a tela vai mostrar.
+   *
+   * ⚠️ Nenhuma das duas políticas SOMA os registros. Somar fabricaria um volume que não existiu
+   * e um close que não é de nenhuma das séries — o mesmo motivo pelo qual `emendarSeries` proíbe
+   * misturar duas fontes dentro de uma barra.
+   */
+  readonly politicaDeD1?: 'MAIS_TARDIO' | 'PREFERIR_AGRESSOR';
+}
+
+/**
+ * Qual dos dois registros diários do mesmo pregão fica. Ver `politicaDeD1`.
+ *
+ * ⚠️ Exportado para ser testável em isolamento: a escolha é a parte da colapsagem em que um
+ * erro é invisível na tela (duas velas parecidas) e caro em tudo que é derivado dela.
+ */
+export function escolherDoParDiario(
+  cedo: Bar,
+  tardio: Bar,
+  politica: 'MAIS_TARDIO' | 'PREFERIR_AGRESSOR' = 'MAIS_TARDIO',
+): Bar {
+  if (politica !== 'PREFERIR_AGRESSOR') return tardio;
+  const cedoTem = cedo.buyVolume !== undefined && cedo.sellVolume !== undefined;
+  const tardioTem = tardio.buyVolume !== undefined && tardio.sellVolume !== undefined;
+  // ⭐ Só o caso ASSIMÉTRICO inverte. Quando os dois têm agressor, ou nenhum tem, a política
+  // não tem informação nova e cai no default aferido — que é o mais tardio. Inverter também
+  // no caso simétrico trocaria o preço correto por nada.
+  if (cedoTem && !tardioTem) return cedo;
+  return tardio;
 }
 
 export function parseBarrasDaMesa(
@@ -360,6 +436,7 @@ export function parseBarrasDaMesa(
   // silenciosa que passa o objeto onde se esperava número.
   const periodSeconds = typeof opcoes === 'number' ? opcoes : opcoes?.periodSeconds;
   const coberturaMinima = typeof opcoes === 'number' ? undefined : opcoes?.coberturaMinimaDeAgressor;
+  const politicaDeD1 = (typeof opcoes === 'number' ? undefined : opcoes?.politicaDeD1) ?? 'MAIS_TARDIO';
   if (!ehCorpoDeBarras(body)) return null;
 
   const idx = new Map<string, number>();
@@ -457,10 +534,28 @@ export function parseBarrasDaMesa(
   // VALE3 sair em −0,04 (duas blue chips do mesmo índice, que andam claramente juntas). Também
   // envenena janela de desempenho, sazonalidade e qualquer média.
   //
-  // ⭐ A COLAPSAGEM mantém a barra MAIS TARDIA do par, e a razão é o volume: 63.690 contra
-  // 31.318 na amostra acima mostra que os dois registros cobrem RECORTES diferentes do dia. O
-  // último a fechar é o que mais se aproxima do fechamento da sessão — e escolher a primeira
-  // daria o fechamento de um dia parcial.
+  // ⭐⭐ A COLAPSAGEM mantém a barra MAIS TARDIA do par, e isso foi AFERIDO POR ÂNCORA
+  // EXTERNA — não pelo raciocínio de volume que estava escrito aqui antes.
+  //
+  // ⚠️ O argumento antigo era "63.690 contra 31.318, logo o tardio cobre mais do dia". Ele
+  // estava CERTO na conclusão e ERRADO no método: comparava os dois suspeitos entre si. A
+  // aferição correta usa o dia apurado somando as barras de `1h` (que vêm da agregação de
+  // tick e não participam da disputa). Medido em 18/09/2026:
+  //
+  // ```
+  // WIN    o registro tardio acerta o close em 40/40 dias, erro 0,000 %; o cedo erra 3,7–5,9 %
+  // PETR4  o tardio acerta em 43/43; o cedo erra ~1,35 %
+  // WDO    o tardio acerta o close, mas traz 25 % do volume e nenhum agressor
+  // ```
+  //
+  // ⭐ E a divergência tem DATA: até 2026-01 os dois registros do WIN tinham close IDÊNTICO
+  // (mediana 0,000 %, máximo 0,00 % em 3 anos). Em 2026-02 a mediana salta para 3,07 %, e os
+  // pares cessam em 29/05/2026. Ou seja: para quase toda a série a escolha é indiferente, e
+  // ela só passa a importar exatamente na parte recente — a que o operador olha.
+  //
+  // ⚠️ O custo, medido: no WDO **201 dos 785 pares** têm o agressor no registro mais CEDO, e
+  // manter o tardio deixa esses 201 dias sem delta. `politicaDeD1: 'PREFERIR_AGRESSOR'`
+  // inverte a escolha para quem prefere fluxo a 0,03 % de precisão no fechamento.
   //
   // ⚠️ Só para período DIÁRIO ou maior. Em 5min os baldes são alinhados por `floor(epoch/300)`
   // e não há ambiguidade; aplicar a colapsagem lá fundiria barras legítimas.
@@ -469,7 +564,7 @@ export function parseBarrasDaMesa(
     for (const b of barras) {
       const anterior = colapsadas[colapsadas.length - 1];
       if (anterior !== undefined && b.time - anterior.time < FOLGA_MINIMA_D1) {
-        colapsadas[colapsadas.length - 1] = b;
+        colapsadas[colapsadas.length - 1] = escolherDoParDiario(anterior, b, politicaDeD1);
         continue;
       }
       colapsadas.push(b);

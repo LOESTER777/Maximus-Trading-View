@@ -59,28 +59,40 @@ function pedido(p: Partial<BarsRequest> = {}): BarsRequest {
 }
 
 describe('período — o mapa diz o que a FONTE tem, e não o que seria bonito ter', () => {
-  it('traduz os quatro períodos materializados', () => {
+  it('traduz os períodos materializados', () => {
     expect(rotuloDePeriodo(300)).toBe('5min');
     expect(rotuloDePeriodo(900)).toBe('15min');
     expect(rotuloDePeriodo(3600)).toBe('1h');
     expect(rotuloDePeriodo(86_400)).toBe('D1');
   });
 
-  it('⭐ M1 devolve `null` — a base NÃO tem um minuto', () => {
-    // A agregação materializa 5min a partir do tick e deriva o resto dela; um minuto
-    // nunca foi materializado. Oferecer M1 e mostrar tela vazia é pior que não oferecer.
-    expect(rotuloDePeriodo(60)).toBeNull();
+  it('⭐⭐ M1 e M2 EXISTEM — esta asserção era o contrário, e estava errada', () => {
+    // ⚠️ A versão anterior deste teste afirmava `rotuloDePeriodo(60) === null`, com a
+    // justificativa "a agregação materializa 5min do tick e deriva o resto". Isso vinha da
+    // DOCUMENTAÇÃO do pipeline, e documentação descreve intenção — inventário é o que a rota
+    // devolve. Medido em 18/09/2026 contra o serviço:
+    //
+    //   1min: 39 meses desde jun/2023, ~11.300 barras/mês, agressor 100% até mai/2026
+    //   2min: 39 meses, ~5.650/mês, mesma cobertura
+    //   e o volume de 1min FECHA balde a balde com o de 5min (69.478 = 69.478)
+    //
+    // ⭐ O custo do erro era concreto: quem pedia M1 era mandado ao terminal, que serve 5 h de
+    // passado. Estavam aqui 3 anos, no período que mais se usa para operar o mini índice.
+    expect(rotuloDePeriodo(60)).toBe('1min');
+    expect(rotuloDePeriodo(120)).toBe('2min');
   });
 
-  it('M30 e H4 também são `null` — são agregáveis, não armazenados', () => {
-    // Quem quiser 30min agrega 5min com `rollupBars`. Mentir aqui esconderia que o dado
-    // é derivado, e a origem da barra importa para quem lê fluxo.
+  it('M30 e H4 são `null` — a rota responde, mas com OUTRA origem', () => {
+    // ⚠️ Aqui a ausência continua correta, e por um motivo medido, não documental: a rota aceita
+    // os rótulos e devolve barras, mas com 79,5% de agressor em 30min e 51,6% em 4h contra 100%
+    // em 5min — e o balde de 4h cai às 05:00 BRT, fora do pregão. Não é a mesma série.
+    // Quem quiser 30min agrega 5min com `rollupBars`, e aí sabe que o dado é derivado.
     expect(rotuloDePeriodo(1800)).toBeNull();
     expect(rotuloDePeriodo(14_400)).toBeNull();
   });
 
   it('a lista sai em ordem crescente', () => {
-    expect(periodosDisponiveis()).toEqual([300, 900, 3600, 86_400]);
+    expect(periodosDisponiveis()).toEqual([60, 120, 300, 900, 3600, 86_400]);
   });
 });
 
@@ -128,7 +140,9 @@ describe('montarCaminhoDeBarras — a janela é OBRIGATÓRIA', () => {
   });
 
   it('recusa período que a base não tem, símbolo inválido e janela invertida', () => {
-    expect(montarCaminhoDeBarras(pedido({ periodSeconds: 60 }))).toBeNull();
+    // ⚠️ 1800 (M30) e não 60: `1min` passou a existir na base — ver a medição no bloco de
+    // período. M30 continua recusado porque a rota o serve de OUTRA origem.
+    expect(montarCaminhoDeBarras(pedido({ periodSeconds: 1800 }))).toBeNull();
     expect(montarCaminhoDeBarras(pedido({ instrument: { symbol: 'WIN$' } }))).toBeNull();
     expect(montarCaminhoDeBarras(pedido({ fromSeconds: 200, toSeconds: 100 }))).toBeNull();
     // Janela degenerada devolveria lista vazia; recusar distingue "sem dado" de

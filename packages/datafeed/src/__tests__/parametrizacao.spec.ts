@@ -31,6 +31,12 @@ import {
   parseCandlesDoMt5,
 } from '../mt5-bridge.core.js';
 import { emendarSeries } from '../splice-series.core.js';
+import {
+  PERFIL_DA_MESA,
+  SESSAO_24_7,
+  SESSAO_B3_FUTUROS,
+  avaliarQualidade,
+} from '../qualidade-da-fonte.core.js';
 import type { Bar } from '../contracts.js';
 
 function barra(time: number, close: number, extra?: Partial<Bar>): Bar {
@@ -297,5 +303,136 @@ describe('⭐⭐ AMARRA 5: emendar fontes INCOMPATÍVEIS produzia degrau silenci
     });
     expect(r.coerencia?.compativeis).toBe(true);
     expect(r.doAoVivo).toBe(1);
+  });
+});
+
+describe('⭐⭐ AMARRA 6: a escolha do par diário de D1 era decisão embutida', () => {
+  /**
+   * A base grava DOIS registros para o mesmo pregão, de escritores diferentes. A colapsagem
+   * mantinha o mais tardio sem opção, e a escolha estava justificada por um argumento circular
+   * (comparava os dois suspeitos entre si).
+   *
+   * ⭐ Aferido em 18/09/2026 contra o dia apurado somando `1h` — âncora EXTERNA às duas
+   * convenções: o mais tardio acerta o fechamento em 40/40 dias no WIN, 43/43 no PETR4, e
+   * acerta no WDO. Default confirmado.
+   *
+   * ⚠️ E o custo apareceu: no WDO **201 dos 785 pares** têm o agressor no registro mais CEDO.
+   * Manter o tardio deixa 201 dias diários sem delta. Quem lê fluxo em D1 precisa da outra
+   * escolha, e agora ela é um ARGUMENTO.
+   */
+  const corpoComPar = {
+    cols: ['bar_epoch', 'open', 'high', 'low', 'close', 'volume', 'buy_vol', 'sell_vol'],
+    rows: [
+      // 00:00Z: tem agressor, volume maior — o caso do WDO.
+      [1_774_915_200, 5180, 5195, 5170, 5185.5, 695_857, 340_000, 345_000],
+      // 03:00Z: fechamento canônico, mas sem agressor e com 25 % do volume.
+      [1_774_926_000, 5180, 5195, 5170, 5186.0, 207_586, null, null],
+    ],
+  };
+
+  it('o default MANTÉM o mais tardio — é ele que acerta o fechamento', () => {
+    const barras = parseBarrasDaMesa(corpoComPar, { periodSeconds: 86_400 });
+    expect(barras).toHaveLength(1);
+    expect(barras?.[0]?.close).toBe(5186.0);
+    expect(barras?.[0]).not.toHaveProperty('buyVolume');
+  });
+
+  it('⭐ `PREFERIR_AGRESSOR` troca 0,03 % de fechamento por 201 dias de delta', () => {
+    const barras = parseBarrasDaMesa(corpoComPar, {
+      periodSeconds: 86_400,
+      politicaDeD1: 'PREFERIR_AGRESSOR',
+    });
+    expect(barras).toHaveLength(1);
+    expect(barras?.[0]?.close).toBe(5185.5);
+    expect(barras?.[0]?.buyVolume).toBe(340_000);
+  });
+
+  it('⚠️ com agressor nos DOIS a política não inverte: não há informação nova', () => {
+    const corpo = {
+      cols: corpoComPar.cols,
+      rows: [
+        [1_774_915_200, 1, 2, 0, 10, 100, 50, 50],
+        [1_774_926_000, 1, 2, 0, 20, 100, 60, 40],
+      ],
+    };
+    for (const politica of ['MAIS_TARDIO', 'PREFERIR_AGRESSOR'] as const) {
+      const barras = parseBarrasDaMesa(corpo, { periodSeconds: 86_400, politicaDeD1: politica });
+      expect(barras?.[0]?.close).toBe(20);
+    }
+  });
+
+  it('⚠️ nenhuma política SOMA os registros — isso fabricaria volume inexistente', () => {
+    const soma = 695_857 + 207_586;
+    for (const politica of ['MAIS_TARDIO', 'PREFERIR_AGRESSOR'] as const) {
+      const barras = parseBarrasDaMesa(corpoComPar, {
+        periodSeconds: 86_400,
+        politicaDeD1: politica,
+      });
+      expect(barras?.[0]?.volume).not.toBe(soma);
+    }
+  });
+
+  it('⚠️ em 5min a colapsagem não acontece: os baldes são inequívocos', () => {
+    const corpo = {
+      cols: corpoComPar.cols,
+      rows: [
+        [1_774_915_200, 1, 2, 0, 10, 100, 50, 50],
+        [1_774_915_500, 1, 2, 0, 20, 100, 50, 50],
+      ],
+    };
+    expect(parseBarrasDaMesa(corpo, { periodSeconds: 300 })).toHaveLength(2);
+  });
+});
+
+describe('⭐⭐ AMARRA 7: o conhecimento de QUALIDADE da fonte era comentário, não dado', () => {
+  /**
+   * A janela em que a base foi conferida, os períodos que ela não materializa e o mês em que o
+   * agressor quebrou estavam escritos em prosa nos comentários — inúteis para o consumidor e
+   * impossíveis de trocar por outra fonte.
+   *
+   * ⭐ Agora é `PerfilDeQualidade`, um VALOR. `PERFIL_DA_MESA` é o desta base; outro projeto
+   * passa o seu sem tocar no fonte da biblioteca.
+   */
+  it('⭐ um perfil VAZIO não impõe política nenhuma', () => {
+    const laudo = avaliarQualidade(
+      { nome: 'outra fonte' },
+      { periodSeconds: 1800, barras: [barra(1000, 1)] },
+    );
+    expect(laudo.nivel).toBe('OK');
+    expect(laudo.motivos).toEqual([]);
+  });
+
+  it('⭐ o MESMO período reprovado numa fonte é confiável na outra', () => {
+    const barras = [barra(1_700_000_000, 1)];
+    expect(avaliarQualidade(PERFIL_DA_MESA, { periodSeconds: 1800, barras }).nivel).toBe(
+      'REPROVADO',
+    );
+    expect(
+      avaliarQualidade(
+        {
+          nome: 'fonte que materializa 30min',
+          regrasPorPeriodo: [{ periodSeconds: 1800, situacao: 'CONFIAVEL' }],
+        },
+        { periodSeconds: 1800, barras },
+      ).nivel,
+    ).toBe('OK');
+  });
+
+  it('⚠️ a SESSÃO é do ativo, não da biblioteca: 24/7 não tem fim de semana inválido', () => {
+    // Fixo em "futuros não abrem sábado" apagaria as 948 barras diárias legítimas do BTC.
+    const domingo = 1_780_185_600; // 31/05/2026 00:00Z
+    const barras = [barra(domingo, 1)];
+    expect(
+      avaliarQualidade(
+        { nome: 'b3', sessao: SESSAO_B3_FUTUROS, fracaoToleradaForaDaSessao: 0 },
+        { periodSeconds: 86_400, barras },
+      ).foraDaSessao,
+    ).toHaveLength(1);
+    expect(
+      avaliarQualidade(
+        { nome: 'cripto', sessao: SESSAO_24_7, fracaoToleradaForaDaSessao: 0 },
+        { periodSeconds: 86_400, barras },
+      ).foraDaSessao,
+    ).toHaveLength(0);
   });
 });

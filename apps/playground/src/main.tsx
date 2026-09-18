@@ -820,6 +820,35 @@ export function App(): JSX.Element {
       });
     }
 
+    // ⭐⭐ BARRAS FANTASMA removidas. Medido: 15 domingos no D1 do WIN, com volume de 11 a
+    // 5.053 contra os ~5 milhões de um pregão. Elas entravam em média móvel, em máxima da
+    // semana e em perfil de volume como se fossem dias reais.
+    //
+    // ⚠️ A remoção é dita, e não silenciosa: quem conta barras na tela e compara com outra
+    // ferramenta precisa saber por que os números diferem.
+    if (mesa.diasSemPregaoRemovidos > 0) {
+      notas.push({
+        fonte: 'preco',
+        linhas: [
+          `${mesa.diasSemPregaoRemovidos} barra(s) em dia sem pregão foram removidas (a fonte as gravou).`,
+        ],
+      });
+    }
+
+    // ⭐⭐ O LAUDO DA FONTE. É a última linha de propósito: é contexto sobre o dado, não sobre
+    // o carregamento, e o operador lê de cima para baixo.
+    //
+    // ⚠️ Aparece MESMO quando tudo carregou bem, porque é justamente aí que ele importa: uma
+    // série completa, bonita e fora da janela conferida da base parece perfeita. A ressalva é o
+    // que impede o gráfico de afirmar mais do que a fonte sustenta.
+    if (mesa.laudo.nivel !== 'OK' && mesa.laudo.motivos.length > 0) {
+      notas.push({
+        fonte: 'preco',
+        linhas: [...mesa.laudo.motivos],
+        alerta: mesa.laudo.nivel === 'REPROVADO',
+      });
+    }
+
     return notas;
   }, [
     fonte,
@@ -837,6 +866,8 @@ export function App(): JSX.Element {
     mesa.foraDaGrade,
     mesa.soDoTerminal,
     mesa.divergenciaDasFontes,
+    mesa.laudo,
+    mesa.diasSemPregaoRemovidos,
     ativoMesa,
     tf.label,
     quedaParaSintetico,

@@ -61,6 +61,15 @@ const PREGAO_BRT = { abre: '09:00', fechaAte: '19:35' };
  */
 const COBERTURA_MINIMA = 0.9;
 
+/**
+ * Ativos que negociam TODOS os dias. Ver `verificarDiaSemPregao`.
+ *
+ * ⚠️ Medido: o `D1` do BTC tem **948** barras rotuladas em fim de semana, e as 948 são
+ * corretas. Uma regra fixa "futuro não abre sábado" apagaria dado bom — e é por isso que a
+ * verificação recebe isto por argumento em vez de assumir a B3.
+ */
+const ABRE_FIM_DE_SEMANA = new Set(['BTC']);
+
 const args = process.argv.slice(2);
 const ativo = valorDe('--ativo') ?? 'WIN';
 function valorDe(flag) {
@@ -362,6 +371,59 @@ function verificarJanelaDePregao(nome, barras, seg) {
   info(`esperado: abre em ${PREGAO_BRT.abre} BRT (a abertura é exata; o fechamento tem cauda de leilão)`);
 }
 
+/**
+ * ⭐⭐ A OUTRA guarda de calendário: há barra em dia que o mercado NÃO abre?
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O DEFEITO QUE ISTO ENCONTROU, E POR QUE `verificarJanelaDePregao` NÃO PEGAVA
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ Medido em 18/09/2026 na série `D1` INTEIRA do arquivo:
+ *
+ * ```
+ * WIN    6.377 registros, 15 rotulados em fim de semana  ⇠ FANTASMAS
+ * WDO    2.575, 0        PETR4  2.537, 0
+ * BTC    3.318, 948 em fim de semana                    ⇠ LEGÍTIMOS (cripto não fecha)
+ * ```
+ *
+ * As 15 do WIN são um domingo por semana, de 22/02 a 31/05/2026, com OHLC de amplitude real e
+ * volume entre 11 e 5.053 contra os ~5 milhões de um pregão. No gráfico diário aparecem como
+ * dias reais e entram em média móvel, em máxima da semana e em perfil de volume.
+ *
+ * ⭐ `verificarJanelaDePregao` não as pegava porque ela **desiste em D1 de propósito** (a barra
+ * diária é rotulada na virada do dia, e exigir hora de pregão reprovaria dado correto). Esta
+ * olha só o DIA DA SEMANA, que é o que sobrevive à ambiguidade de rótulo.
+ *
+ * ⚠️ E é por isso que ela recebe `abreFimDeSemana`: para o BTC as 948 são corretas, e uma regra
+ * fixa apagaria dado bom. É conhecimento do ATIVO.
+ */
+function verificarDiaSemPregao(nome, barras, abreFimDeSemana) {
+  if (barras.length === 0) return;
+  if (abreFimDeSemana) {
+    ok(`${nome}: ${ativo} negocia todos os dias — fim de semana não é acusação`);
+    return;
+  }
+  const suspeitas = [];
+  for (const b of barras) {
+    // ⭐ Um intervalo de 24 h rotulado 00:00Z cobre sáb 21:00 → dom 21:00 BRT: nenhuma sessão.
+    // Rotulado 03:00Z cobre seg 00:00 → ter 00:00, que contém o pregão. Testar os DOIS extremos
+    // é o que distingue rótulo ambíguo de barra fantasma sem escolher convenção.
+    const inicio = new Date(b.time * 1000).getUTCDay();
+    const fim = new Date((b.time - 10_800) * 1000).getUTCDay();
+    const abre = (d) => d >= 1 && d <= 5;
+    if (!abre(inicio) && !abre(fim)) suspeitas.push(b);
+  }
+  if (suspeitas.length === 0) {
+    ok(`${nome}: nenhuma barra em dia sem pregão (${barras.length} barras)`);
+    return;
+  }
+  falha(`${nome}: ${suspeitas.length} barra(s) em dia SEM PREGÃO — a fonte gravou dia que não existiu`);
+  suspeitas.slice(0, 4).forEach((b) => {
+    info(`${hora(b.time)} o=${b.open} h=${b.high} l=${b.low} c=${b.close} vol=${b.volume ?? '—'}`);
+  });
+  info('a biblioteca as remove com `filtrarDiasSemPregao`; aqui a auditoria reprova a FONTE');
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Execução
 // ═════════════════════════════════════════════════════════════════════════════
@@ -377,10 +439,30 @@ const mt5Vivo = saudeMt5.erro === undefined && saudeMt5.dado?.connected === true
 console.log(`terminal conectado: ${mt5Vivo ? 'sim' : `NÃO (${saudeMt5.erro ?? 'connected=false'})`}`);
 if (mt5Vivo) console.log(`contrato vigente: ${await contrato()}`);
 
+/**
+ * ⭐ `--ate <YYYY-MM-DD>` audita uma janela PASSADA do arquivo.
+ *
+ * ⚠️ Não é conveniência: os defeitos de calendário desta base estão CONCENTRADOS em
+ * fev–mai/2026 (as 15 barras de domingo do WIN começam em 22/02 e cessam em 31/05). Uma
+ * auditoria que só olha os últimos 90 dias passa em verde e a fonte segue com o defeito —
+ * exatamente o que aconteceu até 18/09/2026. O terminal é pulado nesse modo: ele só tem a ponta
+ * direita, e cruzar com um passado que ele não serve daria falso negativo.
+ */
+const ate = valorDe('--ate');
+const fimDaJanela = ate === undefined ? agora : Math.floor(Date.parse(`${ate}T23:59:59Z`) / 1000);
+const soArquivo = ate !== undefined;
+if (soArquivo) {
+  if (!Number.isFinite(fimDaJanela)) {
+    console.error('--ate espera YYYY-MM-DD');
+    process.exit(2);
+  }
+  console.log(`janela: até ${ate} (modo histórico — o terminal não é consultado)`);
+}
+
 for (const p of PERIODOS) {
   secao(`── ${p.arquivo} ──`);
   const dias = p.seg >= 86_400 ? 90 : 6;
-  const a = await doArquivo(p.arquivo, agora - dias * 86_400, agora);
+  const a = await doArquivo(p.arquivo, fimDaJanela - dias * 86_400, fimDaJanela);
 
   if (a.erro !== undefined) {
     aviso(`arquivo indisponível em ${p.arquivo}: ${a.erro}`);
@@ -392,13 +474,15 @@ for (const p of PERIODOS) {
     // ⭐⭐ A âncora EXTERNA. Ver `verificarJanelaDePregao`: é a única verificação que não depende
     // de comparar fontes, e por isso é a única que pega fuso errado nas DUAS ao mesmo tempo.
     verificarJanelaDePregao('arquivo', a.barras, p.seg);
+    // ⭐ A guarda de calendário que sobrevive à ambiguidade de rótulo diário. Ver a nota longa.
+    verificarDiaSemPregao('arquivo', a.barras, ABRE_FIM_DE_SEMANA.has(ativo));
     volumeCoerente('arquivo', a.barras);
     const ult = a.barras[a.barras.length - 1];
-    const atraso = (agora - ult.time) / 3600;
-    info(`última barra do arquivo: ${hora(ult.time)} (${atraso.toFixed(1)} h atrás)`);
+    const atraso = (fimDaJanela - ult.time) / 3600;
+    info(`última barra do arquivo: ${hora(ult.time)} (${atraso.toFixed(1)} h antes do fim da janela)`);
   }
 
-  if (!mt5Vivo) continue;
+  if (!mt5Vivo || soArquivo) continue;
 
   // ⭐⭐ Só `/historical-flow` é o CAMINHO DO GRÁFICO, e só ele reprova.
   //
