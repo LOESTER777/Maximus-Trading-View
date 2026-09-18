@@ -30,7 +30,8 @@
     "test:watch": "vitest",
     "test:core": "vitest --run packages/core",
     "test:primitives": "vitest --run packages/primitives",
-    "auditoria": "node scripts/auditoria-de-dados.mjs"
+    "auditoria": "node scripts/auditoria-de-dados.mjs",
+    "verificar:preco": "node scripts/verificar-caminho-de-preco.mjs"
   },
   "devDependencies": {
     "@testing-library/react": "^16.1.0",

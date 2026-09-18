@@ -11,8 +11,11 @@ import { describe, expect, it } from 'vitest';
 import type { Bar } from '../contracts.js';
 import {
   avaliarQualidade,
+  diaDeMercado,
   filtrarDiasSemPregao,
   intervaloTocaSessao,
+  intradiarioDegradado,
+  medirCoberturaDeVolume,
   PERFIL_DA_MESA,
   SESSAO_24_7,
   SESSAO_B3_FUTUROS,
@@ -231,16 +234,38 @@ describe('PERFIL_DA_MESA — o conhecimento medido', () => {
     expect(laudo.motivos).toEqual([]);
   });
 
-  it('⭐⭐ o pregão de HOJE cai fora da janela aferida — e isso é ressalva, não erro', () => {
+  it('⭐⭐ fora da janela aferida é RESSALVA, não erro — e o D1 é o caso puro', () => {
     // A base declara conferência até 31/03/2026. Setembro de 2026 é justamente o dado que
     // ninguém conferiu, e o operador precisa saber disso sem perder a tela.
+    //
+    // ⚠️ O período é D1 de propósito: no INTRADIÁRIO de set/2026 há um segundo problema, mais
+    // grave (a fonte perdeu negócios), e ele leva o laudo a REPROVADO — ver o teste seguinte. Em
+    // D1 o fechamento continua exato, então sobra só a ressalva de janela, que é o que se afere
+    // aqui.
+    // ⚠️ Os dias são os PREGÕES REAIS de setembro/2026, não `i * 86400`: dias corridos incluem o
+    // fim de semana e o feriado de 7/9, a guarda de sessão acusaria 30% das barras fora do pregão
+    // e o laudo sairia REPROVADO por um defeito do fixture. Foi o que aconteceu na primeira
+    // escrita deste teste.
+    const pregoes = [1, 2, 3, 4, 8, 9, 10, 11, 14, 15];
+    const barras = pregoes.map((d) =>
+      barra(utc(2026, 9, d), { volume: 10, buyVolume: 5, sellVolume: 5 }),
+    );
+    const laudo = avaliarQualidade(PERFIL_DA_MESA, { periodSeconds: 86_400, barras });
+    expect(laudo.nivel).toBe('RESSALVA');
+    expect(laudo.foraDaJanelaAferida).toBe(10);
+    expect(laudo.motivos.join(' ')).toContain('31/03/2026');
+  });
+
+  it('⭐⭐⭐ o INTRADIÁRIO de set/2026 é REPROVADO — a fonte perdeu os negócios', () => {
+    // ⚠️ É a distinção que importa na tela: "ninguém conferiu" (ressalva) é diferente de "a fonte
+    // não tem os negócios" (reprovado). A segunda desenha um mercado que não existiu — medido,
+    // amplitude 1.075 pontos contra 4.620 reais no pregão de 17/09/2026.
     const barras = Array.from({ length: 10 }, (_, i) =>
       barra(utc(2026, 9, 16, 12, 0) + i * 300, { volume: 10, buyVolume: 5, sellVolume: 5 }),
     );
     const laudo = avaliarQualidade(PERFIL_DA_MESA, { periodSeconds: 300, barras });
-    expect(laudo.nivel).toBe('RESSALVA');
-    expect(laudo.foraDaJanelaAferida).toBe(10);
-    expect(laudo.motivos.join(' ')).toContain('31/03/2026');
+    expect(laudo.nivel).toBe('REPROVADO');
+    expect(laudo.motivos.join(' ')).toContain('perdeu negócios');
   });
 
   it('D1 declara a dupla convenção e 1h declara o agressor incompleto', () => {
@@ -251,5 +276,113 @@ describe('PERFIL_DA_MESA — o conhecimento medido', () => {
     const h1 = avaliarQualidade(PERFIL_DA_MESA, { periodSeconds: 3600, barras });
     expect(h1.nivel).toBe('RESSALVA');
     expect(h1.motivos.join(' ')).toContain('agressor incompleto');
+  });
+});
+
+describe('⭐⭐⭐ cobertura de volume contra a ÂNCORA OFICIAL', () => {
+  /**
+   * O caso é o real, com os números medidos: o arquivo da mesa trazia 100 % do volume que a B3
+   * registrou até mai/2026 e passou a trazer ~21 % em set/2026. É o que explica a amplitude do dia
+   * sair 3–4x menor que a real — os negócios que faltam são os que fazem a máxima e a mínima.
+   */
+  function pregao(dia: number, volumePorBarra: number): Bar[] {
+    return Array.from({ length: 10 }, (_, i) => ({
+      time: utc(2026, 9, dia, 12, 0) + i * 300,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100.5,
+      volume: volumePorBarra,
+    }));
+  }
+
+  it('mede a fração por dia contra o volume oficial', () => {
+    const barras = [...pregao(14, 100), ...pregao(15, 20)];
+    const oficial = new Map([
+      ['2026-09-14', 1000],
+      ['2026-09-15', 1000],
+    ]);
+    const c = medirCoberturaDeVolume(barras, SESSAO_B3_FUTUROS, oficial);
+    expect(c.diasAferidos).toBe(2);
+    expect(c.porDia.get('2026-09-14')).toBeCloseTo(1, 9);
+    expect(c.porDia.get('2026-09-15')).toBeCloseTo(0.2, 9);
+    expect(c.medianaDaFracao).toBeCloseTo(0.6, 9);
+    expect(c.piorFracao).toBeCloseTo(0.2, 9);
+    expect(c.diasAbaixoDoMinimo).toBe(1);
+  });
+
+  it('⚠️ dia SEM número oficial é pulado, não contado como zero', () => {
+    // ⭐ O pregão corrente nunca tem liquidação publicada. Tratá-lo como falta produziria alarme
+    // todo dia — e foi exatamente o falso positivo que a primeira versão da auditoria deu.
+    const barras = [...pregao(14, 100), ...pregao(17, 100)];
+    const c = medirCoberturaDeVolume(barras, SESSAO_B3_FUTUROS, new Map([['2026-09-14', 1000]]));
+    expect(c.diasAferidos).toBe(1);
+    expect(c.diasAbaixoDoMinimo).toBe(0);
+    expect(c.porDia.has('2026-09-17')).toBe(false);
+  });
+
+  it('sem nenhum dia aferível não inventa mediana', () => {
+    const c = medirCoberturaDeVolume(pregao(14, 100), SESSAO_B3_FUTUROS, new Map());
+    expect(c.diasAferidos).toBe(0);
+    expect(c.medianaDaFracao).toBeNull();
+    expect(c.piorFracao).toBeNull();
+  });
+
+  it('barra sem volume não entra na soma (ausência não é zero)', () => {
+    const semVolume: Bar[] = [{ time: utc(2026, 9, 14, 12, 0), open: 1, high: 1, low: 1, close: 1 }];
+    const c = medirCoberturaDeVolume(
+      [...pregao(14, 100), ...semVolume],
+      SESSAO_B3_FUTUROS,
+      new Map([['2026-09-14', 1000]]),
+    );
+    expect(c.porDia.get('2026-09-14')).toBeCloseTo(1, 9);
+  });
+
+  it('⭐ `diaDeMercado` usa o fuso do MERCADO, não o da máquina', () => {
+    // 17/09 00:30 UTC é ainda 16/09 21:30 em Brasília: o pregão é o de 16/09.
+    expect(diaDeMercado(utc(2026, 9, 17, 0, 30), SESSAO_B3_FUTUROS)).toBe('2026-09-16');
+    expect(diaDeMercado(utc(2026, 9, 17, 12, 0), SESSAO_B3_FUTUROS)).toBe('2026-09-17');
+    // Num mercado sem offset o dia é o do próprio carimbo.
+    expect(diaDeMercado(utc(2026, 9, 17, 0, 30), SESSAO_24_7)).toBe('2026-09-17');
+  });
+});
+
+describe('⭐⭐⭐ intradiarioDegradado — a decisão de quem manda na emenda', () => {
+  it('o intradiário DEPOIS do corte é degradado; o de antes, não', () => {
+    const antes = utc(2026, 5, 20, 12, 0);
+    const depois = utc(2026, 9, 17, 12, 0);
+    expect(intradiarioDegradado(PERFIL_DA_MESA, 300, antes)).toBe(false);
+    expect(intradiarioDegradado(PERFIL_DA_MESA, 300, depois)).toBe(true);
+  });
+
+  it('⭐ o DIÁRIO nunca é degradado — o fechamento continua exato', () => {
+    // Medido: idêntico ao oficial da B3 em 62 de 62 dias. O negócio do leilão de fechamento é
+    // grande e nunca escapa da captura; o que se perde é o CAMINHO dentro do dia.
+    const depois = utc(2026, 9, 17, 12, 0);
+    expect(intradiarioDegradado(PERFIL_DA_MESA, 86_400, depois)).toBe(false);
+  });
+
+  it('⚠️ perfil que não declara o corte nunca degrada nada', () => {
+    // ⭐ É o critério de parametrização: outra fonte não herda o defeito desta.
+    const outra: PerfilDeQualidade = { nome: 'outra fonte' };
+    expect(intradiarioDegradado(outra, 300, utc(2026, 9, 17, 12, 0))).toBe(false);
+  });
+
+  it('o laudo REPROVA e explica, sem esvaziar a tela', () => {
+    const barras = Array.from({ length: 20 }, (_, i) => ({
+      time: utc(2026, 9, 17, 12, 0) + i * 300,
+      open: 100,
+      high: 101,
+      low: 99,
+      close: 100.5,
+      volume: 10,
+      buyVolume: 5,
+      sellVolume: 5,
+    }));
+    const laudo = avaliarQualidade(PERFIL_DA_MESA, { periodSeconds: 300, barras });
+    expect(laudo.nivel).toBe('REPROVADO');
+    expect(laudo.motivos.join(' ')).toContain('perdeu negócios no intradiário');
+    // ⭐ E continua sendo só um laudo: nenhuma barra é devolvida nem removida.
+    expect(barras).toHaveLength(20);
   });
 });

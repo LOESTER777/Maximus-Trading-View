@@ -40,6 +40,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  MAX_BARRAS_CAMINHO_PROFUNDO_MT5,
   PERFIL_DA_MESA,
   SESSAO_24_7,
   SESSAO_B3_ACOES,
@@ -47,6 +48,7 @@ import {
   alcancouInicio,
   avaliarQualidade,
   bridgeConectada,
+  intradiarioDegradado,
   criarFonteDeBarrasDaMesa,
   criarFonteDeBarrasDoMt5,
   emendarSeries,
@@ -634,6 +636,14 @@ export interface DadoDaMesaComAoVivo extends DadoDaMesa {
    * perfil de volume como se fossem dias reais.
    */
   readonly diasSemPregaoRemovidos: number;
+  /**
+   * ⭐⭐⭐ Barras cujo PREÇO veio do terminal porque o arquivo perdeu negócios.
+   *
+   * ⚠️ Diferente de zero significa que o gráfico está mostrando o caminho de preço do terminal em
+   * cima do arquivo — e o operador tem de saber, porque nessas barras o VOLUME não é desenhado
+   * (`/candles` devolve tick volume, unidade errada, e omitir é mais honesto que mentir).
+   */
+  readonly barrasDoCaminhoProfundo: number;
 }
 
 /**
@@ -748,6 +758,57 @@ export function useMesaComAoVivo(params: {
     [querAoVivo, ligado, symbol],
   );
 
+  /**
+   * ⭐⭐⭐ O CAMINHO DO PREÇO PROFUNDO — a fonte que conserta o gráfico do período degradado.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O RELATO, E A MEDIÇÃO QUE O EXPLICOU
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ⚠️ *"o horário está certo agora, mas os movimentos e a direção das barras não condizem com o
+   * que é real"*, com as duas telas lado a lado. Medido no pregão de 17/09/2026, `WIN` 5min:
+   *
+   * ```
+   *              amplitude do dia    mínima
+   * arquivo         1.075 pts        187.545 às 12:55
+   * terminal        4.620 pts        184.465 às 10:40   ⇠ a queda que houve
+   * ```
+   *
+   * ⭐⭐ E a causa, provada contra a ÂNCONA OFICIAL da B3 (`traded_qty` do `/settlement`): o
+   * arquivo tinha **100 % do volume da bolsa até mai/2026** e passou a ter **21 % a 31 %** de
+   * jun/2026 em diante. Faltam ~80 % dos negócios, e os que faltam incluem os que fazem a máxima
+   * e a mínima — por isso a amplitude encolhe 3–4x e o fechamento continua exato (o negócio do
+   * leilão de fechamento é grande e nunca escapa).
+   *
+   * ⇒ **No período degradado o arquivo não pode ser canônico.** Ele desenha um mercado que não
+   * existiu, e nenhuma ressalva escrita compensa isso: preço errado é a única coisa que este
+   * gráfico não pode mostrar.
+   *
+   * ⚠️ **O custo, declarado:** esta fonte usa `/candles`, que devolve **tick volume** em vez de
+   * contratos (medido: 4.104 contra 36.819 na mesma barra). Então ela vem com `omitirVolume` e o
+   * histograma fica VAZIO nessas barras. `undefined` é *"não sei"*; um número dez vezes maior na
+   * mesma escala seria uma afirmação falsa sobre a liquidez. O agressor também não vem — quem
+   * traz é `/historical-flow`, e ele só alcança 4 pregões (464 barras em 23 s, e derruba a
+   * conexão acima disso).
+   *
+   * ⭐ É consulta PONTUAL, fora do laço de polling: 5.000 barras de 5 min (63 dias) em **0,1 s**.
+   * O laço continua no `/historical-flow` de 1 dia.
+   */
+  const fonteCaminhoMt5 = useMemo(
+    () =>
+      criarFonteDeBarrasDoMt5({
+        fetch: (url, init) => fetch(url, init),
+        baseUrl: baseUrlMt5,
+        comFluxo: false,
+        omitirVolume: true,
+        tetoDeBarras: MAX_BARRAS_CAMINHO_PROFUNDO_MT5,
+        // ⚠️ 15 s: a rota mede 0,1 s, mas a bridge SERIALIZA — se um `/historical-flow` estiver
+        // em vôo, esta espera atrás dele.
+        timeoutMs: 15_000,
+      }),
+    [baseUrlMt5],
+  );
+
   const fonteMt5 = useMemo(
     () =>
       criarFonteDeBarrasDoMt5({
@@ -814,6 +875,69 @@ export function useMesaComAoVivo(params: {
     })();
     return () => ctrl.abort();
   }, [temAoVivo, baseUrlMt5, symbol]);
+
+  /**
+   * ⭐⭐⭐ O caminho de preço profundo do terminal, buscado UMA VEZ por (símbolo, período).
+   *
+   * Ver `fonteCaminhoMt5` para a medição que obriga isto a existir. Aqui só a costura, e ela
+   * repete o CARIMBO da mesma forma que o ao vivo: a consulta é assíncrona, e sem carimbo um lote
+   * de outro período emendaria na grade errada — foi o defeito "as barras não respeitam o TF".
+   */
+  const [caminhoProfundo, setCaminhoProfundo] = useState<{
+    readonly periodSeconds: number;
+    readonly symbol: string;
+    readonly barras: readonly Bar[];
+  } | null>(null);
+
+  /**
+   * O arquivo está no período em que perdeu negócios? Então o terminal manda.
+   *
+   * ⚠️ Do PERFIL, não de um `if` com data escrita aqui: quem sabe até quando a fonte é íntegra é
+   * o perfil de qualidade dela, e outro projeto passa o seu.
+   */
+  const arquivoDegradado = useMemo(() => {
+    if (!temAoVivo) return false;
+    // O fim da janela pedida é "agora": é o que o gráfico está mostrando na ponta direita.
+    return intradiarioDegradado(PERFIL_DA_MESA, periodSeconds, Math.floor(Date.now() / 1000));
+  }, [temAoVivo, periodSeconds]);
+
+  useEffect(() => {
+    if (!arquivoDegradado || contratoVigente === null || !aoVivoLigado) {
+      setCaminhoProfundo(null);
+      return;
+    }
+    if (rotuloDePeriodoMt5(periodSeconds) === null) {
+      setCaminhoProfundo(null);
+      return;
+    }
+    const ctrl = new AbortController();
+    let vivo = true;
+    void (async () => {
+      const r = await fonteCaminhoMt5.getBars(
+        { instrument: { symbol: contratoVigente }, periodSeconds },
+        ctrl.signal,
+      );
+      if (!vivo || ctrl.signal.aborted) return;
+      // ⚠️ Falha aqui NÃO derruba nada: sem o caminho profundo o gráfico volta ao arquivo, com a
+      // ressalva do laudo na trilha. Degradar dizendo por quê é a disciplina da camada.
+      if (r.ok) setCaminhoProfundo({ periodSeconds, symbol, barras: r.data });
+    })();
+    return () => {
+      vivo = false;
+      ctrl.abort();
+    };
+  }, [arquivoDegradado, contratoVigente, aoVivoLigado, periodSeconds, symbol, fonteCaminhoMt5]);
+
+  /** O caminho profundo que vale para o pedido CORRENTE. Ver o carimbo. */
+  const barrasDoCaminho = useMemo<readonly Bar[]>(
+    () =>
+      caminhoProfundo !== null &&
+      caminhoProfundo.periodSeconds === periodSeconds &&
+      caminhoProfundo.symbol === symbol
+        ? caminhoProfundo.barras
+        : [],
+    [caminhoProfundo, periodSeconds, symbol],
+  );
 
   // ── O dia corrente, repetido ──────────────────────────────────────────────
   useEffect(() => {
@@ -895,11 +1019,42 @@ export function useMesaComAoVivo(params: {
         ? { mantidas: historicoComoBarras, removidas: [] as readonly Bar[] }
         : filtrarDiasSemPregao(historicoComoBarras, periodSeconds, sessao);
 
-    const emendado = emendarSeries(limpo.mantidas, barrasAoVivo, periodSeconds, {
+    /**
+     * ⭐⭐⭐ TRÊS CAMADAS, e a ordem é a hierarquia de confiança do PREÇO.
+     *
+     * 1. arquivo — canônico até mai/2026 (100 % do volume da bolsa, agressor, consolidado);
+     * 2. caminho profundo do terminal — o preço REAL dos ~63 dias recentes, sem volume;
+     * 3. `/historical-flow` do terminal — o pregão corrente, com volume em contratos e agressor.
+     *
+     * ⚠️ A precedência da camada 2 é **`'AO_VIVO_VENCE'`**, e é a mudança que conserta a tela: no
+     * período degradado o arquivo tem ~20 % dos negócios e desenha uma amplitude 3–4x menor que a
+     * real, então ele NÃO pode ganhar a sobreposição. Fora do período degradado esta camada nem
+     * existe (`barrasDoCaminho` é `[]`), e o arranjo antigo — corte, arquivo canônico — volta
+     * inteiro, byte a byte.
+     *
+     * ⚠️ `aoDivergir: 'EMENDAR_MESMO_ASSIM'` só na camada 2, e é deliberado: `medirCoerencia`
+     * VAI reprovar (é justamente porque as duas discordam do preço que esta camada existe).
+     * Recusar aqui devolveria o arquivo, que é a série errada. A camada 3 mantém a recusa
+     * default, porque lá as duas cotam o mesmo dia e divergência é sinal de problema.
+     */
+    const comCaminho =
+      barrasDoCaminho.length === 0
+        ? { barras: limpo.mantidas, doAoVivo: 0, foraDaGrade: 0, descartadasPeloCorte: 0 }
+        : emendarSeries(limpo.mantidas, barrasDoCaminho, periodSeconds, {
+            precedencia: 'AO_VIVO_VENCE',
+            toleranciaDeSegundos: 4 * 86_400,
+            aoDivergir: 'EMENDAR_MESMO_ASSIM',
+          });
+
+    const emendado = emendarSeries(comCaminho.barras, barrasAoVivo, periodSeconds, {
       // ⚠️ Tolerância de 4 dias: entre a última barra do arquivo (pregão anterior) e a
       // primeira de hoje cabem fim de semana e feriado. Sem isto, toda segunda-feira
       // reportaria uma lacuna que é só o calendário.
       toleranciaDeSegundos: 4 * 86_400,
+      // ⭐ Com o caminho profundo em cima, a sobreposição do dia corrente é entre DUAS séries do
+      // terminal — mesma origem, mesma unidade de preço. Aí o mais fresco vence, e é o que traz
+      // volume em contratos e agressor.
+      ...(barrasDoCaminho.length === 0 ? {} : { precedencia: 'AO_VIVO_VENCE' as const }),
     });
 
     // ⭐ O laudo é sobre a série FINAL — a que está na tela. Avaliar o histórico antes da emenda
@@ -954,10 +1109,12 @@ export function useMesaComAoVivo(params: {
           : null,
       laudo,
       diasSemPregaoRemovidos: limpo.removidas.length,
+      barrasDoCaminhoProfundo: comCaminho.doAoVivo,
     };
   }, [
     historico,
     barrasAoVivo,
+    barrasDoCaminho,
     periodSeconds,
     symbol,
     aoVivoLigado,

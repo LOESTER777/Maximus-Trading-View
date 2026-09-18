@@ -101,6 +101,22 @@ export interface PerfilDeQualidade {
    * pegar. `0.02` separa os dois casos por duas ordens de grandeza.
    */
   readonly fracaoToleradaForaDaSessao?: number;
+  /**
+   * ⭐⭐⭐ Epoch a partir do qual o INTRADIÁRIO desta fonte é conhecido como INCOMPLETO.
+   *
+   * ⚠️ Não é uma ressalva de precisão: é a fonte não ter os negócios. Medido no arquivo da mesa
+   * contra o `traded_qty` oficial da B3 — 100 % do volume até maio/2026, **21 % a 31 %** de
+   * junho/2026 em diante. Com um quinto dos negócios a amplitude do dia encolhe 3–4x, porque os
+   * negócios que faltam incluem os que fazem a máxima e a mínima.
+   *
+   * ⭐ Existe como CAMPO porque o consumidor precisa DECIDIR com isso: no período degradado o
+   * arquivo não pode ser canônico na emenda — o terminal tem de vencer. Ver `intradiarioDegradado`
+   * e `OpcoesDaEmenda.precedencia`.
+   *
+   * ⚠️ Vale só abaixo de um dia. O fechamento DIÁRIO do arquivo continua exato (idêntico ao
+   * oficial em 62 de 62 dias): o negócio do leilão de fechamento é grande e nunca escapa.
+   */
+  readonly intradiarioIncompletoDesde?: number | null;
 }
 
 /** O veredito. Sempre completo, para a trilha poder mostrar sem recalcular nada. */
@@ -263,6 +279,149 @@ export function filtrarDiasSemPregao(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// ⭐⭐⭐ Cobertura de volume contra a ÂNCORA OFICIAL
+// ═════════════════════════════════════════════════════════════════════════════
+
+/** Data civil `YYYY-MM-DD` no fuso do mercado. Chave de junção com o dado oficial. */
+export function diaDeMercado(time: number, sessao: SessaoDeMercado): string {
+  const local = time + sessao.offsetDoMercadoSegundos;
+  const dias = Math.floor(local / SEGUNDOS_POR_DIA);
+  // Reusa a conversão civil de `dataIso`, mas em ISO — é a grafia que a bolsa publica.
+  return isoDeDias(dias);
+}
+
+export interface CoberturaDeVolume {
+  /** Dias em que havia número oficial para comparar. */
+  readonly diasAferidos: number;
+  /** Fração mediana do volume oficial que a fonte traz. `null` sem dia aferível. */
+  readonly medianaDaFracao: number | null;
+  /** A pior fração observada. */
+  readonly piorFracao: number | null;
+  /** Dias abaixo do mínimo. */
+  readonly diasAbaixoDoMinimo: number;
+  /** Fração por dia, para quem quiser mostrar o perfil. */
+  readonly porDia: ReadonlyMap<string, number>;
+}
+
+/**
+ * ⭐⭐⭐ Quanto do volume que a BOLSA registrou a fonte realmente tem?
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * A MEDIÇÃO QUE EXPLICOU "AS BARRAS NÃO CONDIZEM COM O REAL"
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ Relato do operador, com as duas telas lado a lado: o horário estava certo, o fechamento
+ * batia, e **o caminho do preço era outro**. Medido no pregão de 17/09/2026, `WIN` 5min:
+ *
+ * ```
+ *              amplitude do dia    mínima
+ * arquivo         1.075 pts        187.545 às 12:55
+ * terminal        4.620 pts        184.465 às 10:40   ⇠ a queda REAL
+ * ```
+ *
+ * O arquivo simplesmente **não tem** a queda de 3.000 pontos. E não é corrupção: a série dele é
+ * internamente coerente, contígua, com agressor. Ela é um SUBCONJUNTO.
+ *
+ * ⭐⭐ **A prova, e é a única que decide, porque é EXTERNA:** o volume diário da fonte contra o
+ * `traded_qty` oficial da B3 (`GET /settlement`, por contrato). Medido, mês a mês:
+ *
+ * ```
+ * 2024-03  100,0 %      2026-01  100,0 %      2026-06   31,4 %  ⇠ QUEBROU AQUI
+ * 2024-09  100,0 %      2026-03  100,0 %      2026-07   31,3 %
+ * 2025-03  100,0 %      2026-05  100,0 %      2026-08   29,8 %
+ * 2025-09  100,0 %                            2026-09   21,1 %
+ * ```
+ *
+ * ⇒ Até maio/2026 o arquivo tinha **todo** o volume da bolsa. De junho em diante tem **um
+ * quinto**. Faltam ~80 % dos negócios — e os negócios que faltam incluem justamente os que fazem
+ * a máxima e a mínima. É por isso que a amplitude encolhe 3–4x e o fechamento continua exato: o
+ * negócio do leilão de fechamento é grande e nunca escapa.
+ *
+ * ⭐ E junho/2026 é a MESMA data de três outros sintomas já medidos: o `buy_vol` que passou a vir
+ * nulo em metade das barras, os pares diários que cessaram, e a razão `(buy+sell)/volume` que
+ * virou exatamente 1,000. **Um evento só quebrou a ingestão.**
+ *
+ * ⚠️ Comparar o volume de DUAS FONTES não serviria: o campo `volume` de uma bridge MT5 costuma
+ * ser contagem de tick, não contratos (medido: 35.756 contra 138.095 na mesma barra). A bolsa é a
+ * única referência de unidade.
+ *
+ * @param volumeOficialPorDia `YYYY-MM-DD` → contratos negociados, do dado oficial.
+ */
+export function medirCoberturaDeVolume(
+  barras: readonly Bar[],
+  sessao: SessaoDeMercado,
+  volumeOficialPorDia: ReadonlyMap<string, number>,
+  minimo = 0.9,
+): CoberturaDeVolume {
+  const somaPorDia = new Map<string, number>();
+  for (const b of barras) {
+    if (b.volume === undefined || !Number.isFinite(b.volume)) continue;
+    const dia = diaDeMercado(b.time, sessao);
+    somaPorDia.set(dia, (somaPorDia.get(dia) ?? 0) + b.volume);
+  }
+
+  const porDia = new Map<string, number>();
+  const fracoes: number[] = [];
+  let abaixo = 0;
+  for (const [dia, soma] of somaPorDia) {
+    const oficial = volumeOficialPorDia.get(dia);
+    // ⚠️ Dia sem número oficial é PULADO, não contado como zero. O pregão corrente nunca tem
+    // liquidação publicada, e tratá-lo como falta produziria alarme todo dia — o falso positivo
+    // que já aconteceu na primeira versão da auditoria.
+    if (oficial === undefined || !(oficial > 0)) continue;
+    const fracao = soma / oficial;
+    porDia.set(dia, fracao);
+    fracoes.push(fracao);
+    if (fracao < minimo) abaixo += 1;
+  }
+
+  if (fracoes.length === 0) {
+    return {
+      diasAferidos: 0,
+      medianaDaFracao: null,
+      piorFracao: null,
+      diasAbaixoDoMinimo: 0,
+      porDia,
+    };
+  }
+  const ordenadas = [...fracoes].sort((a, b) => a - b);
+  const meio = Math.floor(ordenadas.length / 2);
+  const mediana =
+    ordenadas.length % 2 === 1
+      ? (ordenadas[meio] as number)
+      : ((ordenadas[meio - 1] as number) + (ordenadas[meio] as number)) / 2;
+  return {
+    diasAferidos: fracoes.length,
+    medianaDaFracao: mediana,
+    piorFracao: ordenadas[0] as number,
+    diasAbaixoDoMinimo: abaixo,
+    porDia,
+  };
+}
+
+/**
+ * ⭐⭐ O período pedido cai na faixa em que o INTRADIÁRIO da fonte é conhecido como incompleto?
+ *
+ * ⚠️ Esta é a pergunta que o consumidor precisa responder ANTES de escolher quem manda na emenda.
+ * Enquanto o arquivo é íntegro ele é canônico (passou por consolidação e tem agressor); no
+ * período degradado ele desenha um mercado que não existiu, e aí o terminal tem de vencer.
+ *
+ * ⭐ Só vale para período ABAIXO de um dia: o fechamento diário do arquivo continua exato
+ * (medido: idêntico ao oficial da B3 em 62 de 62 dias), porque o negócio do leilão de fechamento
+ * nunca escapa da captura. O que se perde é o CAMINHO dentro do dia.
+ */
+export function intradiarioDegradado(
+  perfil: PerfilDeQualidade,
+  periodSeconds: number,
+  ateSegundos: number,
+): boolean {
+  if (periodSeconds >= SEGUNDOS_POR_DIA) return false;
+  const desde = perfil.intradiarioIncompletoDesde;
+  if (desde === undefined || desde === null) return false;
+  return ateSegundos >= desde;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // O laudo
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -273,10 +432,20 @@ function dentroDaJanela(time: number, janela: JanelaAferida | undefined): boolea
   return true;
 }
 
-/** Data em pt-BR a partir de epoch em segundos, sem `Date` e sem fuso de máquina. */
-function dataIso(epochSegundos: number): string {
-  // Algoritmo civil-from-days (Howard Hinnant), determinístico e puro.
-  const dias = Math.floor(epochSegundos / SEGUNDOS_POR_DIA) + 719_468;
+/** `YYYY-MM-DD` a partir do número de dias desde a época. Ver `civilDeDias`. */
+function isoDeDias(diasDesdeEpoca: number): string {
+  const { ano, mes, dia } = civilDeDias(diasDesdeEpoca);
+  return `${String(ano).padStart(4, '0')}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+}
+
+/**
+ * Dias desde a época → data civil. Algoritmo civil-from-days (Howard Hinnant).
+ *
+ * ⚠️ Sem `Date`: `.core` é puro, e `Date` traz o fuso da MÁQUINA para dentro do cálculo — o que
+ * faria a mesma barra cair em dias diferentes em máquinas diferentes.
+ */
+function civilDeDias(diasDesdeEpoca: number): { ano: number; mes: number; dia: number } {
+  const dias = diasDesdeEpoca + 719_468;
   const era = Math.floor(dias / 146_097);
   const diaDaEra = dias - era * 146_097;
   const anoDaEra = Math.floor(
@@ -288,9 +457,13 @@ function dataIso(epochSegundos: number): string {
   const dia = diaDoAno - Math.floor((153 * mp + 2) / 5) + 1;
   const mes = mp < 10 ? mp + 3 : mp - 9;
   if (mes <= 2) ano += 1;
-  const dd = String(dia).padStart(2, '0');
-  const mm = String(mes).padStart(2, '0');
-  return `${dd}/${mm}/${ano}`;
+  return { ano, mes, dia };
+}
+
+/** Data em pt-BR (`dd/mm/aaaa`) a partir de epoch em segundos. Para a trilha. */
+function dataIso(epochSegundos: number): string {
+  const { ano, mes, dia } = civilDeDias(Math.floor(epochSegundos / SEGUNDOS_POR_DIA));
+  return `${String(dia).padStart(2, '0')}/${String(mes).padStart(2, '0')}/${ano}`;
 }
 
 function pct(x: number): string {
@@ -315,6 +488,17 @@ export function avaliarQualidade(
     if (n === 'REPROVADO') nivel = 'REPROVADO';
     else if (n === 'RESSALVA' && nivel === 'OK') nivel = 'RESSALVA';
   };
+
+  // ⭐⭐⭐ O INTRADIÁRIO INCOMPLETO é a primeira linha, e é REPROVADO: não é imprecisão, é a
+  // fonte não ter os negócios. Com ~20 % do volume o caminho do preço dentro do dia é outro, e
+  // foi exatamente isso que o operador viu comparando as duas telas.
+  const ultima = barras[barras.length - 1];
+  if (ultima !== undefined && intradiarioDegradado(perfil, periodSeconds, ultima.time)) {
+    piora('REPROVADO');
+    motivos.push(
+      'A fonte perdeu negócios no intradiário a partir de jun/2026: ela traz ~20% do volume que a B3 registrou, e a amplitude do dia sai 3x menor que a real.',
+    );
+  }
 
   const regra = perfil.regrasPorPeriodo?.find((r) => r.periodSeconds === periodSeconds) ?? null;
   if (regra !== null && regra.situacao !== 'CONFIAVEL') {
@@ -521,6 +705,11 @@ export const PERFIL_DA_MESA: PerfilDeQualidade = {
   sessao: SESSAO_B3_FUTUROS,
   fracaoMinimaComAgressor: 0.5,
   fracaoToleradaForaDaSessao: 0.02,
+  // ⭐⭐⭐ 2026-06-01T00:00:00Z. Ver `medirCoberturaDeVolume`: a captura de tick caiu de 100 % do
+  // volume oficial da B3 para ~30 % exatamente aqui, e é a MESMA data em que o `buy_vol` passou a
+  // vir nulo em metade das barras, os pares diários cessaram e a razão `(buy+sell)/volume` virou
+  // 1,000 exato. Um evento só quebrou a ingestão.
+  intradiarioIncompletoDesde: 1_780_272_000,
   regrasPorPeriodo: [
     {
       periodSeconds: 60,
@@ -536,6 +725,10 @@ export const PERFIL_DA_MESA: PerfilDeQualidade = {
       motivo: '2min começa em jun/2023 e compartilha o buraco de jun–jul/2026 com o 1min.',
       janelaAferida: { de: 1_685_577_600, ate: 1_775_001_599 },
     },
+    // ⚠️ `CONFIAVEL` **dentro da janela aferida**, e a janela é o que importa: de junho/2026 em
+    // diante o 5min e o 15min do arquivo trazem ~20 % dos negócios do dia. Não é imprecisão de
+    // agregação — é a captura de tick incompleta, e `intradiarioIncompletoDesde` é o campo que o
+    // consumidor consulta para trocar quem manda na emenda.
     { periodSeconds: 300, situacao: 'CONFIAVEL' },
     { periodSeconds: 900, situacao: 'CONFIAVEL' },
     {

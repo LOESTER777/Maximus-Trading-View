@@ -103,6 +103,21 @@ export interface FonteDeBarrasDoMt5Options {
    * têm parâmetros diferentes — ver a nota em `montarCaminhoDeCandlesMt5`.
    */
   readonly dias?: number;
+  /**
+   * ⭐ OMITE o volume. Use com `comFluxo: false`, para pegar o CAMINHO DO PREÇO fundo e barato
+   * sem carregar o tick volume de `/candles` para dentro do histograma.
+   *
+   * ⚠️ Ver a nota longa em `OpcoesDeLeituraMt5.omitirVolume`: `undefined` é *"não sei"*, e é
+   * infinitamente melhor que um número dez vezes maior na mesma escala.
+   */
+  readonly omitirVolume?: boolean;
+  /**
+   * Teto de barras por consulta a `/candles`. Default 1.500.
+   *
+   * ⚠️ Use `MAX_BARRAS_CAMINHO_PROFUNDO_MT5` (5.000, medido em 0,1 s) só para busca PONTUAL. Em
+   * laço de polling mantenha o default — a bridge roda no mesmo processo que alimenta o robô.
+   */
+  readonly tetoDeBarras?: number;
   /** Limite de espera em ms. */
   readonly timeoutMs?: number;
 }
@@ -114,7 +129,11 @@ export function criarFonteDeBarrasDoMt5(opts: FonteDeBarrasDoMt5Options): BarsCa
   // Ver a nota longa em `comFluxo` — `/candles` devolve tick volume, e emendá-lo com o arquivo
   // produz um degrau de 10x no histograma, sem erro nenhum.
   const comFluxo = opts.comFluxo !== false;
-  const rota = { comFluxo, ...(opts.dias === undefined ? {} : { dias: opts.dias }) };
+  const rota = {
+    comFluxo,
+    ...(opts.dias === undefined ? {} : { dias: opts.dias }),
+    ...(opts.tetoDeBarras === undefined ? {} : { tetoDeBarras: opts.tetoDeBarras }),
+  };
 
   const cabecalhos = (): Record<string, string> => {
     const t = opts.token?.();
@@ -138,6 +157,7 @@ export function criarFonteDeBarrasDoMt5(opts: FonteDeBarrasDoMt5Options): BarsCa
       parseCandlesDoMt5(body, {
         ...(request.fromSeconds === undefined ? {} : { deSegundos: request.fromSeconds }),
         ...(request.toSeconds === undefined ? {} : { ateSegundos: request.toSeconds }),
+        ...(opts.omitirVolume === undefined ? {} : { omitirVolume: opts.omitirVolume }),
       }),
     headers: cabecalhos,
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),

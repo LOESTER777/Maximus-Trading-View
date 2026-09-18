@@ -336,9 +336,36 @@ export const MAX_DIAS_FLUXO_MT5 = 90;
  * entregam o RABO da série (as últimas N barras, os últimos N dias). Pedir 2019 aqui baixaria
  * de hoje para trás até 2019. Passado profundo é trabalho do arquivo, que é indexado.
  */
+/**
+ * ⭐⭐ Teto de barras quando o consumidor pede o CAMINHO DO PREÇO fundo, de propósito.
+ *
+ * ⚠️ Medido em 18/09/2026: `/candles` devolve **5.000 barras de 5 min (63 dias) em 0,1 s** —
+ * é a rota barata. `/historical-flow`, que traz agressor, entrega 464 barras em 23 s e
+ * **derruba a conexão** acima de `days=5`.
+ *
+ * ⭐ O teto default de 1.500 existe porque a bridge roda dentro do Wine, no mesmo processo que
+ * alimenta o robô que opera, e o passado profundo era trabalho do ARQUIVO. **Isso mudou:** o
+ * arquivo perdeu ~80 % dos negócios do intradiário a partir de jun/2026, então o caminho do
+ * preço recente só existe no terminal. Buscar fundo aqui deixou de ser desperdício e passou a
+ * ser a única forma de o gráfico mostrar o mercado que houve.
+ *
+ * ⚠️ **Uma vez, não em laço.** 0,1 s numa consulta pontual é irrelevante; a mesma consulta a
+ * cada 60 s não é. O polling continua no teto default.
+ */
+export const MAX_BARRAS_CAMINHO_PROFUNDO_MT5 = 5000;
+
 export function montarCaminhoDeCandlesMt5(
   request: BarsRequest,
-  opcoes?: { readonly comFluxo?: boolean; readonly dias?: number },
+  opcoes?: {
+    readonly comFluxo?: boolean;
+    readonly dias?: number;
+    /**
+     * Teto de barras para `/candles`. Default `MAX_BARRAS_POR_CONSULTA_MT5` (1.500).
+     *
+     * ⚠️ Ignorado com `comFluxo`: aquela rota recorta por `days`. Ver `MAX_BARRAS_CAMINHO_PROFUNDO_MT5`.
+     */
+    readonly tetoDeBarras?: number;
+  },
 ): string | null {
   const rotulo = rotuloDePeriodoMt5(request.periodSeconds);
   if (rotulo === null) return null;
@@ -358,10 +385,13 @@ export function montarCaminhoDeCandlesMt5(
     return `/historical-flow/${encodeURIComponent(symbol)}?${tf}&days=${dias}`;
   }
 
-  const limite = Math.min(
-    MAX_BARRAS_POR_CONSULTA_MT5,
-    Math.max(1, Math.ceil(request.limit ?? MAX_BARRAS_POR_CONSULTA_MT5)),
+  // ⚠️ O teto é do CONSUMIDOR, com o default conservador. Ver `MAX_BARRAS_CAMINHO_PROFUNDO_MT5`:
+  // 1.500 protege o polling; a busca pontual do caminho profundo precisa de mais e mede 0,1 s.
+  const teto = Math.max(
+    1,
+    Math.floor(opcoes?.tetoDeBarras ?? MAX_BARRAS_POR_CONSULTA_MT5),
   );
+  const limite = Math.min(teto, Math.max(1, Math.ceil(request.limit ?? teto)));
   return `/candles/${encodeURIComponent(symbol)}?${tf}&limit=${limite}`;
 }
 
@@ -417,6 +447,27 @@ export interface OpcoesDeLeituraMt5 {
    * talvez precise de limiar mais frouxo — e quem sabe disso é quem escolheu a fonte.
    */
   readonly coberturaMinimaDeAgressor?: number;
+  /**
+   * ⭐⭐ OMITE o volume das barras. Default `false`.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * POR QUE OMITIR É MELHOR QUE ENTREGAR O NÚMERO ERRADO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ⚠️ A rota `/candles` da bridge devolve **tick volume** (número de negócios), não contratos.
+   * Medido na mesma barra: `/candles` **4.104** contra `/historical-flow` **36.819** — uma ordem
+   * de grandeza, sem nenhum aviso no corpo da resposta.
+   *
+   * ⭐ Isto existe porque `/candles` é a única rota que alcança fundo (medido: **5.000 barras de
+   * 5 min, 63 dias, em 0,1 s**, contra 464 barras em 23 s do `/historical-flow`, que trava acima
+   * disso). Quando o que se precisa é o **caminho do preço** — e é o que se precisa quando o
+   * arquivo perdeu negócios — vale usar `/candles` e **declarar que não se sabe o volume**.
+   *
+   * ⚠️ Emendar tick volume com volume em contratos desenharia um degrau de 10x no histograma,
+   * indistinguível de uma explosão de liquidez. `undefined` é *"não sei"*, e o histograma
+   * simplesmente não desenha ali — que é a verdade sobre o dado.
+   */
+  readonly omitirVolume?: boolean;
 }
 
 export function parseCandlesDoMt5(
@@ -457,7 +508,9 @@ export function parseCandlesDoMt5(
     if (!(time > ultimoTempo)) continue;
     ultimoTempo = time;
 
-    const volume = numeroOuAusente(c['volume']);
+    // ⭐ `omitirVolume` some com o campo ANTES de tudo. Ver a nota da opção: `/candles` devolve
+    // tick volume, e emendá-lo com contratos desenha um degrau de 10x no histograma.
+    const volume = opcoes?.omitirVolume === true ? undefined : numeroOuAusente(c['volume']);
     const compraCrua = numeroOuAusente(c['buy_volume']);
     const vendaCrua = numeroOuAusente(c['sell_volume']);
 

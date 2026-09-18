@@ -96,11 +96,79 @@ escritas aqui:
   terminal.
 - ⛔ **não é fuso.** Erro de fuso não desaparece no fechamento.
 
-⚠️ A divergência de 0,16 %–0,22 % é **só intradiária**, e a explicação restante é
-**HIPÓTESE não verificada**: o terminal é um MT5 de varejo, que entrega tick amostrado, e o
-arquivo é tick completo. O fechamento de um balde de 5 min é *"o último negócio"* num e *"o
-último tick que chegou"* no outro; no fim do dia os dois convergem porque o leilão de fechamento
-sempre chega. Consistente com tudo o que foi medido, mas registrado como hipótese.
+### ⭐⭐⭐ E A CAUSA DA DIVERGÊNCIA INTRADIÁRIA: o arquivo PERDEU OS NEGÓCIOS em jun/2026
+
+⚠️ Eu havia escrito aqui a hipótese de *"tick amostrado do feed de varejo"*, com a ressalva de
+que era hipótese. **Era hipótese errada, e a inversão é completa: quem está incompleto é o
+ARQUIVO, não o terminal.**
+
+O operador viu antes de qualquer teste: *"o horário está certo agora, mas os movimentos e a
+direção das barras não condizem com o que é real"*, com as duas telas de 5 min lado a lado.
+Medido no pregão de 17/09/2026:
+
+| | amplitude do dia | mínima |
+|---|---|---|
+| arquivo | **1.075 pts** | 187.545 às 12:55 |
+| terminal | **4.620 pts** | 184.465 às 10:40 ⇠ a queda que houve |
+
+O arquivo simplesmente **não tem** a queda de 3.000 pontos. E não é corrupção: a série dele é
+contígua, com agressor, internamente coerente **em todos os períodos** (1min, 2min, 5min, 15min,
+1h dão a mesma amplitude de 1.075). É um SUBCONJUNTO coerente.
+
+⭐⭐ **A prova, contra a ÂNCORA OFICIAL** (`traded_qty` do `/settlement`, por contrato):
+
+```
+mês       volume do 5min do arquivo / traded_qty oficial da B3
+2024-03   100,0 %      2026-01   100,0 %      2026-06    31,4 %  ⇠ QUEBROU AQUI
+2024-09   100,0 %      2026-03   100,0 %      2026-07    31,3 %
+2025-03   100,0 %      2026-05   100,0 %      2026-08    29,8 %
+2025-09   100,0 %                             2026-09    21,1 %
+```
+
+⇒ Até maio/2026 o arquivo tinha **todo** o volume da bolsa. De junho em diante tem **um quinto**.
+Faltam ~80 % dos negócios, e os que faltam incluem os que fazem a máxima e a mínima — daí a
+amplitude encolher 3–4x. O fechamento continua exato porque o negócio do leilão de fechamento é
+grande e nunca escapa.
+
+⭐⭐ **Junho/2026 é a MESMA data de três outros sintomas já medidos:** o `buy_vol` que passou a
+vir nulo em metade das barras de 5min, os pares diários que cessaram (29/05 foi o último) e a
+razão `(buy+sell)/volume` que virou exatamente 1,000 em vez de 0,982. **Um evento só quebrou a
+ingestão**, e é isso que se cobra de quem mantém `aggregate-bars.ts` no projeto Trading.
+
+### A CORREÇÃO: três camadas, e a precedência inverte no período degradado
+
+⛔ Nenhuma ressalva escrita compensa preço errado. No período degradado o arquivo **não pode ser
+canônico**, e a emenda passou a ter três camadas:
+
+1. **arquivo** — canônico até mai/2026 (100 % do volume, agressor, consolidado);
+2. **caminho profundo do terminal** (`/candles`, `precedencia: 'AO_VIVO_VENCE'`) — o preço REAL
+   dos ~63 dias recentes;
+3. **`/historical-flow` do terminal** — o pregão corrente, com volume em contratos e agressor.
+
+⚠️ **O custo, declarado e visível na trilha:** `/candles` devolve **tick volume** (medido: 4.104
+contra 36.819 na mesma barra), então a camada 2 usa `omitirVolume: true` e o histograma fica
+**vazio** nessas barras. `undefined` é *"não sei"*; um número dez vezes maior na mesma escala
+seria afirmação falsa sobre liquidez.
+
+⚠️ **`aoDivergir: 'EMENDAR_MESMO_ASSIM'` só na camada 2**, e é deliberado: `medirCoerencia` VAI
+reprovar — é *porque* as duas discordam do preço que a camada existe. Com o default
+(`'SO_HISTORICO'`) a emenda devolveria o arquivo, que é a série errada. Há teste registrando isso
+para ninguém "consertar" removendo a opção.
+
+⭐ **Fora do período degradado nada muda**: `barrasDoCaminho` é `[]` e o arranjo antigo (corte,
+arquivo canônico) volta byte a byte.
+
+⭐⭐ **Medições que sustentam o desenho das rotas:**
+
+| rota | alcance | custo | agressor | volume |
+|---|---|---|---|---|
+| `/candles` | **5.000 barras / 63 dias** | **0,1 s** | não | tick volume ⛔ |
+| `/historical-flow` | 464 barras / 4 pregões | 23 s, **derruba a conexão** em `days=10` | sim | contratos ✔ |
+
+⭐ Verificação de integração: `node scripts/verificar-caminho-de-preco.mjs --contrato WINV26`.
+Ela responde UMA pergunta — *a amplitude do dia na série emendada é a do terminal (real) ou a do
+arquivo (incompleta)?* — e passou em **5/5 dias**. A bancada não pode provar isso: ela roda sem
+rede, por disciplina.
 
 ⭐ `scripts/auditoria-de-dados.mjs` ganhou `verificarContraLiquidacao`, que é essa aferição
 permanente. Ela já achou um defeito NOVO: no **WDO**, 20 de 86 dias do arquivo NÃO batem com o

@@ -241,6 +241,13 @@ export {
   avaliarQualidade,
   intervaloTocaSessao,
   filtrarDiasSemPregao,
+  medirCoberturaDeVolume,
+  intradiarioDegradado,
+  diaDeMercado,
+  /** ⭐⭐⭐ Quanto do volume que a BOLSA registrou a fonte tem? A única âncora de unidade. */
+  medirCoberturaDeVolume as measureOfficialVolumeCoverage,
+  /** O periodo pedido cai na faixa em que o intradiario da fonte e incompleto? */
+  intradiarioDegradado as intradayIsDegraded,
   PERFIL_DA_MESA,
   SESSAO_B3_FUTUROS,
   SESSAO_B3_ACOES,
@@ -259,6 +266,7 @@ export type {
   SessaoDeMercado,
   RegraDePeriodo,
   JanelaAferida,
+  CoberturaDeVolume,
 } from './qualidade-da-fonte.core.js';
 
 export { criarFonteDeBarrasDaMesa } from './robustus-bars-source.js';
@@ -316,6 +324,7 @@ export {
   parseCandlesDoMt5,
   OFFSET_CANDLES_MT5_SEGUNDOS,
   MAX_BARRAS_POR_CONSULTA_MT5,
+  MAX_BARRAS_CAMINHO_PROFUNDO_MT5,
   MAX_DIAS_FLUXO_MT5,
   PERIODOS_DA_BRIDGE_MT5,
   /** Corrige o `timestamp` da bridge para epoch real — a unidade errada não deve circular. */

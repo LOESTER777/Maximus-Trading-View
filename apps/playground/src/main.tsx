@@ -835,6 +835,22 @@ export function App(): JSX.Element {
       });
     }
 
+    // ⭐⭐⭐ O CAMINHO DE PREÇO veio do terminal porque o arquivo perdeu negócios.
+    //
+    // ⚠️ Tem de aparecer, e não é alarme: é a explicação de duas coisas que o operador VÊ. A
+    // primeira é o preço estar diferente de ontem para hoje na mesma tela (é o caminho certo
+    // entrando). A segunda é o histograma de volume ficar VAZIO nessas barras — `/candles`
+    // devolve tick volume, unidade errada, e omitir é mais honesto que desenhar um degrau de 10x.
+    if (mesa.barrasDoCaminhoProfundo > 0) {
+      notas.push({
+        fonte: 'preco',
+        linhas: [
+          `Preço de ${mesa.barrasDoCaminhoProfundo} barras vem do terminal: o arquivo perdeu negócios desde jun/2026.`,
+          'Nessas barras o volume não é desenhado — a rota do terminal informa em outra unidade.',
+        ],
+      });
+    }
+
     // ⭐⭐ O LAUDO DA FONTE. É a última linha de propósito: é contexto sobre o dado, não sobre
     // o carregamento, e o operador lê de cima para baixo.
     //
@@ -868,6 +884,7 @@ export function App(): JSX.Element {
     mesa.divergenciaDasFontes,
     mesa.laudo,
     mesa.diasSemPregaoRemovidos,
+    mesa.barrasDoCaminhoProfundo,
     ativoMesa,
     tf.label,
     quedaParaSintetico,

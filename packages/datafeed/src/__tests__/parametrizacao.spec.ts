@@ -25,9 +25,12 @@ import {
   parseBarrasDaMesa,
 } from '../robustus-bars.core.js';
 import {
+  MAX_BARRAS_CAMINHO_PROFUNDO_MT5,
+  MAX_BARRAS_POR_CONSULTA_MT5,
   OFFSET_CANDLES_MT5_SEGUNDOS,
   epochParaMt5,
   epochRealDoMt5,
+  montarCaminhoDeCandlesMt5,
   parseCandlesDoMt5,
 } from '../mt5-bridge.core.js';
 import { emendarSeries } from '../splice-series.core.js';
@@ -434,5 +437,145 @@ describe('⭐⭐ AMARRA 7: o conhecimento de QUALIDADE da fonte era comentário,
         { periodSeconds: 86_400, barras },
       ).foraDaSessao,
     ).toHaveLength(0);
+  });
+});
+
+describe('⭐⭐⭐ AMARRA 8: "o passado profundo é do arquivo" era regra embutida', () => {
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * A PREMISSA QUE DEIXOU DE VALER
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * O adaptador da bridge tinha duas decisões escritas como se fossem leis da natureza:
+   * *"o volume vem sempre"* e *"o passado profundo é trabalho do arquivo"*. As duas se apoiavam
+   * na mesma premissa — que o arquivo é íntegro.
+   *
+   * ⚠️ Medido em 18/09/2026 contra o `traded_qty` oficial da B3: o arquivo tinha 100 % do volume
+   * do mercado até mai/2026 e passou a ter **21 % a 31 %** de jun/2026 em diante. Com um quinto
+   * dos negócios a amplitude do dia sai 3–4x menor que a real, porque os negócios que faltam são
+   * os que fazem a máxima e a mínima. O operador viu isso na tela antes de qualquer teste pegar.
+   *
+   * ⭐ As duas decisões viraram ARGUMENTO. E a fronteira segue clara: nada aqui muda o default.
+   */
+  const cruSemFluxo = [
+    { timestamp: 1000, open: 1, high: 2, low: 0, close: 1, volume: 4104 },
+    { timestamp: 1300, open: 1, high: 2, low: 0, close: 1, volume: 4436 },
+  ];
+
+  it('⭐ `omitirVolume` some com o campo em vez de entregar tick volume', () => {
+    // ⚠️ `/candles` devolve tick volume; `/historical-flow`, contratos. Medido na mesma barra:
+    // 4.104 contra 36.819. Emendar os dois desenha um degrau de 10x no histograma, indistinguível
+    // de explosão de liquidez.
+    const comVolume = parseCandlesDoMt5(cruSemFluxo);
+    expect(comVolume?.[0]).toHaveProperty('volume', 4104);
+
+    const sem = parseCandlesDoMt5(cruSemFluxo, { omitirVolume: true });
+    expect(sem).toHaveLength(2);
+    // ⭐ AUSENTE, não zero: `undefined` é "não sei" e o histograma não desenha; zero seria a
+    // afirmação de que não houve negócio.
+    expect(sem?.[0]).not.toHaveProperty('volume');
+    expect(sem?.[1]).not.toHaveProperty('volume');
+    // O PREÇO — que é o motivo de usar esta rota — continua intacto.
+    expect(sem?.[0]?.close).toBe(1);
+    expect(sem?.[0]?.high).toBe(2);
+  });
+
+  it('⚠️ o default NÃO omite: quem não pede nada continua recebendo o que recebia', () => {
+    expect(parseCandlesDoMt5(cruSemFluxo, {})?.[0]).toHaveProperty('volume');
+    expect(parseCandlesDoMt5(cruSemFluxo, { omitirVolume: false })?.[0]).toHaveProperty('volume');
+  });
+
+  it('⭐ `tetoDeBarras` deixa o consumidor pedir o caminho PROFUNDO', () => {
+    const pedido = { instrument: { symbol: 'WINV26' }, periodSeconds: 300 };
+    // Default conservador: 1.500 protege o polling, porque a bridge roda no mesmo processo que
+    // alimenta o robô que opera.
+    expect(montarCaminhoDeCandlesMt5(pedido)).toContain(`limit=${MAX_BARRAS_POR_CONSULTA_MT5}`);
+    // ⭐ E a busca PONTUAL alcança 63 dias, medidos em 0,1 s — é o que traz o preço real do
+    // período em que o arquivo perdeu negócios.
+    expect(
+      montarCaminhoDeCandlesMt5(pedido, { tetoDeBarras: MAX_BARRAS_CAMINHO_PROFUNDO_MT5 }),
+    ).toContain(`limit=${MAX_BARRAS_CAMINHO_PROFUNDO_MT5}`);
+  });
+
+  it('⚠️ o teto RECORTA o pedido, e nunca o amplia', () => {
+    const pedido = { instrument: { symbol: 'WINV26' }, periodSeconds: 300, limit: 99_999 };
+    expect(montarCaminhoDeCandlesMt5(pedido, { tetoDeBarras: 2000 })).toContain('limit=2000');
+    // Pedido menor que o teto é respeitado: o teto é proteção, não piso.
+    expect(
+      montarCaminhoDeCandlesMt5(
+        { instrument: { symbol: 'WINV26' }, periodSeconds: 300, limit: 50 },
+        { tetoDeBarras: 5000 },
+      ),
+    ).toContain('limit=50');
+  });
+
+  it('⚠️ `tetoDeBarras` é IGNORADO na rota de fluxo — ela recorta por `days`', () => {
+    // ⭐ É a armadilha já registrada: mandar `limit` para `/historical-flow` faz o parâmetro ser
+    // ignorado e a rota cair no default de 30 dias de tick reclassificado, que estourou 60 s.
+    const caminho = montarCaminhoDeCandlesMt5(
+      { instrument: { symbol: 'WINV26' }, periodSeconds: 300 },
+      { comFluxo: true, dias: 2, tetoDeBarras: 5000 },
+    );
+    expect(caminho).toContain('days=2');
+    expect(caminho).not.toContain('limit');
+  });
+
+  it('⭐⭐ a EMENDA com o terminal vencendo produz a amplitude REAL, e é o conserto', () => {
+    // ⚠️ Reproduz o caso medido no pregão de 17/09/2026 em escala: o arquivo tem um dia de 1.075
+    // pontos de amplitude e o terminal, 4.620. Com o arquivo canônico (default `'CORTE'`) a
+    // amplitude que sai é a INCOMPLETA — e é o que o operador viu na tela.
+    //
+    // ⚠️ O extremo do terminal está no balde do MEIO, não no último, e isso é essencial para o
+    // teste medir o que ele diz medir: no default `'CORTE'` o ao vivo substitui o ÚLTIMO balde do
+    // arquivo (ele pode estar em formação). Um extremo no último balde entraria mesmo com corte, e
+    // o teste passaria sem provar nada sobre a precedência.
+    const arquivo = [
+      barra(300, 100, { high: 100.5, low: 99.9 }),
+      barra(600, 100, { high: 100.4, low: 99.95 }),
+      barra(900, 100, { high: 100.6, low: 99.8 }),
+    ];
+    const terminal = [
+      barra(300, 100, { high: 100.5, low: 99.9 }),
+      barra(600, 100, { high: 104, low: 96 }),
+      barra(900, 100, { high: 100.6, low: 99.8 }),
+    ];
+
+    const comCorte = emendarSeries(arquivo, terminal, 300, { toleranciaDeSegundos: 4 * 86_400 });
+    const ampCorte =
+      Math.max(...comCorte.barras.map((b) => b.high)) - Math.min(...comCorte.barras.map((b) => b.low));
+
+    const comTerminal = emendarSeries(arquivo, terminal, 300, {
+      precedencia: 'AO_VIVO_VENCE',
+      toleranciaDeSegundos: 4 * 86_400,
+      aoDivergir: 'EMENDAR_MESMO_ASSIM',
+    });
+    const ampReal =
+      Math.max(...comTerminal.barras.map((b) => b.high)) -
+      Math.min(...comTerminal.barras.map((b) => b.low));
+
+    // ⭐ Com corte, a amplitude é a do ARQUIVO: 100,6 − 99,8. O extremo real não entra.
+    expect(ampCorte).toBeCloseTo(0.8, 6);
+    // ⭐⭐ Com o terminal vencendo, é a REAL: 104 − 96.
+    expect(ampReal).toBeCloseTo(8, 6);
+    // ⭐ E a contagem de barras NÃO muda: é substituição, não acréscimo. Uma emenda que crescesse
+    // aqui estaria duplicando barra em vez de trocar a errada pela certa.
+    expect(comTerminal.barras).toHaveLength(3);
+  });
+
+  it('⚠️ `EMENDAR_MESMO_ASSIM` é necessário aqui, e é o único lugar onde é', () => {
+    // ⭐ `medirCoerencia` VAI reprovar: as duas séries discordam do preço, e é justamente por isso
+    // que esta camada existe. Com o default (`'SO_HISTORICO'`) a emenda devolveria o arquivo — a
+    // série ERRADA. Registrar isto evita que alguém "conserte" removendo a opção.
+    const arquivo = [barra(300, 100, { high: 100.5, low: 99.9 })];
+    const terminal = [barra(300, 108, { high: 110, low: 96 })];
+    const recusada = emendarSeries(arquivo, terminal, 300, { precedencia: 'AO_VIVO_VENCE' });
+    expect(recusada.coerencia?.compativeis).toBe(false);
+    expect(recusada.barras[0]?.close).toBe(100);
+
+    const forcada = emendarSeries(arquivo, terminal, 300, {
+      precedencia: 'AO_VIVO_VENCE',
+      aoDivergir: 'EMENDAR_MESMO_ASSIM',
+    });
+    expect(forcada.barras[0]?.close).toBe(108);
   });
 });
