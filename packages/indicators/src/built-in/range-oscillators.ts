@@ -48,6 +48,7 @@ import {
   RingWindow,
   SmaState,
   TrueRangeState,
+  WilderState,
 } from '../rolling.core.js';
 import { buildInstance } from './instance-base.js';
 
@@ -211,9 +212,24 @@ export const stochRsiFactory: IndicatorFactory = (() => {
       const fonte = sourceParam(merged, sourceSpec);
 
       return buildInstance(meta, merged, () => {
-        // RSI de Wilder, escrito aqui em termos de EMA de razao 1/n — que e o que Wilder e.
-        const ganhos = new EmaState(2 * nRsi - 1);
-        const perdas = new EmaState(2 * nRsi - 1);
+        // ⭐⭐ CORRIGIDO em 18/09/2026: era `EmaState(2·nRsi − 1)`, com o comentário "RSI de
+        // Wilder, escrito em termos de EMA de razão 1/n". A RAZÃO estava certa
+        // (`2/((2n−1)+1) = 1/n`); a SEMENTE, não — e a semente é metade da definição.
+        //
+        // ⚠️ `EmaState(27)` semeia com a média dos 27 primeiros ganhos; `WilderState(14)` semeia
+        // com a média dos 14 primeiros. Dois efeitos, os dois medidos numa série de 60 barras:
+        //
+        //   1. O RSI interno era um NÚMERO DIFERENTE do que `rsiFactory` publica no mesmo
+        //      gráfico. O operador sobrepõe os dois; um Stoch RSI que normaliza um RSI que não é
+        //      o RSI da tela é indefensável, e a divergência é invisível (os dois oscilam em
+        //      0–100 e passam por "suavização diferente").
+        //   2. A primeira emissão de %K caía no índice **42** em vez de **29** — treze barras de
+        //      atraso desnecessário, que em 15 min é mais de três horas de pregão sem indicador.
+        //
+        // ⭐ Agora é literalmente a mesma primitiva que `RsiLogic` usa. Consistência dentro do
+        // pacote não é elegância: é o que permite ao operador ler os dois juntos.
+        const ganhos = new WilderState(nRsi);
+        const perdas = new WilderState(nRsi);
         const faixa = new MinMaxWindow(nStoch);
         const suavK = new SmaState(nK);
         const suavD = new SmaState(nD);

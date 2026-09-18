@@ -318,7 +318,24 @@ export const kamaFactory: IndicatorFactory = (() => {
 
       return buildInstance(meta, merged, () => {
         // Janela dos precos (para a distancia liquida) e das variacoes absolutas (o caminho).
-        const precos = new RingWindow(n + 1);
+        // ⭐⭐ DEFEITO CORRIGIDO em 18/09/2026: era `RingWindow(n + 1)`, e o `+ 1` fazia o
+        // NUMERADOR do Efficiency Ratio medir um período MAIS que o denominador.
+        //
+        // ⚠️ `maisAntigo` é lido ANTES do `push`, então com capacidade `c` ele vale `x[i − c]`.
+        // Com `c = n + 1` o numerador era `|x[i] − x[i−n−1]|`, enquanto o denominador é a soma
+        // de exatamente `n` variações (`mediaVar · n`), que percorre `x[i−n] → x[i]`.
+        //
+        // ⭐ O ER é a razão entre o CAMINHO LÍQUIDO e o CAMINHO PERCORRIDO **na mesma janela**;
+        // é isso que o mantém em `[0, 1]`. Com as janelas desencontradas ele passa de 1 numa
+        // tendência limpa — medido: `(n+1)/n = 1,1` no caso monotônico — e `sc` estoura o limite
+        // rápido em ~19 %. A KAMA ficava mais rápida do que o parâmetro `fast` autoriza, o que
+        // é indistinguível de "o mercado estava eficiente".
+        //
+        // ⚠️ É a TERCEIRA vez que o mesmo erro aparece neste pacote: ROC e Momentum usavam
+        // defasagem `period + 1` pelo mesmo motivo (contar a barra corrente na janela). O teste
+        // que reprova este é o da série monotônica em `valores-conhecidos-lote-4`, e ele não
+        // depende de tabela de referência nenhuma: numa reta, ER É 1, por definição.
+        const precos = new RingWindow(n);
         const variacoes = new SmaState(n);
         let anterior: number | null = null;
         let kama: number | null = null;

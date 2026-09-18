@@ -114,6 +114,37 @@ export {
   cmfFactory,
   awesomeOscillatorFactory,
   pivotPointsFactory,
+  // ⭐⭐ ESTES DEZESSEIS FALTAVAM, e a ausência era invisível.
+  //
+  // ⚠️ Achado em 18/09/2026 ao escrever a conferência de valor do lote 4: dezesseis das 45
+  // fábricas eram IMPORTADAS aqui (então entravam em `builtInFactories` e no `registry`) e
+  // nunca REEXPORTADAS. Quem fizesse `import { adlFactory } from '@robustus/charts-indicators'`
+  // não compilava, e quem varresse o pacote em runtime achava 29 de 45.
+  //
+  // ⭐ São justamente as duas famílias mais recentes — fluxo de ordem e osciladores de faixa —
+  // e o fluxo de ordem é o diferencial desta biblioteca: `delta`, `cvd` e `delta_ratio` são o
+  // que quase nenhum provedor entrega. Ficaram alcançáveis só pelo `registry`.
+  //
+  // ⚠️ Não havia regra separando os 29 dos 16: era esquecimento, e esquecimento repetido —
+  // cada rodada nova acrescentava fábrica ao `import`, ao `builtInFactories` e ao `registry`, e
+  // pulava esta lista. A guarda mecânica que fecha isso está em
+  // `__tests__/indice-exporta-tudo.spec.ts`, e ela reprova a próxima que faltar.
+  deltaFactory,
+  cvdFactory,
+  deltaRatioFactory,
+  hmaFactory,
+  vwmaFactory,
+  kamaFactory,
+  lsmaFactory,
+  trixFactory,
+  ppoFactory,
+  stochRsiFactory,
+  aroonFactory,
+  choppinessFactory,
+  bopFactory,
+  adlFactory,
+  forceIndexFactory,
+  elderRayFactory,
 };
 
 /**

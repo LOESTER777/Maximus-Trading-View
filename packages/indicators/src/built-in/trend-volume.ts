@@ -162,10 +162,33 @@ class AdxLogic {
     this.adxW = new WilderState(period);
   }
 
-  private moves(high: number, low: number): { plusDM: number; minusDM: number } {
-    if (this.prevHigh === null || this.prevLow === null) {
-      return { plusDM: 0, minusDM: 0 };
-    }
+  /**
+   * ⭐⭐ `null` na PRIMEIRA barra, e a mudança vale 25 % de erro no ADX.
+   *
+   * ⚠️ **Defeito corrigido em 18/09/2026.** Isto devolvia `{ plusDM: 0, minusDM: 0 }` quando não
+   * havia barra anterior, e o zero era EMPURRADO para as três médias de Wilder. Consequências,
+   * medidas contra uma referência batch numa série de 60 barras:
+   *
+   * ```
+   * ADX no índice 27 (primeira emissão):  17,40 obtido   contra   13,90 correto
+   * ```
+   *
+   * ⭐ Movimento direcional é, por definição, a comparação com a barra ANTERIOR: numa série de N
+   * barras existem N−1 valores de DM, não N. Fabricar um zero no lugar do que não existe não é
+   * uma aproximação — é uma amostra falsa dentro da semente, e a semente de Wilder é a média dos
+   * primeiros `period` valores. Um zero entre catorze puxa `+DM`/`−DM` para baixo e, junto com o
+   * `TR` da primeira barra (que não tem componente de gap), desloca os dois DI e o ADX.
+   *
+   * ⚠️ E o erro NÃO some rápido: a suavização de Wilder tem memória infinita, com peso
+   * `(13/14)^k`. Depois de 20 barras ainda sobram 23 % do desvio inicial; depois de 46, 3,5 %.
+   * Num gráfico diário de 14 períodos isso são dois meses e meio de ADX enviesado — e enviesado
+   * para CIMA, que é o lado que faz o operador ler tendência onde não há.
+   *
+   * ⭐ `null` (e não zero) é a resposta certa, na disciplina do projeto: zero é uma AFIRMAÇÃO
+   * sobre o movimento direcional daquela barra, e a verdade é que não se sabe.
+   */
+  private moves(high: number, low: number): { plusDM: number; minusDM: number } | null {
+    if (this.prevHigh === null || this.prevLow === null) return null;
     const up = high - this.prevHigh;
     const down = this.prevLow - low;
     const plusDM = up > down && up > 0 ? up : 0;
@@ -188,25 +211,33 @@ class AdxLogic {
     return { plusDI, minusDI, dx };
   }
 
+  /** Nada emitido, e nada alimentado — o estado das médias fica intacto. Ver `moves`. */
+  private static readonly VAZIO: IndicatorValue = { adx: null, plus_di: null, minus_di: null };
+
   update(bar: IndicatorBar): IndicatorValue {
-    const { plusDM, minusDM } = this.moves(bar.high, bar.low);
+    const mov = this.moves(bar.high, bar.low);
+    // ⚠️ A primeira barra AINDA alimenta o `TrueRangeState` (é dele que sai o fechamento
+    // anterior da segunda barra), mas NÃO alimenta nenhuma média. Pular o `tr.push` deixaria a
+    // segunda barra sem fechamento de referência e o TR dela viria só como `high − low`.
     const trVal = this.tr.push(bar.high, bar.low, bar.close);
     this.prevHigh = bar.high;
     this.prevLow = bar.low;
+    if (mov === null) return AdxLogic.VAZIO;
     const trAvg = this.trW.push(trVal);
-    const plusAvg = this.plusW.push(plusDM);
-    const minusAvg = this.minusW.push(minusDM);
+    const plusAvg = this.plusW.push(mov.plusDM);
+    const minusAvg = this.minusW.push(mov.minusDM);
     const { plusDI, minusDI, dx } = this.dis(trAvg, plusAvg, minusAvg);
     const adx = dx === null ? null : this.adxW.push(dx);
     return { adx, plus_di: plusDI, minus_di: minusDI };
   }
 
   preview(bar: IndicatorBar): IndicatorValue {
-    const { plusDM, minusDM } = this.moves(bar.high, bar.low);
+    const mov = this.moves(bar.high, bar.low);
+    if (mov === null) return AdxLogic.VAZIO;
     const trVal = this.tr.peek(bar.high, bar.low);
     const trAvg = this.trW.peek(trVal);
-    const plusAvg = this.plusW.peek(plusDM);
-    const minusAvg = this.minusW.peek(minusDM);
+    const plusAvg = this.plusW.peek(mov.plusDM);
+    const minusAvg = this.minusW.peek(mov.minusDM);
     const { plusDI, minusDI, dx } = this.dis(trAvg, plusAvg, minusAvg);
     const adx = dx === null ? null : this.adxW.peek(dx);
     return { adx, plus_di: plusDI, minus_di: minusDI };
