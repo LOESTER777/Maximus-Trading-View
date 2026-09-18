@@ -793,6 +793,20 @@ export function App(): JSX.Element {
       });
     }
 
+    // ⭐⭐ FONTES DIVERGENTES: a emenda foi RECUSADA, e o operador tem de saber. Sem esta linha
+    // o gráfico mostra só o arquivo e parece completo — e o operador decidiria achando que está
+    // vendo o dia corrente.
+    if (mesa.divergenciaDasFontes !== null) {
+      notas.push({
+        fonte: 'preco',
+        linhas: [
+          `Fontes divergem: ${mesa.divergenciaDasFontes}`,
+          'Mostrando só o arquivo — o dia corrente do terminal foi recusado.',
+        ],
+        alerta: true,
+      });
+    }
+
     // ⭐ Período que SÓ o terminal serve (M1, M30, H4). Sem esta linha, escolher M1 mostra
     // poucas horas e nada mais, e a leitura natural é "está quebrado".
     //
@@ -822,6 +836,7 @@ export function App(): JSX.Element {
     mesa.avisoAoVivo,
     mesa.foraDaGrade,
     mesa.soDoTerminal,
+    mesa.divergenciaDasFontes,
     ativoMesa,
     tf.label,
     quedaParaSintetico,

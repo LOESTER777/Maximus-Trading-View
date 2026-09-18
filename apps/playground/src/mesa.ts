@@ -549,6 +549,13 @@ export interface DadoDaMesaComAoVivo extends DadoDaMesa {
    * significa que o arquivo ficou muito atrás.
    */
   readonly descartadasPeloCorte: number;
+  /**
+   * ⭐⭐ Por que as fontes NÃO foram emendadas, quando divergem. `null` = tudo bem.
+   *
+   * ⚠️ Tem de aparecer na tela. Um gráfico que silenciosamente mostra uma fonte só é um gráfico
+   * que o operador acha completo — e ele tomaria decisão achando que vê o dia corrente.
+   */
+  readonly divergenciaDasFontes: string | null;
 }
 
 /**
@@ -846,6 +853,10 @@ export function useMesaComAoVivo(params: {
       foraDaGrade: emendado.foraDaGrade,
       descartadasPeloCorte: emendado.descartadasPeloCorte,
       soDoTerminal,
+      divergenciaDasFontes:
+        emendado.coerencia !== null && !emendado.coerencia.compativeis
+          ? emendado.coerencia.motivo
+          : null,
     };
   }, [historico, barrasAoVivo, periodSeconds, aoVivoLigado, contratoVigente, avisoAoVivo, soDoTerminal]);
 }

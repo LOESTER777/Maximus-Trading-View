@@ -27,11 +27,29 @@ const ARQUIVO = process.env['ARQUIVO'] ?? 'http://127.0.0.1:18899';
 const MT5 = process.env['MT5'] ?? 'http://127.0.0.1:8229';
 const TOKEN = process.env['TOKEN'] ?? '';
 /**
- * ⚠️ NEGATIVO: a bridge está 3 h À FRENTE do epoch real. Aferido por correlação cruzada sobre
- * um pregão inteiro — e o sinal já esteve invertido aqui. Ver
- * `OFFSET_CANDLES_MT5_SEGUNDOS` em `packages/datafeed/src/mt5-bridge.core.ts`.
+ * ⚠️ POSITIVO: o `timestamp` da bridge marca hora de Brasília; epoch UTC é 3 h à frente.
+ *
+ * ⛔ **Esta constante já esteve com o sinal invertido, e esta auditoria não pegou** — pior, ela
+ * CONFIRMOU o valor errado, porque comparava as duas fontes pelo menor erro médio sem exigir
+ * cobertura. Ver `verificarJanelaDePregao` abaixo, que é a guarda que faltava.
  */
-const OFFSET_MT5 = -10_800;
+const OFFSET_MT5 = 10_800;
+
+/**
+ * ⭐⭐ A ÂNCORA EXTERNA: o horário de funcionamento do mercado.
+ *
+ * ⚠️ Existe porque comparar duas fontes entre si NÃO detecta fuso errado — duas séries podem
+ * casar num subconjunto por coincidência, e foi exatamente o que aconteceu. O horário do pregão
+ * é um fato público, não depende de nenhuma fonte de dado, e por isso nenhuma combinação de
+ * fontes erradas consegue satisfazê-lo por acaso.
+ *
+ * B3 / futuros: a sessão regular abre **09:00** e o leilão de fechamento é 18:25–18:30.
+ *
+ * ⚠️ A ABERTURA é o teste forte e é exata: fuso errado a desloca, sempre. O FECHAMENTO tem cauda
+ * legítima — medido, o `/historical-flow` traz o leilão das 18:30 (30 negócios, 17.996 contratos)
+ * e residuais às 19:30 (2 negócios). São reais, e reprová-los seria falso positivo.
+ */
+const PREGAO_BRT = { abre: '09:00', fechaAte: '19:35' };
 
 /**
  * ⚠️ Repetido aqui de propósito, e não importado do pacote.
@@ -239,6 +257,21 @@ function fontesConcordam(arq, term, seg) {
   }
   info(`${pares.length} barras em comum`);
 
+  // ⭐⭐ COBERTURA ANTES DE ERRO. Sem esta guarda a auditoria confirmou um fuso invertido: com o
+  // deslocamento errado as séries só se sobrepunham numa faixa estreita, e 36 % das barras
+  // tinham erro pequeno por coincidência de horário. Um alinhamento que explica um terço do dia
+  // não é um alinhamento.
+  const cobertura = pares.length / Math.min(arq.length, term.length);
+  if (cobertura < 0.8) {
+    falha(
+      `cobertura de apenas ${(100 * cobertura).toFixed(0)}% entre as fontes — ` +
+        'alinhamento suspeito (fuso? contrato? janela?)',
+    );
+    info('um alinhamento correto casa quase todas as barras da janela comum');
+  } else {
+    ok(`cobertura de ${(100 * cobertura).toFixed(0)}% das barras da janela comum`);
+  }
+
   // Preço: o fechamento tem de bater dentro de uma folga pequena. Contrato vs contínuo difere
   // pouco; fuso deslocado difere MUITO.
   const difs = pares.map(([a, t]) => Math.abs(a.close - t.close));
@@ -271,6 +304,64 @@ function hora(t) {
   });
 }
 
+/** Só o horário, em BRT. */
+function horaBRT(t) {
+  return new Date(t * 1000).toLocaleTimeString('pt-BR', {
+    timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+/**
+ * ⭐⭐ A GUARDA QUE FALTAVA: as barras caem dentro do horário de PREGÃO?
+ *
+ * ⚠️ Esta é a verificação que teria pegado o fuso invertido de imediato, e é conceitualmente
+ * diferente de tudo o mais neste script: ela **não compara fontes entre si**. Compara com um
+ * fato público — o mercado abre 09:00 e fecha 18:25 BRT.
+ *
+ * ⛔ Comparar duas fontes não detecta fuso errado. Duas séries podem casar num subconjunto por
+ * coincidência, e podem estar ambas deslocadas do mesmo jeito. Só uma âncora externa quebra
+ * esse empate.
+ *
+ * ⚠️ Só se aplica a período INTRADIÁRIO: em D1 a barra é rotulada na virada do dia (00:00 de
+ * algum fuso), e exigir que ela caia no pregão reprovaria dado correto.
+ */
+function verificarJanelaDePregao(nome, barras, seg) {
+  if (seg >= 86_400) return;
+  if (barras.length < 10) return;
+
+  // Agrupa por dia de calendário BRT e olha a primeira e a última barra de cada dia.
+  const porDia = new Map();
+  for (const b of barras) {
+    const dia = new Date(b.time * 1000).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const atual = porDia.get(dia);
+    if (atual === undefined) porDia.set(dia, { min: b.time, max: b.time });
+    else {
+      if (b.time < atual.min) atual.min = b.time;
+      if (b.time > atual.max) atual.max = b.time;
+    }
+  }
+
+  let foraDoPregao = 0;
+  const exemplos = [];
+  for (const [dia, { min, max }] of porDia) {
+    const abre = horaBRT(min);
+    const fecha = horaBRT(max);
+    // ⚠️ Comparação lexicográfica de "HH:MM" funciona e é suficiente aqui.
+    if (abre < PREGAO_BRT.abre || fecha > PREGAO_BRT.fechaAte) {
+      foraDoPregao += 1;
+      if (exemplos.length < 3) exemplos.push(`${dia}: ${abre} → ${fecha}`);
+    }
+  }
+
+  if (foraDoPregao === 0) {
+    ok(`${nome}: todos os ${porDia.size} dias abrem em ${PREGAO_BRT.abre} BRT (fuso correto)`);
+    return;
+  }
+  falha(`${nome}: ${foraDoPregao}/${porDia.size} dias caem FORA do pregão — FUSO ERRADO`);
+  exemplos.forEach(info);
+  info(`esperado: abre em ${PREGAO_BRT.abre} BRT (a abertura é exata; o fechamento tem cauda de leilão)`);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Execução
 // ═════════════════════════════════════════════════════════════════════════════
@@ -298,6 +389,9 @@ for (const p of PERIODOS) {
   } else {
     ohlcCoerente('arquivo', a.barras);
     tempoCoerente('arquivo', a.barras, p.seg);
+    // ⭐⭐ A âncora EXTERNA. Ver `verificarJanelaDePregao`: é a única verificação que não depende
+    // de comparar fontes, e por isso é a única que pega fuso errado nas DUAS ao mesmo tempo.
+    verificarJanelaDePregao('arquivo', a.barras, p.seg);
     volumeCoerente('arquivo', a.barras);
     const ult = a.barras[a.barras.length - 1];
     const atraso = (agora - ult.time) / 3600;
@@ -330,6 +424,7 @@ for (const p of PERIODOS) {
   } else {
     ohlcCoerente('terminal', t.barras);
     tempoCoerente('terminal', t.barras, p.seg);
+    verificarJanelaDePregao('terminal', t.barras, p.seg);
     volumeCoerente('terminal', t.barras);
     const ult = t.barras[t.barras.length - 1];
     info(`última barra do terminal: ${hora(ult.time)}`);

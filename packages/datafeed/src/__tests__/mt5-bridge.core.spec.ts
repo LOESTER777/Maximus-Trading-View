@@ -29,55 +29,69 @@ function barra(time: number, close: number, extra?: Partial<Bar>): Bar {
   return { time, open: close, high: close, low: close, close, ...extra };
 }
 
-describe('fuso — a correção aferida por correlação cruzada', () => {
-  it('⭐⭐ o offset é NEGATIVO: a bridge está 3 h À FRENTE do epoch real', () => {
-    // ⚠️ Este teste já existiu com `+10800`, e passava — porque foi escrito a partir de uma
-    // medição de TRÊS barras que casou por coincidência. A aferição correta é correlação
-    // cruzada sobre o pregão inteiro (114 barras): −10800 dá erro de 12 pts, o segundo melhor
-    // dá 140 pts, e `+10800` dá 195 pts. Ver `OFFSET_CANDLES_MT5_SEGUNDOS`.
-    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBe(-10_800);
-    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBeLessThan(0);
+describe('⭐⭐ fuso — aferido por ÂNCORA EXTERNA, não por comparação de fontes', () => {
+  /**
+   * ⚠️ Este bloco já esteve ERRADO, com o sinal invertido, e passando. A lição está na nota de
+   * `OFFSET_CANDLES_MT5_SEGUNDOS`: eu escolhi o alinhamento pelo menor erro médio de preço, sem
+   * exigir COBERTURA — e um subconjunto de 36 % das barras tinha erro pequeno por coincidência.
+   *
+   * ⭐ Agora a âncora é EXTERNA e verificável: o horário de funcionamento do mercado. Ele não
+   * depende de nenhuma outra fonte de dado, e é por isso que duas fontes erradas do mesmo jeito
+   * não conseguem enganá-lo.
+   */
+  it('o offset é POSITIVO: a bridge marca hora de Brasília, e epoch UTC é 3 h à frente', () => {
+    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBe(10_800);
+    expect(OFFSET_CANDLES_MT5_SEGUNDOS).toBeGreaterThan(0);
   });
 
-  it('⭐⭐ a ABERTURA do pregão prova o sinal: 09:00 BRT = 12:00 UTC', () => {
-    // Referência independente e verificável: o WIN abre às 09:00 BRT, e o arquivo (que usa
-    // epoch UTC correto) rotula essa barra como 1789560000 = 12:00 UTC = 09:00 BRT.
-    const aberturaReal = 1_789_560_000;
-    // A bridge, 3 h à frente, envia este número para a MESMA barra.
-    const oQueABridgeEnvia = aberturaReal + 10_800;
-    expect(epochRealDoMt5(oQueABridgeEnvia)).toBe(aberturaReal);
-
-    // E o horário resultante é a abertura, em BRT.
-    const emBRT = new Date(epochRealDoMt5(oQueABridgeEnvia) * 1000).toLocaleTimeString('pt-BR', {
+  /** O horário de Brasília de um epoch, para conferir contra o pregão. */
+  function horaBRT(epoch: number): string {
+    return new Date(epoch * 1000).toLocaleTimeString('pt-BR', {
       timeZone: 'America/Sao_Paulo',
       hour: '2-digit',
       minute: '2-digit',
     });
-    expect(emBRT).toBe('09:00');
+  }
+
+  it('⭐⭐ ÂNCORA: a janela do pregão do WIN é 09:00–18:25 BRT', () => {
+    // Valores CRUS medidos na bridge em 16/09/2026: primeira e última barra de 5 min do dia.
+    const primeiraCrua = 1_789_549_200;
+    const ultimaCrua = 1_789_582_800;
+
+    expect(horaBRT(epochRealDoMt5(primeiraCrua))).toBe('09:00');
+    expect(horaBRT(epochRealDoMt5(ultimaCrua))).toBe('18:20');
   });
 
-  it('⚠️ o sinal ERRADO desloca SEIS horas — e o preço continua plausível', () => {
-    const aberturaReal = 1_789_560_000;
-    const oQueABridgeEnvia = aberturaReal + 10_800;
-    // O que a versão errada produzia:
-    const comSinalErrado = oQueABridgeEnvia + 10_800;
-    expect(comSinalErrado - aberturaReal).toBe(21_600); // 6 h de erro
+  it('⚠️ MECANISMO: com o sinal invertido a série cai FORA do pregão', () => {
+    const primeiraCrua = 1_789_549_200;
+    // O que a versão errada produzia: 03:00, quando não há mercado nenhum.
+    expect(horaBRT(primeiraCrua - 10_800)).toBe('03:00');
     // E o certo:
-    expect(epochRealDoMt5(oQueABridgeEnvia)).toBe(aberturaReal);
+    expect(horaBRT(epochRealDoMt5(primeiraCrua))).toBe('09:00');
+  });
+
+  it('⭐ ÂNCORA 2: a mínima de 17/09 cai às 10:40, como na tela do terminal', () => {
+    // Conferido contra a captura do gráfico do MT5: a queda violenta está entre as marcas de
+    // 09:30 e 10:50. `low` = 184.465 no timestamp cru abaixo.
+    const minimaCrua = 1_789_641_600;
+    expect(horaBRT(epochRealDoMt5(minimaCrua))).toBe('10:40');
   });
 
   it('epochParaMt5 é o inverso exato de epochRealDoMt5', () => {
-    const t = 1_789_578_000;
-    expect(epochRealDoMt5(epochParaMt5(t))).toBe(t);
-    expect(epochParaMt5(epochRealDoMt5(t))).toBe(t);
+    for (const off of [undefined, 0, 10_800, 18_000]) {
+      const t = 1_789_560_000;
+      const ida = off === undefined ? epochParaMt5(t) : epochParaMt5(t, off);
+      const volta = off === undefined ? epochRealDoMt5(ida) : epochRealDoMt5(ida, off);
+      expect(volta).toBe(t);
+    }
   });
 
   it('⭐ a correção acontece na FRONTEIRA: parseCandlesDoMt5 já devolve epoch real', () => {
     const b = parseCandlesDoMt5([
-      { timestamp: 1_789_570_800, open: 187_700, high: 187_750, low: 187_650, close: 187_705 },
+      { timestamp: 1_789_549_200, open: 187_700, high: 187_750, low: 187_650, close: 187_705 },
     ]);
     expect(b).not.toBeNull();
-    expect(b?.[0]?.time).toBe(1_789_560_000);
+    expect(horaBRT(b![0]!.time)).toBe('09:00');
   });
 });
 
@@ -351,7 +365,11 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
   it('⭐ DECISÃO 2: no balde do CORTE o terminal vence (a barra pode estar em formação)', () => {
     const hist = [barra(1000, 100), barra(1300, 101)];
     const vivo = [barra(1300, 999), barra(1600, 102)];
-    const r = emendarSeries(hist, vivo, P);
+    // ⚠️ `EMENDAR_MESMO_ASSIM` porque este caso usa valores artificialmente distantes para
+    // tornar a origem de cada barra ÓBVIA na asserção. A guarda de coerência (que recusa fontes
+    // divergentes) os barraria antes de a precedência ser exercida, e o que está sob teste aqui é
+    // a precedência. Ver `medirCoerencia`.
+    const r = emendarSeries(hist, vivo, P, { aoDivergir: 'EMENDAR_MESMO_ASSIM' });
 
     expect(r.barras.find((b) => b.time === 1300)?.close).toBe(999);
     expect(r.sobrepostas).toBe(1);
@@ -366,7 +384,11 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
     // contrato em vez do contínuo, e a junção apareceria como degrau.
     const hist = [barra(1000, 100), barra(1300, 101), barra(1600, 102)];
     const vivo = [barra(1000, 555), barra(1300, 666), barra(1600, 777), barra(1900, 103)];
-    const r = emendarSeries(hist, vivo, P);
+    // ⚠️ `EMENDAR_MESMO_ASSIM` porque este caso usa valores artificialmente distantes para
+    // tornar a origem de cada barra ÓBVIA na asserção. A guarda de coerência (que recusa fontes
+    // divergentes) os barraria antes de a precedência ser exercida, e o que está sob teste aqui é
+    // a precedência. Ver `medirCoerencia`.
+    const r = emendarSeries(hist, vivo, P, { aoDivergir: 'EMENDAR_MESMO_ASSIM' });
 
     // As duas primeiras do terminal foram descartadas: o arquivo manda no passado.
     expect(r.barras.find((b) => b.time === 1000)?.close).toBe(100);
@@ -583,7 +605,9 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
       });
 
       it('⚠️ em D1 o RÓTULO do histórico é preservado (o eixo e os desenhos dependem dele)', () => {
-        const r = emendarSeries([barra(ARQ_16, 187_600)], [barra(MT5_16, 999_999)], D);
+        const r = emendarSeries([barra(ARQ_16, 187_600)], [barra(MT5_16, 999_999)], D, {
+          aoDivergir: 'EMENDAR_MESMO_ASSIM',
+        });
         const b = r.barras[0]!;
         // Conteúdo do ao vivo (mais fresco), tempo do arquivo (convenção dominante).
         expect(b.close).toBe(999_999);
@@ -591,7 +615,9 @@ describe('⭐⭐ a COSTURA — histórico + dia corrente', () => {
       });
 
       it('em período INTRADIÁRIO o rótulo do ao vivo vence (as fontes concordam da grade)', () => {
-        const r = emendarSeries([barra(3600, 1)], [barra(3600, 999)], 3600);
+        const r = emendarSeries([barra(3600, 1)], [barra(3600, 999)], 3600, {
+          aoDivergir: 'EMENDAR_MESMO_ASSIM',
+        });
         expect(r.barras[0]!.close).toBe(999);
         expect(r.barras[0]!.time).toBe(3600);
       });

@@ -138,8 +138,11 @@ describe('⭐⭐ AMARRA 3: a EMENDA morava no adaptador do MT5', () => {
   });
 
   it('a PRECEDÊNCIA é escolha do consumidor, não regra fixa', () => {
+    // ⚠️ Preços PRÓXIMOS de propósito: a guarda de coerência (ver AMARRA 5) recusa fontes que
+    // divergem além de 0,1 %, e com 100 contra 555 ela barraria a emenda antes de a precedência
+    // ser exercida. A diferença aqui é de centésimos, como duas agregações do mesmo dado.
     const hist = [barra(1000, 100), barra(1300, 101), barra(1600, 102)];
-    const vivo = [barra(1000, 555), barra(1300, 666), barra(1900, 103)];
+    const vivo = [barra(1000, 100.05), barra(1300, 101.05), barra(1900, 103)];
 
     // 'CORTE' (default): o arquivo é canônico no passado.
     const corte = emendarSeries(hist, vivo, 300);
@@ -148,7 +151,7 @@ describe('⭐⭐ AMARRA 3: a EMENDA morava no adaptador do MT5', () => {
 
     // 'AO_VIVO_VENCE': a fonte ao vivo manda em tudo que ela tem.
     const aoVivo = emendarSeries(hist, vivo, 300, { precedencia: 'AO_VIVO_VENCE' });
-    expect(aoVivo.barras.find((b) => b.time === 1000)?.close).toBe(555);
+    expect(aoVivo.barras.find((b) => b.time === 1000)?.close).toBe(100.05);
     expect(aoVivo.descartadasPeloCorte).toBe(0);
 
     // 'ARQUIVO_VENCE': o ao vivo só acrescenta o que falta.
@@ -207,5 +210,92 @@ describe('⚠️ o que NÃO deve ser parametrizável — e por que', () => {
     expect(parseCandlesDoMt5(cru, { coberturaMinimaDeAgressor: 0 })?.[0]).not.toHaveProperty(
       'buyVolume',
     );
+  });
+});
+
+describe('⭐⭐ AMARRA 5: emendar fontes INCOMPATÍVEIS produzia degrau silencioso', () => {
+  /**
+   * ⚠️ Achado real: o arquivo da mesa e o terminal, alinhados corretamente no tempo (as duas
+   * fontes abrem 09:00 BRT, 98 % das barras casando), ainda assim discordam do PREÇO em 0,16 % e
+   * do VOLUME por um fator de 9. São séries diferentes do mesmo mercado.
+   *
+   * Emendar assim desenha um degrau de preço na junção e um salto de volume de uma ordem de
+   * grandeza — os dois indistinguíveis de movimento de mercado para quem olha o gráfico.
+   */
+  const P = 300;
+  // Mesmo instante nas duas fontes, com preço divergindo ~0,5 % e volume por fator de 9.
+  const hist = [
+    barra(1000, 187_675, { volume: 323_151 }),
+    barra(1300, 187_940, { volume: 242_259 }),
+    barra(1600, 187_950, { volume: 245_548 }),
+  ];
+  const vivoDivergente = [
+    barra(1300, 188_620, { volume: 2_180_000 }),
+    barra(1600, 188_800, { volume: 2_209_000 }),
+    barra(1900, 188_690, { volume: 1_500_000 }),
+  ];
+
+  it('⭐⭐ detecta a divergência e NÃO emenda (default: só o histórico)', () => {
+    const r = emendarSeries(hist, vivoDivergente, P);
+    expect(r.coerencia).not.toBeNull();
+    expect(r.coerencia?.compativeis).toBe(false);
+    expect(r.coerencia?.motivo).toContain('preço');
+    // A série é só o histórico — sem degrau.
+    expect(r.barras.length).toBe(3);
+    expect(r.doAoVivo).toBe(0);
+    expect(r.parcialEm).toBeNull();
+  });
+
+  it('o motivo distingue divergência de PREÇO de divergência de VOLUME', () => {
+    // Preço igual, volume 9x: o motivo tem de falar de volume.
+    const soVolume = [
+      barra(1300, 187_940, { volume: 2_180_000 }),
+      barra(1600, 187_950, { volume: 2_209_000 }),
+    ];
+    const r = emendarSeries(hist, soVolume, P);
+    expect(r.coerencia?.compativeis).toBe(false);
+    expect(r.coerencia?.motivo).toContain('volume');
+  });
+
+  it('⭐ `SO_AO_VIVO` para quem confia mais na fonte de tempo real', () => {
+    const r = emendarSeries(hist, vivoDivergente, P, { aoDivergir: 'SO_AO_VIVO' });
+    expect(r.barras.length).toBe(3);
+    expect(r.doAoVivo).toBe(3);
+    expect(r.barras[0]?.close).toBe(188_620);
+  });
+
+  it('⭐ `EMENDAR_MESMO_ASSIM` para quem já sabe e quer os dois', () => {
+    const r = emendarSeries(hist, vivoDivergente, P, { aoDivergir: 'EMENDAR_MESMO_ASSIM' });
+    expect(r.coerencia?.compativeis).toBe(false);
+    // A emenda aconteceu: a barra nova de 1900 entrou.
+    expect(r.barras.some((b) => b.time === 1900)).toBe(true);
+  });
+
+  it('⚠️ fontes COMPATÍVEIS emendam normalmente (a guarda não é um bloqueio cego)', () => {
+    const vivoOk = [
+      barra(1600, 187_960, { volume: 246_000 }),
+      barra(1900, 188_010, { volume: 190_000 }),
+    ];
+    const r = emendarSeries(hist, vivoOk, P);
+    expect(r.coerencia?.compativeis).toBe(true);
+    expect(r.coerencia?.motivo).toBeNull();
+    expect(r.doAoVivo).toBe(1);
+  });
+
+  it('⚠️ SEM sobreposição não há o que medir — e isso NÃO é incompatibilidade', () => {
+    // O caso normal e desejável: o ao vivo traz só o dia que o arquivo não tem.
+    const r = emendarSeries(hist, [barra(1900, 188_690, { volume: 1_500_000 })], P);
+    expect(r.coerencia).toBeNull();
+    expect(r.doAoVivo).toBe(1);
+  });
+
+  it('os limiares são PARAMETRIZADOS (outra fonte, outra tolerância)', () => {
+    // Com tolerância frouxa, a mesma divergência de preço passa.
+    const r = emendarSeries(hist, vivoDivergente, P, {
+      toleranciaRelativaDePreco: 0.05,
+      razaoDeVolumeAceitavel: [0.1, 20],
+    });
+    expect(r.coerencia?.compativeis).toBe(true);
+    expect(r.doAoVivo).toBe(1);
   });
 });

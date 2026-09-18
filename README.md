@@ -11,7 +11,7 @@ anotações — sem depender de provedor de gráfico de terceiro.
 
 ```bash
 npm install
-npm test              # 2303 testes, 113 arquivos
+npm test              # 2311 testes, 113 arquivos
 npm run build         # compila todos os pacotes
 npm run verify        # typecheck + typecheck do playground + extensão ESM + testes
 npm run smoke:consumo # ⭐ prova que o pacote PUBLICADO instala e importa

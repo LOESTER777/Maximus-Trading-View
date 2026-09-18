@@ -61,6 +61,15 @@ export interface SerieEmendada {
    */
   readonly foraDaGrade: number;
   /**
+   * ⭐⭐ O diagnóstico de coerência entre as fontes. `null` quando não houve sobreposição para
+   * medir (o caso normal quando o ao vivo só traz o dia que o arquivo não tem).
+   *
+   * ⚠️ Quando `compativeis === false`, a emenda NÃO aconteceu — ver `OpcoesDaEmenda.aoDivergir`.
+   * O consumidor deve dizer isso na tela: um gráfico que silenciosamente mostra uma fonte só é
+   * um gráfico que o operador acha completo.
+   */
+  readonly coerencia: CoerenciaDasFontes | null;
+  /**
    * Barras do terminal que SUBSTITUÍRAM a barra do arquivo no balde do corte.
    *
    * ⭐ Em regime é 0 ou 1: só o último balde do arquivo pode ser substituído (ele pode estar em
@@ -233,6 +242,7 @@ export function emendarSeries(
       foraDaGrade: 0,
       lacuna: null,
       parcialEm: null,
+      coerencia: null,
     };
   }
 
@@ -261,6 +271,7 @@ export function emendarSeries(
       foraDaGrade,
       lacuna: null,
       parcialEm: null,
+      coerencia: null,
     };
   }
 
@@ -277,6 +288,38 @@ export function emendarSeries(
   for (const b of historico) porBalde.set(chave(b), b);
 
   const precedencia: PrecedenciaDaEmenda = opcoes?.precedencia ?? 'CORTE';
+
+  // ⭐⭐ COERÊNCIA antes de emendar. Duas fontes podem estar perfeitamente alinhadas no tempo e
+  // ainda cotar séries diferentes — medido: preço divergindo 0,16% e volume por fator de 9.
+  // Emendar assim produz degrau de preço e salto de volume, os dois indistinguíveis de mercado.
+  const coerencia = medirCoerencia(
+    historico,
+    aoVivoNaGrade,
+    periodo,
+    opcoes?.toleranciaRelativaDePreco ?? 0.001,
+    opcoes?.razaoDeVolumeAceitavel ?? [0.5, 2],
+  );
+  const aoDivergir = opcoes?.aoDivergir ?? 'SO_HISTORICO';
+  if (coerencia !== null && !coerencia.compativeis && aoDivergir !== 'EMENDAR_MESMO_ASSIM') {
+    // ⚠️ Devolve UMA fonte, inteira, e diz por quê pelo `coerencia.motivo`. Meia emenda seria o
+    // pior dos mundos: o degrau continuaria lá, só menor.
+    const escolhida = aoDivergir === 'SO_AO_VIVO' ? aoVivoNaGrade : historico;
+    const doAoVivoEscolhido = aoDivergir === 'SO_AO_VIVO' ? escolhida.length : 0;
+    const ordenada = [...escolhida].sort((x, y) => x.time - y.time);
+    const ult = ordenada[ordenada.length - 1];
+    return {
+      barras: ordenada,
+      emendaEm: aoDivergir === 'SO_AO_VIVO' && ordenada.length > 0 ? (ordenada[0] as Bar).time : null,
+      doHistorico: ordenada.length - doAoVivoEscolhido,
+      doAoVivo: doAoVivoEscolhido,
+      sobrepostas: 0,
+      descartadasPeloCorte: 0,
+      foraDaGrade,
+      lacuna: null,
+      parcialEm: aoDivergir === 'SO_AO_VIVO' && ult !== undefined ? ult.time : null,
+      coerencia,
+    };
+  }
 
   // ⭐⭐ O CORTE (decisão 2): o último balde que o arquivo alcança. O terminal só manda daqui
   // para frente. `null` = arquivo vazio, e aí o terminal manda em tudo.
@@ -366,6 +409,7 @@ export function emendarSeries(
     foraDaGrade,
     lacuna,
     parcialEm,
+    coerencia,
   };
 }
 
@@ -417,7 +461,71 @@ export const UM_DIA_EM_SEGUNDOS = 86_400;
 export type PrecedenciaDaEmenda = 'CORTE' | 'AO_VIVO_VENCE' | 'ARQUIVO_VENCE';
 
 /** Opções da emenda. Todas com default declarado, nenhuma obrigatória. */
+/**
+ * ⭐⭐ O diagnóstico de COERÊNCIA entre as duas fontes, medido na região em que se sobrepõem.
+ *
+ * ⚠️ Existe por causa de um achado real: o arquivo da mesa e o terminal, alinhados corretamente
+ * no tempo (as duas abrem 09:00 BRT, cobertura de 98 % das barras), ainda assim discordam do
+ * PREÇO em 200 a 400 pontos e do VOLUME por um fator de 9. São séries diferentes do mesmo
+ * mercado — provavelmente contrato contra contínuo ajustado, e volume de contratos contra outra
+ * unidade.
+ *
+ * ⛔ **Emendar fontes assim produz um gráfico que mente em dois lugares:** um degrau de preço na
+ * junção e um salto de volume de uma ordem de grandeza. Numa tela de decisão isso é pior que
+ * mostrar menos dado.
+ */
+export interface CoerenciaDasFontes {
+  /** Quantas barras as duas fontes têm em comum na região de sobreposição. */
+  readonly paresComparados: number;
+  /** Diferença média absoluta de fechamento, em pontos. `null` sem pares. */
+  readonly difMediaDeFechamento: number | null;
+  /** Diferença média como fração do preço. Melhor que pontos para comparar instrumentos. */
+  readonly difRelativaDeFechamento: number | null;
+  /** Razão mediana `volume(aoVivo) / volume(historico)`. `null` sem volume comparável. */
+  readonly razaoDeVolume: number | null;
+  /**
+   * As fontes são compatíveis o suficiente para emendar?
+   *
+   * `false` quando o preço divergir além de `toleranciaRelativaDePreco` ou o volume sair da faixa
+   * de `razaoDeVolumeAceitavel`. Ver `OpcoesDaEmenda`.
+   */
+  readonly compativeis: boolean;
+  /** Por que não são compatíveis, em pt-BR. `null` quando são. */
+  readonly motivo: string | null;
+}
+
 export interface OpcoesDaEmenda {
+  /**
+   * ⭐⭐ Divergência RELATIVA de fechamento aceitável entre as fontes. Default `0.001` (0,1 %).
+   *
+   * ⚠️ Medido: contrato e série contínua ajustada do mesmo mercado divergem 0,16 % a 0,22 % —
+   * acima deste limiar, e corretamente barrados. Duas fontes do MESMO instrumento divergem por
+   * arredondamento de agregação, muito abaixo dele.
+   *
+   * ⚠️ RELATIVA e não em pontos, porque a biblioteca não sabe a escala do instrumento: 300 pontos
+   * são 0,16 % no WIN e 30 % numa ação de R$ 10.
+   */
+  readonly toleranciaRelativaDePreco?: number;
+  /**
+   * Faixa aceitável para `volume(aoVivo) / volume(historico)`. Default `[0.5, 2]`.
+   *
+   * ⚠️ Fora dela as fontes medem coisas diferentes — tick volume contra contratos, por exemplo,
+   * que dá razão de 9 a 10. Emendar produziria um histograma com salto de uma ordem de grandeza,
+   * e o operador leria "o volume secou" onde ele só mudou de unidade.
+   */
+  readonly razaoDeVolumeAceitavel?: readonly [number, number];
+  /**
+   * O que fazer quando as fontes são INCOMPATÍVEIS. Default `'SO_HISTORICO'`.
+   *
+   * ⚠️ O default é conservador de propósito: o histórico é a série longa, contínua e conhecida, e
+   * é o que o operador vê desde sempre. Perder a ponta do dia é ruim; desenhar um degrau de preço
+   * no meio do gráfico é pior, porque o degrau parece movimento de mercado.
+   *
+   * `'SO_AO_VIVO'` serve para quem confia mais na fonte de tempo real (é a que a corretora usa, e
+   * a que casa com a tela do terminal). `'EMENDAR_MESMO_ASSIM'` existe para quem já sabe que as
+   * fontes divergem e quer os dois de qualquer forma.
+   */
+  readonly aoDivergir?: 'SO_HISTORICO' | 'SO_AO_VIVO' | 'EMENDAR_MESMO_ASSIM';
   /**
    * Amplia o limiar de LACUNA, em segundos. Default `0`.
    *
@@ -455,6 +563,70 @@ export interface OpcoesDaEmenda {
  */
 function chaveDeBalde(time: number, periodo: number): number {
   return Math.floor(time / periodo);
+}
+
+/**
+ * ⭐⭐ Mede se as duas fontes descrevem o MESMO instrumento na região em que se sobrepõem.
+ *
+ * ⚠️ Este teste é diferente de "estão alinhadas no tempo". Duas fontes podem estar
+ * perfeitamente alinhadas (mesma janela de pregão, 98 % das barras casando) e ainda assim
+ * cotar séries diferentes — medido no arquivo da mesa contra o terminal: preço divergindo
+ * 0,16 % e volume por fator de 9.
+ *
+ * ⚠️ Devolve `null` quando não há sobreposição. Ausência de sobreposição NÃO é incompatibilidade:
+ * é o caso normal e desejável, em que o ao vivo traz só o dia que o arquivo ainda não tem.
+ */
+function medirCoerencia(
+  historico: readonly Bar[],
+  aoVivo: readonly Bar[],
+  periodo: number,
+  tolPreco: number,
+  faixaVol: readonly [number, number],
+): CoerenciaDasFontes | null {
+  const chave = (b: Bar): number => (periodo > 0 ? chaveDeBalde(b.time, periodo) : b.time);
+  const porBalde = new Map(historico.map((b) => [chave(b), b]));
+  const pares: Array<readonly [Bar, Bar]> = [];
+  for (const v of aoVivo) {
+    const h = porBalde.get(chave(v));
+    if (h !== undefined) pares.push([h, v]);
+  }
+  if (pares.length === 0) return null;
+
+  let somaDif = 0;
+  let somaEscala = 0;
+  const razoes: number[] = [];
+  for (const [h, v] of pares) {
+    somaDif += Math.abs(v.close - h.close);
+    somaEscala += Math.abs(h.close);
+    if (typeof h.volume === 'number' && h.volume > 0 && typeof v.volume === 'number' && v.volume > 0) {
+      razoes.push(v.volume / h.volume);
+    }
+  }
+  const difMedia = somaDif / pares.length;
+  const escalaMedia = somaEscala / pares.length;
+  const difRelativa = escalaMedia > 0 ? difMedia / escalaMedia : null;
+  razoes.sort((a, b) => a - b);
+  const razao = razoes.length > 0 ? (razoes[Math.floor(razoes.length / 2)] as number) : null;
+
+  let motivo: string | null = null;
+  if (difRelativa !== null && difRelativa > tolPreco) {
+    motivo =
+      `o preço difere ${(difRelativa * 100).toFixed(2)}% entre as fontes ` +
+      `(${difMedia.toFixed(0)} pontos) — provavelmente instrumentos ou séries diferentes`;
+  } else if (razao !== null && (razao < faixaVol[0] || razao > faixaVol[1])) {
+    motivo =
+      `o volume difere por um fator de ${razao.toFixed(2)} entre as fontes — ` +
+      'provavelmente unidades diferentes (contratos contra número de negócios)';
+  }
+
+  return {
+    paresComparados: pares.length,
+    difMediaDeFechamento: difMedia,
+    difRelativaDeFechamento: difRelativa,
+    razaoDeVolume: razao,
+    compativeis: motivo === null,
+    motivo,
+  };
 }
 
 /**

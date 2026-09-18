@@ -11,6 +11,71 @@ de provedor de gráfico de terceiro.
 (conta `LOESTER777`, via **SSH**). Branch `main` com tracking. Antes o repositório
 era só local.
 
+## ⛔⛔ O FUSO DA BRIDGE: `+10800`. E a constante já trocou de sinal DUAS vezes.
+
+⚠️ **Leia antes de tocar em qualquer coisa de tempo.** O `timestamp` do REST da bridge é o epoch
+de um relógio que marca **hora de Brasília**: formatado como se fosse UTC ele já mostra o horário
+local. Para virar epoch UTC real, **soma-se 3 h**.
+
+**O erro que aconteceu, e o método que o causou:** refiz a medição por correlação cruzada e
+escolhi o deslocamento de **menor erro médio de fechamento**. Deu `−10800` com 12 pts contra
+195 pts, e razão de volume 1,000. Parecia definitivo. O operador pegou olhando o gráfico:
+*"o fuso está errado, a bolsa fecha 18:22"*.
+
+⛔ **Eu premiei o SUBCONJUNTO:**
+
+```
+offset    pares casados   % do pregão   erro médio
+−10800         41             36 %        12,0 pts   ← escolhido, e ERRADO
++10800        113             99 %       203,1 pts   ← correto
+```
+
+Com o deslocamento errado as séries só se sobrepõem numa faixa estreita de 3 h 20 — a interseção
+artificial entre um pregão deslocado e o outro — e 41 barras escolhidas por coincidência de
+horário podem ter preços parecidos. **Cobertura vem antes de erro.**
+
+⭐⭐ **As três âncoras que fixam `+10800`, e a primeira é a que importa:**
+
+1. **A JANELA DO PREGÃO.** O WIN negocia 09:00–18:25 BRT — fato público, não depende de comparar
+   com fonte nenhuma. `cru+10800` dá **09:00 → 18:20**; `cru−10800` dá 03:00 → 12:20, impossível.
+2. A razão de volume contra o arquivo: 1,028 na mesma barra.
+3. A mínima de 17/09 (`low` 184.465) cai às **10:40 BRT**, e na captura do terminal ela está
+   entre as marcas de 09:30 e 10:50.
+
+⛔ **Nunca afira alinhamento de tempo comparando duas fontes.** Duas séries erradas do mesmo jeito
+respondem em coro. Use uma âncora EXTERNA — o horário de funcionamento do mercado.
+`scripts/auditoria-de-dados.mjs` tem `verificarJanelaDePregao`, que é exatamente essa guarda, e
+foi ela que faltava (a auditoria antiga CONFIRMOU o valor errado).
+
+## ⭐⭐ AS DUAS FONTES DIVERGEM — e a emenda agora RECUSA
+
+⚠️ Achado da mesma investigação, e independente do fuso: alinhadas corretamente (as duas abrem
+09:00 BRT, 98 % das barras casando), o arquivo e o terminal **ainda discordam**:
+
+| | medido |
+|---|---|
+| preço de fechamento | divergência de **0,16 % a 0,22 %** (200 a 400 pontos) |
+| volume | razão de **9x a 10x** |
+
+São séries diferentes do mesmo mercado — provavelmente contrato (`WINV26`) contra contínuo
+ajustado, e unidades de volume distintas. **Emendá-las desenha um degrau de preço na junção e um
+salto de volume de uma ordem de grandeza, os dois indistinguíveis de movimento de mercado.**
+
+⭐ `medirCoerencia` roda ANTES do merge e devolve `SerieEmendada.coerencia`. Incompatível ⇒ a
+emenda **não acontece**: devolve UMA fonte inteira e o motivo em pt-BR, que o playground mostra na
+trilha. `OpcoesDaEmenda.aoDivergir` escolhe qual (`'SO_HISTORICO'` default, `'SO_AO_VIVO'`,
+`'EMENDAR_MESMO_ASSIM'`), e os limiares são parametrizados
+(`toleranciaRelativaDePreco` 0,1 %, `razaoDeVolumeAceitavel` [0,5, 2]).
+
+⚠️ Tolerância RELATIVA e não em pontos: 300 pontos são 0,16 % no WIN e 30 % numa ação de R$ 10.
+
+⚠️ **Sem sobreposição, `coerencia` é `null` e não há recusa** — é o caso normal e desejável, em
+que o ao vivo traz só o dia que o arquivo não tem.
+
+⚠️ **PENDENTE, e é da FONTE:** descobrir por que as duas divergem. O arquivo não passa pelos
+preços do terminal em nenhuma barra do dia, e nenhuma série do MT5 (`WINV26`, `WIN$`, `WIN$N`,
+`WINZ26`) bate com ele. Até saber, o gráfico mostra uma fonte só e diz que recusou a outra.
+
 ## ⭐⭐ PARAMETRIZAÇÃO — a biblioteca serve OUTRA fonte sem editar código
 
 Auditado em 17/09/2026 depois da pergunta *"em outros projetos os dados vão vir de outras

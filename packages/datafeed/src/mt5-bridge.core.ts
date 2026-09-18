@@ -63,51 +63,71 @@ import { agressorUtilizavel } from './robustus-bars.core.js';
 // ═════════════════════════════════════════════════════════════════════════════
 
 /**
- * ⭐⭐ Segundos a somar no `timestamp` do REST da bridge para obter epoch real. É **NEGATIVO**.
+ * ⭐⭐ Segundos a SOMAR no `timestamp` do REST da bridge para obter epoch real. É **POSITIVO**.
+ *
+ * O `timestamp` da bridge é o epoch de um relógio que marca **hora de Brasília**: formatado como
+ * se fosse UTC, ele já mostra o horário local correto. Para virar epoch UTC de verdade, soma-se
+ * 3 h (09:00 BRT = 12:00 UTC).
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ⚠️⚠️ O SINAL JÁ ESTEVE INVERTIDO AQUI, E A LIÇÃO IMPORTA MAIS QUE O NÚMERO
+ * ⚠️⚠️ ESTA CONSTANTE JÁ TROCOU DE SINAL DUAS VEZES. LEIA ANTES DE MEXER.
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * A primeira versão usava `+10800`, medida assim: peguei UMA janela de 15 minutos, comparei
- * TRÊS barras com o arquivo, e o fechamento casou dentro de 10 pontos. Parecia prova.
+ * **Tentativa 1 — `+10800`, por acidente.** Aferido com UMA janela de 15 min e TRÊS barras. O
+ * valor estava certo, mas a medição não provava nada: o WIN oscilou pouco e barras distantes
+ * tinham preço parecido.
  *
- * **Era coincidência.** O WIN oscilou pouco naquele dia, e barras separadas por seis horas
- * tinham preço parecido. Uma amostra de três não distingue isso de um alinhamento correto.
+ * **Tentativa 2 — `−10800`, e ERRADO.** Refiz por correlação cruzada e escolhi o deslocamento de
+ * **menor erro médio de fechamento**. `−10800` deu 12 pts contra 195 pts do `+10800`, e a razão
+ * de volume deu exatamente 1,000. Parecia definitivo. **Foi o pior erro desta biblioteca**, e o
+ * operador o pegou olhando o gráfico e dizendo *"o fuso está errado"*.
  *
- * ⭐ A medição honesta é **correlação cruzada sobre a série inteira** — 114 barras do pregão de
- * 16/09/2026, testando todo deslocamento múltiplo de 5 min entre −6 h e +6 h
- * (`scripts/auditoria-de-dados.mjs`):
+ * ⛔ **O defeito de método: eu premiei o SUBCONJUNTO.** O critério de menor erro ignorava QUANTAS
+ * barras casavam:
  *
- * | rota | melhor offset | erro de fechamento | 2º melhor |
- * |---|---|---|---|
- * | `/candles` | **−10800** | **12,0 pts** | −11100 → 140,5 pts |
- * | `/historical-flow` | **−10800** | **19,0 pts** | −11100 → 148,1 pts |
+ * ```
+ * offset    pares casados   % do pregão   erro médio
+ * −10800         41             36 %        12,0 pts   ← escolhido, e errado
+ * +10800        113             99 %       203,1 pts   ← correto
+ * ```
  *
- * O valor errado (`+10800`) aparece em 4º lugar, com **195,4 pts** — dez vezes pior.
+ * Com `−10800` as duas séries só se sobrepõem numa faixa estreita de 3 h 20 (a interseção
+ * artificial entre um pregão deslocado e o outro), e 41 barras escolhidas por coincidência de
+ * horário podem ter preços parecidos. **Cobertura vem antes de erro:** um alinhamento que
+ * explica 36 % do dia não é um alinhamento.
  *
- * ⭐⭐ **E a prova que não admite coincidência: alinhado em −10800, a razão de volume entre as
- * fontes é exatamente 1,000.** Volume idêntico só acontece na MESMA barra. Com `+10800` a razão
- * dava 9,002, e eu cheguei a interpretar isso como "as fontes usam unidades diferentes de
- * volume" — quando era o desalinhamento se disfarçando de problema de unidade.
+ * ── AS TRÊS MEDIÇÕES QUE FIXAM `+10800`, e são independentes ──────────────
  *
- * ⚠️ O erro que isso produzia na tela: o gráfico desenhava o pregão **seis horas deslocado**
- * (três para o lado errado). Preço plausível, hora errada, nenhum erro — e uma leitura de
- * abertura, de fechamento ou de horário de notícia completamente falsa.
+ * **1. A JANELA DO PREGÃO.** O WIN negocia 09:00–18:25 BRT. É um fato público e verificável, e
+ * não depende de comparar com nenhuma outra fonte:
  *
- * ── O QUE APRENDER ────────────────────────────────────────────────────────
+ * ```
+ * timestamp cru + 10800, em BRT :  09:00 → 18:20   ✓ é o pregão
+ * timestamp cru − 10800, em BRT :  03:00 → 12:20   ✗ impossível
+ * ```
  *
- * ⛔ **Nunca afira alinhamento de tempo com uma amostra pequena.** Duas séries de preço
- * concordam por acaso com frequência. O que não concorda por acaso é a série INTEIRA, e
- * principalmente o **volume**: ele é uma assinatura, e razão 1,000 é assinatura idêntica.
+ * **2. A RAZÃO DE VOLUME contra o arquivo:** 1,028 na mesma barra. Volume é assinatura.
  *
- * ⚠️ O número coincide com 3 h mas **não é o fuso de Brasília** — é o frame do servidor da
- * corretora. Não derive de `Intl` nem aplique horário de verão.
+ * **3. A MÍNIMA DO DIA, conferida contra a TELA DO TERMINAL.** No gráfico do MT5 de 17/09 a
+ * queda violenta está entre as marcas de 09:30 e 10:50. Com `+10800`, a mínima (`low` 184.465)
+ * cai às **10:40 BRT** — dentro da faixa. Com `−10800` cairia às 04:40, quando não há mercado.
  *
- * ⚠️ Vale para `/candles`, `/historical` e `/historical-flow` (as três foram medidas). **Não**
- * foi medido para o WebSocket de tick nem para `/orderbook`.
+ * ── O QUE APRENDER, e vale para qualquer aferição de tempo ────────────────
+ *
+ * ⛔ **Não escolha alinhamento por erro médio sem exigir COBERTURA.** Ordene por pares casados
+ * primeiro; só entre os que explicam quase toda a série, compare o erro.
+ *
+ * ⭐ **Prefira uma âncora EXTERNA e verificável a comparar duas fontes.** O horário de
+ * funcionamento do mercado é um fato; "qual das duas séries está certa" é uma pergunta que duas
+ * fontes erradas do mesmo jeito respondem em coro.
+ *
+ * ⚠️ O número coincide com 3 h mas **não é o fuso de Brasília calculado** — é o frame do relógio
+ * do servidor. Não derive de `Intl` nem aplique horário de verão.
+ *
+ * ⚠️ Medido para `/candles`, `/historical` e `/historical-flow`. **Não** foi medido para o
+ * WebSocket de tick nem para `/orderbook`.
  */
-export const OFFSET_CANDLES_MT5_SEGUNDOS = -10_800;
+export const OFFSET_CANDLES_MT5_SEGUNDOS = 10_800;
 
 /**
  * Converte o `timestamp` da bridge em epoch real (segundos).
