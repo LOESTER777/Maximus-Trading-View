@@ -117,6 +117,33 @@ interface Membro {
   readonly engine: ChartEngine;
   /** Ouvintes registrados neste motor, para remover na saída. */
   readonly desligar: () => void;
+  /**
+   * ⭐⭐ Este membro já foi alinhado ao grupo desde que entrou?
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * O DEFEITO: O PAINEL NOVO ABRIA EM OUTRO MOMENTO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * ⚠️ Relato: *"quando mando comparar, o que representa o gráfico que abriu? é um ativo
+   * diferente? pois o horário dele está diferente"*.
+   *
+   * Não era ativo diferente — é o MESMO, em outro período. Mas o **momento** estava mesmo
+   * diferente, e por um defeito real: a sincronia só agia em resposta a *"a janela mudou"*.
+   * Ninguém mudava nada ao abrir o painel, então ele nascia mostrando a ponta direita da série
+   * DELE enquanto o principal continuava onde o operador havia deixado. Dois trechos diferentes
+   * do mesmo ativo, lado a lado, sem nada dizendo isso — e a leitura natural é "são ativos
+   * diferentes".
+   *
+   * ⭐ A correção usa a primeira notificação do recém-chegado com o sentido CERTO: o primeiro
+   * aviso de faixa de um membro que acabou de entrar é o LAYOUT INICIAL dele, não um movimento
+   * do operador. Então em vez de propagar a partir dele, o grupo propaga PARA ele.
+   *
+   * ⚠️ Não dá para alinhar no `register` e pronto: ali o gráfico recém-montado costuma ter
+   * largura 0 (o container ainda não foi medido), e `setVisibleLogicalRange` recusa janela sem
+   * largura — a chamada seria um silencioso não-fazer-nada. Esperar o primeiro aviso é esperar
+   * exatamente o momento em que ele passou a ter geometria.
+   */
+  alinhado: boolean;
 }
 
 /**
@@ -193,11 +220,63 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
    * lógica alinharia índices, e índice não é tempo quando os gráficos têm períodos ou
    * buracos diferentes.
    */
+  /**
+   * Aplica uma faixa de TEMPO num membro, convertendo para o índice DELE. `true` se aplicou.
+   *
+   * Extraído porque agora há dois chamadores — a propagação normal e o alinhamento do
+   * recém-chegado — e duas cópias da conversão divergiriam na primeira correção.
+   */
+  const aplicarEm = useCallback(
+    (m: Membro, faixa: { readonly from: number; readonly to: number }): boolean => {
+      if (m.engine.isDisposed) return false;
+      const ts = m.engine.api.timeScale();
+      // `findNearest` porque o instante da borda quase nunca é barra exata NO DESTINO —
+      // e recusar por isso deixaria o gráfico parado, que é pior que um alinhamento com
+      // erro de meia barra.
+      const de = ts.timeToIndex(faixa.from, true);
+      const ate = ts.timeToIndex(faixa.to, true);
+      if (de === null || ate === null) return false;
+      // ⚠️ Faixa degenerada (o destino tem uma barra só no intervalo) alargaria o zoom
+      // para o infinito. Uma barra de folga mantém a janela utilizável.
+      const largura = Math.max(1, ate - de);
+      const alvo = { from: de, to: de + largura };
+      // ⭐ Registrar ANTES de aplicar: o motor pode notificar de forma síncrona em alguma
+      // implementação, e nesse caso o registro precisa já estar lá para o eco ser reconhecido.
+      aplicadaRef.current.set(m.id, alvo);
+      ts.setVisibleLogicalRange(alvo);
+      return true;
+    },
+    [],
+  );
+
   const propagarJanela = useCallback((idOrigem: string): void => {
     if (propagandoRef.current) return;
     const membros = membrosRef.current;
     const origem = membros.get(idOrigem);
     if (origem === undefined || origem.engine.isDisposed) return;
+
+    // ⭐⭐ PRIMEIRO AVISO de um recém-chegado = o layout inicial dele, não um movimento do
+    // operador. Ver a nota em `Membro.alinhado`: sem isto o painel de comparação abria mostrando
+    // outro trecho do mesmo ativo, e parecia outro ativo.
+    if (!origem.alinhado) {
+      origem.alinhado = true;
+      const referencia = [...membros.values()].find((m) => m !== origem && m.alinhado);
+      if (referencia !== undefined && !referencia.engine.isDisposed) {
+        const faixaRef = referencia.engine.api.timeScale().getVisibleRange();
+        if (faixaRef !== null) {
+          propagandoRef.current = true;
+          try {
+            aplicarEm(origem, faixaRef);
+          } finally {
+            propagandoRef.current = false;
+          }
+          return;
+        }
+      }
+      // Sem referência utilizável (ele é o primeiro, ou o principal ainda não tem janela): segue
+      // para o caminho normal e é ELE que passa a definir a janela do grupo. É a degradação certa
+      // — melhor um grupo alinhado pelo recém-chegado que um grupo desalinhado.
+    }
 
     const tsOrigem = origem.engine.api.timeScale();
 
@@ -220,28 +299,17 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
     try {
       for (const [id, m] of membros) {
         if (id === idOrigem || m.engine.isDisposed) continue;
-        const ts = m.engine.api.timeScale();
-        // `findNearest` porque o instante da borda quase nunca é barra exata NO DESTINO —
-        // e recusar por isso deixaria o gráfico parado, que é pior que um alinhamento com
-        // erro de meia barra.
-        const de = ts.timeToIndex(faixa.from, true);
-        const ate = ts.timeToIndex(faixa.to, true);
-        if (de === null || ate === null) continue;
-        // ⚠️ Faixa degenerada (o destino tem uma barra só no intervalo) alargaria o zoom
-        // para o infinito. Uma barra de folga mantém a janela utilizável.
-        const largura = Math.max(1, ate - de);
-        const alvo = { from: de, to: de + largura };
-        // ⭐ Registrar ANTES de aplicar: o motor pode notificar de forma síncrona em alguma
-        // implementação, e nesse caso o registro precisa já estar lá para o eco ser reconhecido.
-        aplicadaRef.current.set(id, alvo);
-        ts.setVisibleLogicalRange(alvo);
+        // Recebeu janela do grupo ⇒ está alinhado. Sem isto, o primeiro aviso DELE seria tratado
+        // como "recém-chegado" e ele puxaria a janela de volta, invertendo a direção.
+        m.alinhado = true;
+        aplicarEm(m, faixa);
       }
     } finally {
       // No `finally`: uma exceção no meio da propagação não pode deixar a guarda de pé
       // para sempre — o grupo inteiro pararia de sincronizar, em silêncio.
       propagandoRef.current = false;
     }
-  }, []);
+  }, [aplicarEm]);
 
   const register = useCallback(
     (id: string, engine: ChartEngine | null): (() => void) => {
@@ -276,7 +344,10 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
         }
       };
 
-      membros.set(id, { id, engine, desligar });
+      // ⭐ O PRIMEIRO membro do grupo nasce alinhado: não há contra o que alinhar, e ele é a
+      // referência de todos os que vierem. Quem entra depois nasce desalinhado e é puxado para a
+      // janela do grupo no primeiro aviso — ver a nota em `Membro.alinhado`.
+      membros.set(id, { id, engine, desligar, alinhado: membros.size === 0 });
 
       return () => {
         const atual = membros.get(id);

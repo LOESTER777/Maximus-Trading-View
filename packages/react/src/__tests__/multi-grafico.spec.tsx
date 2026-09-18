@@ -89,9 +89,20 @@ function motorFalso(periodo: number, faixa = { from: T0, to: T0 + 100 * periodo 
     subscribeVisibleLogicalRangeChange: (h: (r: unknown) => void) => ouvintesJanela.add(h),
     unsubscribeVisibleLogicalRangeChange: (h: (r: unknown) => void) => ouvintesJanela.delete(h),
     getVisibleRange: () => ({ ...visivel }),
-    // A janela LÓGICA corrente. O motor real a recomputa de `leftLogical` e `barSpacing`; aqui
-    // basta devolver a última aplicada (ou a inicial), que é o que a guarda de eco compara.
-    getVisibleLogicalRange: () => (aplicada === null ? { from: 0, to: 10 } : { ...aplicada }),
+    /**
+     * A janela LÓGICA corrente.
+     *
+     * ⚠️ Derivada da faixa de TEMPO visível, e não "a última aplicada de fora". No motor real as
+     * duas são a mesma coisa vista de dois jeitos: um pan muda `leftLogical` e, por consequência,
+     * o intervalo de tempo mostrado. A primeira versão deste duplo devolvia a última janela
+     * aplicada por `setVisibleLogicalRange`, e com isso um pan simulado por `definirFaixa` mexia
+     * no tempo e NÃO na lógica — o que fazia a guarda de eco confundir movimento do operador com
+     * eco. Duplo incoerente entre dois getters é armadilha para o teste, não para o código.
+     */
+    getVisibleLogicalRange: () => ({
+      from: (visivel.from - T0) / periodo,
+      to: (visivel.to - T0) / periodo,
+    }),
     // Índice = (tempo - T0) / periodo. É a tradução que cada motor faz com o SEU período —
     // e é por isso que copiar índice entre gráficos de períodos diferentes está errado.
     timeToIndex: (time: number) => Math.round((time - T0) / periodo),
@@ -287,10 +298,69 @@ describe('⭐ useChartSync — alinha por TEMPO', () => {
     expect(a.aplicacoes()).toBe(1);
   });
 
-  it('⚠️ membro que SAI e VOLTA não tem o primeiro movimento engolido', () => {
+  it('⭐⭐ o painel que ENTRA é alinhado ao grupo — ele não abre em outro momento', () => {
+    // ═══════════════════════════════════════════════════════════════════════
+    // O RELATO
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // ⚠️ *"quando mando comparar, o que representa o gráfico que abriu? é um ativo diferente?
+    // pois o horário dele está diferente"*.
+    //
+    // Não era outro ativo — é o mesmo, em outro período. Mas o MOMENTO estava diferente de
+    // verdade: a sincronia só agia em resposta a "a janela mudou", e abrir o painel não muda a
+    // janela de ninguém. Ele nascia na ponta direita da série DELE enquanto o principal seguia
+    // onde o operador o havia deixado. Dois trechos do mesmo ativo lado a lado, sem nada dizendo
+    // isso — e a leitura natural é "são ativos diferentes".
+    //
+    // ⭐ A primeira notificação de um recém-chegado é o LAYOUT INICIAL dele, não um movimento.
+    // Então o grupo propaga PARA ele, e não a partir dele.
+    const principal = motorFalso(300);
+    const { result } = renderHook(() => useChartSync());
+    act(() => {
+      result.current.register('principal', principal.engine);
+    });
+    // O operador arrastou o principal para um trecho qualquer do passado.
+    principal.definirFaixa(T0 + 100 * 3600, T0 + 112 * 3600);
+
+    // Agora abre a comparação. O painel novo nasce mostrando OUTRO trecho.
+    const comp = motorFalso(3600, { from: T0 + 900 * 3600, to: T0 + 1000 * 3600 });
+    act(() => {
+      result.current.register('comparacao', comp.engine);
+    });
+    // ⭐ O primeiro aviso dele (o layout inicial, quando o container finalmente foi medido) puxa a
+    // janela do grupo em vez de empurrar a dele.
+    act(() => comp.emitirJanela());
+
+    // 100 h a 112 h depois de T0, em barras de 1 h.
+    expect(comp.janelaAplicada()).toEqual({ from: 100, to: 112 });
+    expect(principal.aplicacoes(), 'o principal foi arrastado pelo painel novo').toBe(0);
+  });
+
+  it('⭐ e DEPOIS de alinhado o painel novo move o grupo normalmente', () => {
+    // ⚠️ O par do caso acima: "alinhe-se ao entrar" não pode virar "nunca comande". Sem este
+    // caso, a correção poderia ser ignorar para sempre os eventos do painel de comparação.
+    const principal = motorFalso(300);
+    const comp = motorFalso(3600);
+    const { result } = renderHook(() => useChartSync());
+    act(() => {
+      result.current.register('principal', principal.engine);
+      result.current.register('comparacao', comp.engine);
+    });
+    principal.definirFaixa(T0, T0 + 12 * 3600);
+    act(() => comp.emitirJanela()); // primeiro aviso: alinhamento
+    expect(comp.janelaAplicada()).toEqual({ from: 0, to: 12 });
+
+    // Segundo aviso: o operador arrastou o painel de comparação.
+    comp.definirFaixa(T0 + 50 * 3600, T0 + 60 * 3600);
+    act(() => comp.emitirJanela());
+    expect(principal.aplicacoes(), 'o pan da comparação não chegou no principal').toBe(1);
+    expect(principal.janelaAplicada()).toEqual({ from: 600, to: 720 });
+  });
+
+  it('⚠️ membro que SAI e VOLTA é REALINHADO, não engolido nem ignorado', () => {
     // ⭐ É o caminho exato de desmarcar e marcar "Comparar": o motor antigo morre e um novo entra
-    // sob a mesma chave. Sem limpar o registro de eco na saída, a janela aplicada ao motor MORTO
-    // seria comparada com o primeiro movimento do motor NOVO.
+    // sob a mesma chave. O registro de eco do motor MORTO é limpo na saída, e o motor NOVO nasce
+    // desalinhado — então o primeiro aviso dele o traz para a janela do grupo.
     const a = motorFalso(300);
     const b1 = motorFalso(300);
     const { result } = renderHook(() => useChartSync());
@@ -307,10 +377,11 @@ describe('⭐ useChartSync — alinha por TEMPO', () => {
     act(() => {
       result.current.register('comparacao', b2.engine);
     });
-    // O painel novo mostra o mesmo trecho por coincidência, e move.
-    b2.definirFaixa(T0, T0 + 12 * 3600);
+    b2.definirFaixa(T0 + 300 * 3600, T0 + 310 * 3600);
     act(() => b2.emitirJanela());
-    expect(a.aplicacoes(), 'o primeiro movimento do painel novo foi engolido').toBe(1);
+    // Alinhado à janela do `a`, e o `a` não foi arrastado.
+    expect(b2.janelaAplicada()).toEqual({ from: 0, to: 144 });
+    expect(a.aplicacoes()).toBe(0);
   });
 
   it('três gráficos: um evento aplica nos outros dois, uma vez cada', () => {

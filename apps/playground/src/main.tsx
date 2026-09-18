@@ -2201,6 +2201,25 @@ export function App(): JSX.Element {
               />
               <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
               {/*
+                ⭐⭐ O CARIMBO do painel principal — e ele aparece SÓ com a comparação ligada.
+                ⚠️ A condição é deliberada: com um painel só, "PRINCIPAL" não distingue nada e a
+                legenda logo acima já diz ativo e período. O carimbo existe para responder "quem é
+                quem" — pergunta que só existe quando há dois. Mostrá-lo sempre seria repetir
+                informação e roubar a área de leitura.
+                ⚠️ Posicionado à DIREITA porque a legenda ocupa o canto superior esquerdo deste
+                painel; no de contexto, que não tem legenda, ele fica à esquerda.
+              */}
+              {comparar && (
+                <div style={{ position: 'absolute', top: 6, right: 66, zIndex: 2 }}>
+                  <CarimbaOPainelPrincipal
+                    engine={engine}
+                    simbolo={simboloExibido}
+                    periodo={tf.label}
+                    barras={velasExibidas.length}
+                  />
+                </div>
+              )}
+              {/*
                 ⭐ O gráfico DENTRO do gráfico. Fica na célula `position: relative` junto da
                 legenda, e é SVG e não um segundo motor — ver `CorrelationInset.tsx`.
               */}
@@ -2698,25 +2717,160 @@ function PainelDeComparacao(props: {
       id="comparacao"
       options={{ barSpacing: 6 }}
       candles={props.velas}
-      ariaLabel={`Gráfico de comparação em ${props.rotulo}`}
+      ariaLabel={`Gráfico de comparação de ${props.simbolo} em ${props.rotulo}`}
+    >
+      <CarimbaOPainel
+        simbolo={props.simbolo}
+        periodo={props.rotulo}
+        papel="CONTEXTO"
+        barras={props.velas.length}
+      />
+      <RegistrarNaSincronia registrar={props.registrar} />
+    </ChartProvider>
+  );
+}
+
+/**
+ * ⭐⭐ O CARIMBO do painel: quem é, em que período, e QUAL MOMENTO está na tela.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * O PEDIDO, E POR QUE ELE É UM DEFEITO DE PROJETO E NÃO DE INTERFACE
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ *"quando mando comparar, o que representa o gráfico que abriu? é um ativo diferente? pois o
+ * horário dele está diferente"*.
+ *
+ * O painel de comparação mostra o **mesmo ativo em outro período**, e nada na tela dizia isso. O
+ * rótulo anterior era `SINTÉTICO · 1h` — mentia no ativo e omitia o resto. Duas telas do mesmo
+ * mercado, com eixos de tempo de granularidades diferentes e sem identificação, são
+ * indistinguíveis de dois ativos.
+ *
+ * ⭐ O carimbo responde as TRÊS perguntas na ordem em que se fazem:
+ *
+ * 1. **quem** — o símbolo, o mesmo nos dois painéis;
+ * 2. **em que resolução** — o período, que é a única coisa que difere entre eles;
+ * 3. **que momento** — o intervalo de tempo VISÍVEL, que é o que dissolve a dúvida do relato: com
+ *    a sincronia funcionando os dois carimbos mostram a MESMA faixa, e ver isso escrito é a prova
+ *    de que estão alinhados.
+ *
+ * ⚠️ O `papel` é explícito (`PRINCIPAL` / `CONTEXTO`) porque a hierarquia entre os dois painéis
+ * não é dedutível do tamanho: quem manda no desenho, nos indicadores e nos alertas é o principal;
+ * o de contexto é leitura de referência. Sem o rótulo, o operador pode desenhar no painel errado e
+ * não entender por que a marcação desapareceu ao fechar a comparação.
+ *
+ * ⚠️ Vem do motor DO PRÓPRIO PAINEL, via `useChart` + `useVisibleTimeRange`. Receber a faixa por
+ * prop do pai seria mais simples e estaria errado: o pai conhece a janela dele, não a do filho — e
+ * é justamente a diferença entre as duas que o operador precisa poder ver.
+ */
+function CarimbaOPainel(props: {
+  readonly simbolo: string;
+  readonly periodo: string;
+  readonly papel: 'PRINCIPAL' | 'CONTEXTO';
+  readonly barras: number;
+}): JSX.Element {
+  const { engine } = useChart();
+  return <CarimboDoPainel {...props} engine={engine} />;
+}
+
+/**
+ * A mesma coisa, para o painel PRINCIPAL — que não vive dentro de um `ChartProvider`.
+ *
+ * ⚠️ Dois invólucros em vez de um componente com `engine` opcional: `useChart` só pode ser chamado
+ * dentro do provedor, e um hook condicional é proibido. Separar o ACESSO ao motor da APRESENTAÇÃO
+ * (`CarimboDoPainel`) é o que permite os dois caminhos sem duplicar uma linha de layout.
+ */
+function CarimbaOPainelPrincipal(props: {
+  readonly engine: ChartEngine | null;
+  readonly simbolo: string;
+  readonly periodo: string;
+  readonly barras: number;
+}): JSX.Element {
+  return <CarimboDoPainel {...props} papel="PRINCIPAL" />;
+}
+
+function CarimboDoPainel(props: {
+  readonly engine: ChartEngine | null;
+  readonly simbolo: string;
+  readonly periodo: string;
+  readonly papel: 'PRINCIPAL' | 'CONTEXTO';
+  readonly barras: number;
+}): JSX.Element {
+  const { engine } = props;
+  // ⚠️ Tolerância de 1 min: sem zona morta, o carimbo se reescreveria a cada quadro de um arrasto.
+  // Um minuto é fino o suficiente para o rótulo acompanhar o pan e grosso o suficiente para não
+  // repintar por fração de barra.
+  const faixa = useVisibleTimeRange({ engine, toleranciaSegundos: 60 });
+  const momento = useMemo(() => {
+    if (faixa === null) return 'sem janela';
+    const fmt = (t: number): string =>
+      new Date(t * 1000).toLocaleString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    return `${fmt(faixa.de)} → ${fmt(faixa.ate)}`;
+  }, [faixa]);
+
+  const contexto = props.papel === 'CONTEXTO';
+  return (
+    <div
+      style={{
+        // ⚠️ O painel de CONTEXTO se posiciona sozinho (canto superior esquerdo, onde não há
+        // legenda); o PRINCIPAL é posicionado pelo pai, porque lá a legenda ocupa esse canto.
+        ...(contexto ? { position: 'absolute' as const, top: 6, left: 8, zIndex: 2 } : {}),
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 2,
+        alignItems: contexto ? 'flex-start' : 'flex-end',
+        pointerEvents: 'none',
+      }}
     >
       <span
         style={{
-          position: 'absolute',
-          top: 6,
-          left: 8,
-          zIndex: 2,
+          fontSize: 10,
+          padding: '1px 5px',
+          borderRadius: 4,
+          background: 'rgba(15,23,42,0.78)',
+          color: contexto ? '#a5b4fc' : '#e2e8f0',
+          border: `1px solid ${contexto ? 'rgba(165,180,252,0.35)' : 'rgba(148,163,184,0.28)'}`,
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {contexto ? 'CONTEXTO' : 'PRINCIPAL'} · {props.simbolo} · {props.periodo} · {props.barras}{' '}
+        barras
+      </span>
+      {/* ⭐ O MOMENTO, em linha própria: é a informação que o relato pedia, e ela muda com o pan. */}
+      <span
+        style={{
           fontSize: 10,
           padding: '1px 5px',
           borderRadius: 4,
           background: 'rgba(15,23,42,0.7)',
-          color: '#cbd5e1',
+          color: '#94a3b8',
+          whiteSpace: 'nowrap',
         }}
       >
-        {props.simbolo} · {props.rotulo}
+        {momento}
       </span>
-      <RegistrarNaSincronia registrar={props.registrar} />
-    </ChartProvider>
+      {contexto && (
+        // ⚠️ Dito por extenso, e não deduzido do rótulo: "mesmo ativo, outro período" é
+        // exatamente a frase que faltava para a pergunta não existir.
+        <span
+          style={{
+            fontSize: 9,
+            padding: '1px 5px',
+            borderRadius: 4,
+            background: 'rgba(15,23,42,0.6)',
+            color: '#818cf8',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          mesmo ativo do painel da esquerda, em outra resolução
+        </span>
+      )}
+    </div>
   );
 }
 
