@@ -14,14 +14,27 @@
  * "sincronizado" seria uma mentira difícil de perceber.
  *
  * ⭐ **E o laço de eco.** A move → aplica em B → B emite → aplica em A → … Um laço infinito
- * com os dois gráficos tremendo. A guarda de "estou aplicando" é o que o impede, e há caso
- * medindo exatamente isso.
+ * com os dois gráficos travados.
+ *
+ * ⛔⛔ **E aqui houve um defeito DE BANCADA, que vale mais que o defeito de código.** O motor
+ * duplo emitia a mudança de faixa **de dentro** de `setVisibleLogicalRange`, ou seja de forma
+ * SÍNCRONA. O motor real emite de dentro do `render()`, que roda em `requestAnimationFrame` — um
+ * quadro depois. O duplo codificava a MESMA premissa errada do código que ele deveria auditar, e
+ * por isso "provava" que a guarda síncrona funcionava.
+ *
+ * O operador encontrou o que a bancada não achava: *"quando cliquei no botão comparar, nada no
+ * gráfico se move mais"*. Agora o duplo emite **diferido** (`emitirPendentes`), como o real, e há
+ * caso que reprova a guarda antiga.
+ *
+ * ⭐ A lição de método: **teste duplo que reproduz a suposição do código sob teste não testa
+ * nada.** O que o duplo tem de imitar é o comportamento OBSERVADO do original — aqui, o momento
+ * da notificação — e não o comportamento que torna o código conveniente.
  *
  * ⚠️ Motor DUPLO em vez do real: em jsdom o container mede 0 px, então o motor de verdade
  * nunca emitiria faixa visível nenhuma e todos os casos passariam por vacuidade. O duplo
  * expõe só a superfície que o hook consome — o que também documenta o quanto ele exige do
- * motor: `timeScale()` (assinar faixa, `getVisibleRange`, `timeToIndex`,
- * `setVisibleLogicalRange`) e o crosshair.
+ * motor: `timeScale()` (assinar faixa, `getVisibleRange`, `getVisibleLogicalRange`,
+ * `timeToIndex`, `setVisibleLogicalRange`) e o crosshair.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, renderHook, screen, within } from '@testing-library/react';
@@ -50,6 +63,13 @@ interface MotorFalso {
   aplicacoes: () => number;
   /** Muda a faixa de tempo que este gráfico diz estar mostrando. */
   definirFaixa: (de: number, ate: number) => void;
+  /**
+   * ⭐⭐ Emite as notificações que ficaram PENDENTES — o "quadro seguinte" do motor real.
+   *
+   * Ver o cabeçalho: o motor avisa os assinantes de faixa de dentro do `render()`, em
+   * `requestAnimationFrame`. Sem este passo o duplo mentia sobre o momento da notificação.
+   */
+  emitirPendentes: () => void;
   ouvintes: () => number;
 }
 
@@ -62,21 +82,27 @@ function motorFalso(periodo: number, faixa = { from: T0, to: T0 + 100 * periodo 
   let visivel = { ...faixa };
   let aplicada: { from: number; to: number } | null = null;
   let contaAplicacoes = 0;
+  /** A notificação que o motor real emitiria no PRÓXIMO quadro. Ver `emitirPendentes`. */
+  let pendente: { from: number; to: number } | null = null;
 
   const timeScale = {
     subscribeVisibleLogicalRangeChange: (h: (r: unknown) => void) => ouvintesJanela.add(h),
     unsubscribeVisibleLogicalRangeChange: (h: (r: unknown) => void) => ouvintesJanela.delete(h),
     getVisibleRange: () => ({ ...visivel }),
+    // A janela LÓGICA corrente. O motor real a recomputa de `leftLogical` e `barSpacing`; aqui
+    // basta devolver a última aplicada (ou a inicial), que é o que a guarda de eco compara.
+    getVisibleLogicalRange: () => (aplicada === null ? { from: 0, to: 10 } : { ...aplicada }),
     // Índice = (tempo - T0) / periodo. É a tradução que cada motor faz com o SEU período —
     // e é por isso que copiar índice entre gráficos de períodos diferentes está errado.
     timeToIndex: (time: number) => Math.round((time - T0) / periodo),
     setVisibleLogicalRange: (r: { from: number; to: number }) => {
       aplicada = { ...r };
       contaAplicacoes += 1;
-      // ⭐ Um motor REAL emite mudança de faixa depois de a janela mudar. Reproduzir isso é
-      // o que faz este duplo detectar o laço de eco em vez de esconder.
       visivel = { from: T0 + r.from * periodo, to: T0 + r.to * periodo };
-      for (const h of [...ouvintesJanela]) h({ ...r });
+      // ⭐⭐ A notificação fica PENDENTE, não sai aqui. O motor real notifica de dentro do
+      // `render()`, em `requestAnimationFrame` — e era emitir aqui, de forma síncrona, que fazia
+      // este duplo esconder o laço de eco. Ver o cabeçalho.
+      pendente = { ...r };
     },
   };
 
@@ -101,6 +127,12 @@ function motorFalso(periodo: number, faixa = { from: T0, to: T0 + 100 * periodo 
     aplicacoes: () => contaAplicacoes,
     definirFaixa: (de, ate) => {
       visivel = { from: de, to: ate };
+    },
+    emitirPendentes: () => {
+      if (pendente === null) return;
+      const r = pendente;
+      pendente = null;
+      for (const h of [...ouvintesJanela]) h({ ...r });
     },
     ouvintes: () => ouvintesJanela.size + ouvintesCrosshair.size,
   };
@@ -166,6 +198,119 @@ describe('⭐ useChartSync — alinha por TEMPO', () => {
 
     expect(b.aplicacoes()).toBe(1);
     expect(a.aplicacoes()).toBe(0);
+  });
+
+  it('⛔⛔ NÃO entra em laço quando a notificação chega no QUADRO SEGUINTE', () => {
+    // ═══════════════════════════════════════════════════════════════════════
+    // O DEFEITO QUE O OPERADOR ENCONTROU E A BANCADA NÃO ACHAVA
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    // ⚠️ *"quando cliquei no botão comparar, nada no gráfico se move mais"*.
+    //
+    // O motor notifica os assinantes de faixa de dentro do `render()`, em `requestAnimationFrame`.
+    // A guarda antiga era um sinalizador síncrono, baixado no fim da propagação — então, quando o
+    // aviso do destino chegava um quadro depois, ela já estava no chão e o eco passava:
+    //
+    //   quadro 1: A emite → aplica em B
+    //   quadro 2: B avisa  → aplica em A      ⇠ eco
+    //   quadro 3: A avisa  → aplica em B      ⇠ eco do eco
+    //
+    // O sintoma não é tremor, é PARALISIA: todo arrasto do operador é sobrescrito no quadro
+    // seguinte pela janela que o outro painel devolve.
+    //
+    // ⭐ A guarda por CONTEÚDO faz o laço parar no quadro 2, e é o que este caso mede.
+    const a = motorFalso(300);
+    const b = motorFalso(300);
+    const { result } = renderHook(() => useChartSync());
+    act(() => {
+      result.current.register('a', a.engine);
+      result.current.register('b', b.engine);
+    });
+
+    a.definirFaixa(T0, T0 + 12 * 3600);
+    act(() => a.emitirJanela());
+    expect(b.aplicacoes()).toBe(1);
+
+    // O "quadro seguinte": B avisa que a janela dele mudou. Como a janela é EXATAMENTE a que o
+    // grupo acabou de aplicar nele, é eco — e A não pode receber nada.
+    act(() => b.emitirPendentes());
+    expect(a.aplicacoes(), 'A recebeu o eco de B').toBe(0);
+
+    // E o quadro seguinte a esse não pode reabrir o laço.
+    act(() => a.emitirPendentes());
+    act(() => b.emitirPendentes());
+    expect(a.aplicacoes()).toBe(0);
+    expect(b.aplicacoes()).toBe(1);
+  });
+
+  it('⭐ e o movimento LEGÍTIMO do painel de destino continua propagando', () => {
+    // ⚠️ O par do caso acima, e é ele que impede a "correção" preguiçosa de simplesmente ignorar
+    // todo evento do destino: depois de receber a janela, B ainda é um gráfico interativo. Se o
+    // operador arrastar B, isso TEM de chegar em A — senão a sincronia é de mão única e o painel
+    // de comparação vira uma imagem.
+    const a = motorFalso(300);
+    const b = motorFalso(300);
+    const { result } = renderHook(() => useChartSync());
+    act(() => {
+      result.current.register('a', a.engine);
+      result.current.register('b', b.engine);
+    });
+
+    a.definirFaixa(T0, T0 + 12 * 3600);
+    act(() => a.emitirJanela());
+    act(() => b.emitirPendentes()); // o eco, engolido
+
+    // Agora o operador arrasta B para OUTRO trecho.
+    b.definirFaixa(T0 + 20 * 3600, T0 + 30 * 3600);
+    act(() => b.emitirJanela());
+    expect(a.aplicacoes(), 'o pan de B não chegou em A').toBe(1);
+    expect(a.janelaAplicada()).toEqual({ from: 240, to: 360 });
+  });
+
+  it('⚠️ voltar À MÃO para a janela recebida ainda propaga — eco é consumido uma vez', () => {
+    // ⭐ A guarda por conteúdo tem um risco: se o registro não fosse consumido, o operador que
+    // arrastasse e voltasse exatamente para a janela sincronizada ficaria sem sincronia para
+    // sempre naquele ponto. Consumir o registro no primeiro reconhecimento resolve.
+    const a = motorFalso(300);
+    const b = motorFalso(300);
+    const { result } = renderHook(() => useChartSync());
+    act(() => {
+      result.current.register('a', a.engine);
+      result.current.register('b', b.engine);
+    });
+    a.definirFaixa(T0, T0 + 12 * 3600);
+    act(() => a.emitirJanela());
+    act(() => b.emitirPendentes()); // primeiro aviso: eco, engolido e CONSUMIDO
+
+    // Segundo aviso com a mesma janela: agora é intenção, e propaga.
+    act(() => b.emitirJanela());
+    expect(a.aplicacoes()).toBe(1);
+  });
+
+  it('⚠️ membro que SAI e VOLTA não tem o primeiro movimento engolido', () => {
+    // ⭐ É o caminho exato de desmarcar e marcar "Comparar": o motor antigo morre e um novo entra
+    // sob a mesma chave. Sem limpar o registro de eco na saída, a janela aplicada ao motor MORTO
+    // seria comparada com o primeiro movimento do motor NOVO.
+    const a = motorFalso(300);
+    const b1 = motorFalso(300);
+    const { result } = renderHook(() => useChartSync());
+    let sair = (): void => {};
+    act(() => {
+      result.current.register('a', a.engine);
+      sair = result.current.register('comparacao', b1.engine);
+    });
+    a.definirFaixa(T0, T0 + 12 * 3600);
+    act(() => a.emitirJanela());
+    act(() => sair());
+
+    const b2 = motorFalso(300);
+    act(() => {
+      result.current.register('comparacao', b2.engine);
+    });
+    // O painel novo mostra o mesmo trecho por coincidência, e move.
+    b2.definirFaixa(T0, T0 + 12 * 3600);
+    act(() => b2.emitirJanela());
+    expect(a.aplicacoes(), 'o primeiro movimento do painel novo foi engolido').toBe(1);
   });
 
   it('três gráficos: um evento aplica nos outros dois, uma vez cada', () => {

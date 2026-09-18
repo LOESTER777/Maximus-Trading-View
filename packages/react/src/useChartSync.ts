@@ -28,16 +28,41 @@
  * disciplina que corrigiu o indicador deslocado no eixo, aplicada entre gráficos.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ⚠️ O LAÇO DE ECO — o defeito que qualquer implementação ingênua tem
+ * ⛔⛔ O LAÇO DE ECO — e a primeira guarda NÃO funcionava
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * A move → aplica em B → B emite mudança de janela → aplica em A → A emite → …
- * Um laço infinito de `requestAnimationFrame`, com os dois gráficos tremendo.
+ * Um laço infinito, com os dois gráficos travados.
  *
- * A guarda é um sinalizador de "estou aplicando": enquanto ele está de pé, os eventos
- * recebidos são IGNORADOS. Ele é baixado no fim do ciclo de aplicação — e como a aplicação
- * é síncrona, um sinalizador simples basta (não é preciso `setTimeout`, que introduziria
- * uma janela em que o eco passa).
+ * ⚠️⚠️ **Este arquivo afirmava que um sinalizador síncrono bastava, com estas palavras:**
+ * *"como a aplicação é síncrona, um sinalizador simples basta"*. **A premissa é FALSA**, e o
+ * operador pagou por ela: *"quando cliquei no botão comparar, nada no gráfico se move mais"*.
+ *
+ * ⛔ O que a premissa errou: aplicar a janela é síncrono, mas **NOTIFICAR não é**. O motor
+ * avisa os assinantes de faixa de dentro do `render()`, que roda em `requestAnimationFrame`
+ * (ver `chart.ts`, o laço em `rangeListeners`). Então:
+ *
+ * ```
+ * quadro 1: A emite → guarda SOBE → aplica em B → guarda DESCE
+ * quadro 2: B renderiza e emite → guarda está DESCIDA → aplica em A   ⇠ o eco passou
+ * quadro 3: A renderiza e emite → aplica em B → …
+ * ```
+ *
+ * Um pingue-pongue de um quadro de intervalo, para sempre. E o sintoma não é tremor: é
+ * PARALISIA, porque cada arrasto do operador é sobrescrito pelo eco do outro painel no
+ * quadro seguinte.
+ *
+ * ⭐⭐ **A guarda correta é por CONTEÚDO, não por tempo.** O grupo lembra, para cada membro,
+ * a última janela que FOI APLICADA nele; quando esse membro emite exatamente essa janela, é
+ * eco e é ignorado. Não depende de quantos quadros o motor demora para notificar, o que
+ * torna o laço INEXPRIMÍVEL em vez de improvável.
+ *
+ * ⚠️ É a mesma lição que `useAlerts` já tinha aprendido — *"decide por CONTEÚDO, e não por
+ * identidade"* —, e ela não havia chegado aqui.
+ *
+ * ⭐ O sinalizador síncrono continua, e agora com o papel certo: impedir REENTRÂNCIA dentro
+ * de uma propagação (um motor que notifique de dentro do próprio `setVisibleLogicalRange`).
+ * Ele nunca foi suficiente sozinho; era necessário e insuficiente.
  */
 import { useCallback, useEffect, useRef } from 'react';
 import type { ChartEngine } from '@robustus/charts-engine';
@@ -95,6 +120,30 @@ interface Membro {
 }
 
 /**
+ * ⭐⭐ Duas janelas lógicas são a MESMA, a menos de ruído de ponto flutuante?
+ *
+ * ⚠️ A tolerância não é frouxidão: `setVisibleLogicalRange` grava
+ * `barSpacing = width / span` e depois a leitura recomputa
+ * `to = leftLogical + width / barSpacing`. Ida e volta por uma divisão e uma multiplicação
+ * devolvem um número que é o mesmo em valor e diferente em bits. Exigir igualdade exata faria
+ * TODO eco escapar da guarda — ou seja, a guarda não existiria.
+ *
+ * ⚠️ **1/100 de barra**, e o limiar tem de ser bem menor que qualquer movimento real: o menor
+ * pan perceptível é de uma fração de barra, e a menor rolagem de roda move várias. Um limiar
+ * de meia barra engoliria movimento legítimo do operador — que é o defeito oposto, e igualmente
+ * paralisante.
+ */
+const TOLERANCIA_DE_ECO = 0.01;
+
+function mesmaJanela(
+  a: { readonly from: number; readonly to: number } | undefined,
+  b: { readonly from: number; readonly to: number } | null,
+): boolean {
+  if (a === undefined || b === null) return false;
+  return Math.abs(a.from - b.from) <= TOLERANCIA_DE_ECO && Math.abs(a.to - b.to) <= TOLERANCIA_DE_ECO;
+}
+
+/**
  * Mantém um grupo de gráficos alinhados.
  *
  * @example
@@ -115,8 +164,22 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
    */
   const membrosRef = useRef<Map<string, Membro>>(new Map());
 
-  /** ⭐ A guarda de eco. Ver o cabeçalho: sem ela, dois gráficos entram em laço. */
-  const aplicandoRef = useRef(false);
+  /**
+   * Guarda de REENTRÂNCIA — não de eco. Ver o cabeçalho.
+   *
+   * ⚠️ O nome antigo (`aplicando`, descrito como "a guarda de eco") era parte do defeito:
+   * ele prometia proteger contra algo que não protegia, e ninguém revisou porque o comentário
+   * dizia que estava resolvido.
+   */
+  const propagandoRef = useRef(false);
+
+  /**
+   * ⭐⭐ A última janela APLICADA em cada membro. É esta a guarda de eco.
+   *
+   * Quando um membro emite a janela que acabou de receber, o evento é dele mas a intenção não —
+   * foi o grupo que o pôs ali. Propagar de volta é o pingue-pongue.
+   */
+  const aplicadaRef = useRef<Map<string, { from: number; to: number }>>(new Map());
 
   const onCrosshairRef = useRef(onCrosshair);
   onCrosshairRef.current = onCrosshair;
@@ -131,15 +194,29 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
    * buracos diferentes.
    */
   const propagarJanela = useCallback((idOrigem: string): void => {
-    if (aplicandoRef.current) return;
+    if (propagandoRef.current) return;
     const membros = membrosRef.current;
     const origem = membros.get(idOrigem);
     if (origem === undefined || origem.engine.isDisposed) return;
 
-    const faixa = origem.engine.api.timeScale().getVisibleRange();
+    const tsOrigem = origem.engine.api.timeScale();
+
+    // ⭐⭐ A GUARDA DE ECO. Se a janela que a origem está anunciando é exatamente a que o grupo
+    // aplicou nela, o movimento não é dela — e propagar de volta fecha o laço que travava os dois
+    // painéis. Ver a nota longa no cabeçalho: o antigo sinalizador síncrono não pegava isto,
+    // porque o motor notifica de dentro do `render()`, um quadro depois.
+    const logicaAtual = tsOrigem.getVisibleLogicalRange();
+    if (mesmaJanela(aplicadaRef.current.get(idOrigem), logicaAtual)) {
+      // ⚠️ CONSOME o registro. Sem isso, o operador que arrastasse e voltasse exatamente para a
+      // janela recebida ficaria sem sincronia — um "eco" que na verdade era intenção dele.
+      aplicadaRef.current.delete(idOrigem);
+      return;
+    }
+
+    const faixa = tsOrigem.getVisibleRange();
     if (faixa === null) return;
 
-    aplicandoRef.current = true;
+    propagandoRef.current = true;
     try {
       for (const [id, m] of membros) {
         if (id === idOrigem || m.engine.isDisposed) continue;
@@ -153,12 +230,16 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
         // ⚠️ Faixa degenerada (o destino tem uma barra só no intervalo) alargaria o zoom
         // para o infinito. Uma barra de folga mantém a janela utilizável.
         const largura = Math.max(1, ate - de);
-        ts.setVisibleLogicalRange({ from: de, to: de + largura });
+        const alvo = { from: de, to: de + largura };
+        // ⭐ Registrar ANTES de aplicar: o motor pode notificar de forma síncrona em alguma
+        // implementação, e nesse caso o registro precisa já estar lá para o eco ser reconhecido.
+        aplicadaRef.current.set(id, alvo);
+        ts.setVisibleLogicalRange(alvo);
       }
     } finally {
       // No `finally`: uma exceção no meio da propagação não pode deixar a guarda de pé
       // para sempre — o grupo inteiro pararia de sincronizar, em silêncio.
-      aplicandoRef.current = false;
+      propagandoRef.current = false;
     }
   }, []);
 
@@ -177,7 +258,7 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
         },
         crosshair: (p: { time?: number }): void => {
           if (!opcoesRef.current.crosshair) return;
-          if (aplicandoRef.current) return;
+          if (propagandoRef.current) return;
           onCrosshairRef.current?.(id, p.time ?? null);
         },
       };
@@ -204,6 +285,10 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
         if (atual !== undefined && atual.engine === engine) {
           atual.desligar();
           membros.delete(id);
+          // ⚠️ Limpa o registro de eco junto: um membro que saia e volte (é o que acontece ao
+          // desmarcar e marcar "Comparar") herdaria uma janela aplicada a um motor que já morreu,
+          // e o primeiro movimento dele seria confundido com eco e engolido.
+          aplicadaRef.current.delete(id);
         }
       };
     },
@@ -215,6 +300,7 @@ export function useChartSync(params: UseChartSyncParams = {}): UseChartSyncResul
     () => () => {
       for (const m of membrosRef.current.values()) m.desligar();
       membrosRef.current.clear();
+      aplicadaRef.current.clear();
     },
     [],
   );

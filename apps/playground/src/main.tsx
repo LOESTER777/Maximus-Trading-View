@@ -1137,12 +1137,30 @@ export function App(): JSX.Element {
 
   // As velas do painel de comparação, no período dele.
   const tfComp = useMemo(() => timeframePorId(tfComparacao) ?? TF_BASE, [tfComparacao, TF_BASE]);
+  /**
+   * ⭐⭐ O período em que `velasCruas` REALMENTE está — e não `TF_BASE` sempre.
+   *
+   * ⚠️ Aqui havia um defeito silencioso: a agregação usava `TF_BASE` (fixo em M5) como origem, e
+   * isso só está certo no modo SINTÉTICO, onde o gerador produz M5 e o `velasBase` reamostra. No
+   * modo MESA o dado já chega no período escolhido — então com o gráfico em 1h a comparação
+   * chamava `rollupBars(barras_de_1h, 300, destino)`, tratando barras de uma hora como se fossem
+   * de cinco minutos. O resultado é um punhado de velas gigantes, que é exatamente o que apareceu
+   * na tela.
+   *
+   * ⭐ E `rollupBars` não tinha como perceber: ela recebe o passo de origem por argumento e
+   * confia. A informação de qual é o passo real é do consumidor.
+   */
+  const periodoDasVelasCruas = fonte === 'mesa' ? tf.seconds : TF_BASE.seconds;
   const velasComparacao = useMemo(() => {
     if (!comparar) return [];
-    if (tfComp.seconds === TF_BASE.seconds) return velasCruas;
-    const r = rollupBars(velasCruas, TF_BASE.seconds, tfComp.seconds);
+    if (tfComp.seconds === periodoDasVelasCruas) return velasCruas;
+    // ⚠️ Só AGREGA (destino maior que origem). Pedir 5min a partir de barras de 1h é
+    // desagregação, que é impossível — e `rollupBars` devolveria lixo ou vazio. Nesse caso o
+    // painel mostra o período que existe, e o rótulo dele diz qual é.
+    if (tfComp.seconds < periodoDasVelasCruas) return velasCruas;
+    const r = rollupBars(velasCruas, periodoDasVelasCruas, tfComp.seconds);
     return r.length === 0 ? velasCruas : (r as typeof velasCruas);
-  }, [comparar, velasCruas, tfComp, TF_BASE]);
+  }, [comparar, velasCruas, tfComp, periodoDasVelasCruas]);
 
   const desenho = useDrawings({
     engine,
@@ -2259,6 +2277,7 @@ export function App(): JSX.Element {
               <PainelDeComparacao
                 velas={velasComparacao}
                 rotulo={tfComp.label}
+                simbolo={simboloExibido}
                 registrar={(e) => sync.register('comparacao', e)}
               />
             )}
@@ -2657,6 +2676,15 @@ const botaoIcone: React.CSSProperties = {
 function PainelDeComparacao(props: {
   readonly velas: readonly SyntheticCandle[];
   readonly rotulo: string;
+  /**
+   * ⭐⭐ O SÍMBOLO que está no painel. Antes o rótulo era o literal `'SINTÉTICO'`.
+   *
+   * ⛔ Não era detalhe cosmético: com dado real na tela, o painel exibia barras do WIN sob a
+   * palavra "SINTÉTICO". Um operador comparando períodos leria o painel de contexto como dado
+   * gerado e o descartaria — ou, pior, leria o principal como sintético. É o mesmo defeito que a
+   * marca d'água já tinha corrigido no painel principal, e que não havia chegado aqui.
+   */
+  readonly simbolo: string;
   readonly registrar: (engine: ChartEngine | null) => () => void;
 }): JSX.Element {
   return (
@@ -2685,7 +2713,7 @@ function PainelDeComparacao(props: {
           color: '#cbd5e1',
         }}
       >
-        SINTÉTICO · {props.rotulo}
+        {props.simbolo} · {props.rotulo}
       </span>
       <RegistrarNaSincronia registrar={props.registrar} />
     </ChartProvider>
